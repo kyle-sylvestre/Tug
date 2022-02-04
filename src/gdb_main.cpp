@@ -35,19 +35,26 @@ struct GuiContext
     size_t source_found_line_idx;
 
     // TODO: multiple modifiers
-    bool IsKeyClicked(int glfw_key, int glfw_mod = 0)
+    bool IsKeyClicked(int glfw_key, int glfw_mods = 0)
     {
-        bool result = last_keystate.keys[glfw_key].action == GLFW_RELEASE && 
-                      this_keystate.keys[glfw_key].action == GLFW_PRESS;
-        if (glfw_mod != 0)
+        GlfwKey &this_key = Key(glfw_key);
+        GlfwKey &last_key = LastKey(glfw_key);
+        bool result = last_key.action == GLFW_RELEASE && 
+                      this_key.action == GLFW_PRESS;
+
+        if (glfw_mods != 0)
         {
-            result &= (0 != (this_keystate.keys[glfw_key].mods & glfw_mod));
+            result &= (glfw_mods == (this_key.mods & glfw_mods));
         }
         return result;
     }
     GlfwKey &Key(int glfw_key)
     {
         return this_keystate.keys[glfw_key];
+    }
+    GlfwKey &LastKey(int glfw_key)
+    {
+        return last_keystate.keys[glfw_key];
     }
 };
 
@@ -364,7 +371,7 @@ int GDB_Init(GLFWwindow *window)
         const RecordAtom *files = GDB_ExtractAtom("files", tmp);
         for (const RecordAtom &file : GDB_IterChild(tmp, *files))
         {
-            String fullpath = GDB_ExtractString("fullname", file, tmp);
+            String fullpath = GDB_ExtractValue("fullname", file, tmp);
             //printf("file: %s\n", fullpath.c_str());
 
             if ( FileContext::Create(fullpath.c_str(), file_ctx) )
@@ -681,7 +688,7 @@ void GDB_Draw(GLFWwindow *window)
                 if (prefix_word == "breakpoint-created")
                 {
                     Breakpoint res = {};
-                    res.file = GDB_ExtractString("bkpt.fullname", rec);
+                    res.file = GDB_ExtractValue("bkpt.fullname", rec);
                     res.number = GDB_ExtractInt("bkpt.number", rec);
                     res.line = GDB_ExtractInt("bkpt.line", rec);
 
@@ -710,7 +717,7 @@ void GDB_Draw(GLFWwindow *window)
             {
                 prog.running = false;
                 async_stopped = true;
-                String reason = GDB_ExtractString("reason", rec);
+                String reason = GDB_ExtractValue("reason", rec);
 
                 // TODO: remote ARM32 debugging is this up after jsr macro
                 if (reason == "end-stepping-range" && prog.frames.size() > 0)
@@ -757,10 +764,10 @@ void GDB_Draw(GLFWwindow *window)
 
                     Frame add = {};
                     add.line = (size_t)GDB_ExtractInt("line", level, rec);
-                    add.addr = GDB_ExtractString("addr", level, rec);
+                    add.addr = GDB_ExtractValue("addr", level, rec);
                     add.file_idx = ~0;
 
-                    String fullname = GDB_ExtractString("fullname", level, rec);
+                    String fullname = GDB_ExtractValue("fullname", level, rec);
                     for (size_t i = 0; i < prog.files.size(); i++)
                     {
                         if (prog.files[i].fullpath == fullname)
@@ -797,7 +804,7 @@ void GDB_Draw(GLFWwindow *window)
                 Vector<String> stack_vars;
                 for (const RecordAtom &child : GDB_IterChild(rec, *vars))
                 {
-                    String name = GDB_ExtractString("name", child, rec); 
+                    String name = GDB_ExtractValue("name", child, rec); 
                     stack_vars.push_back(name);
                 }
 
@@ -809,7 +816,7 @@ void GDB_Draw(GLFWwindow *window)
                               iter.c_str(), iter.c_str());
                     GDB_SendBlocking(buf, rec);
 
-                    String value = GDB_ExtractString("value", rec);
+                    String value = GDB_ExtractValue("value", rec);
                     if (value == "") value = "???";
 
                     VarObj insert = { iter, value, true };
@@ -831,8 +838,8 @@ void GDB_Draw(GLFWwindow *window)
 
             for (const RecordAtom &iter : GDB_IterChild(rec, *changelist))
             {
-                String name = GDB_ExtractString("name", iter, rec);
-                String value = GDB_ExtractString("value", iter, rec);
+                String name = GDB_ExtractValue("name", iter, rec);
+                String value = GDB_ExtractValue("value", iter, rec);
                 if (value == "") value = "???";
 
                 const char *srcname = name.c_str();
@@ -978,6 +985,21 @@ void GDB_Draw(GLFWwindow *window)
                     if (iter.line == i)
                         is_set = true;
 
+                // start radio button style
+                ImColor bg_color = ImGui::GetStyleColorVec4(ImGuiCol_WindowBg);
+                ImColor hov_color = {};
+                const float inc = 32 / 255.0f;
+                hov_color.Value.x = bg_color.Value.x + inc;
+                hov_color.Value.y = bg_color.Value.y + inc;
+                hov_color.Value.z = bg_color.Value.z + inc;
+                hov_color.Value.w = 1.0f;
+
+                ImColor on_color = IM_COL32(255, 64, 64, 255);
+                ImGui::PushStyleColor(ImGuiCol_FrameBg, bg_color.Value);
+                ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, hov_color.Value);
+                ImGui::PushStyleColor(ImGuiCol_FrameBgActive, on_color.Value);    // color while clicking
+                ImGui::PushStyleColor(ImGuiCol_CheckMark, on_color.Value);        // color while active
+
                 char buf[64]; tsnprintf(buf, "##bkpt%d", (int)i); 
                 if (ImGui::RadioButton(buf, is_set))
                 {
@@ -1004,13 +1026,16 @@ void GDB_Draw(GLFWwindow *window)
                         GDB_SendBlocking(buf, rec);
 
                         Breakpoint res = {};
-                        res.file = GDB_ExtractString("bkpt.fullname", rec);
+                        res.file = GDB_ExtractValue("bkpt.fullname", rec);
                         res.number = GDB_ExtractInt("bkpt.number", rec);
                         res.line = GDB_ExtractInt("bkpt.line", rec);
 
                         prog.breakpoints.push_back(res);
                     }
                 }
+
+                // stop radio button style
+                ImGui::PopStyleColor(4);
 
                 // automatically scroll to the next executed line
                 // if the current highlighted line is not close to it
@@ -1156,7 +1181,7 @@ void GDB_Draw(GLFWwindow *window)
         
         ImGui::SameLine();
         const char *button_desc =
-            "--- = display current execution line\n"
+            "--- = display next executed line\n"
             "|>  = start/continue program\n"
             "||  = pause program\n"
             "[]  = stop program\n"
@@ -1165,7 +1190,6 @@ void GDB_Draw(GLFWwindow *window)
             R"(</\\= step out)";
         DrawHelpMarker(button_desc);
 
-        // lock/draw the GDB console log
         for (int i = 0; i < NUM_LOG_ROWS; i++)
         {
             char *row = &prog.log[i][0];
@@ -1228,7 +1252,6 @@ void GDB_Draw(GLFWwindow *window)
             {
                 GDB_Send(input_command);
 
-
                 if (prog.num_input_cmds == NUM_USER_CMDS)
                 {
                     // hit end of list, end command gets popped
@@ -1257,7 +1280,7 @@ void GDB_Draw(GLFWwindow *window)
                                 ImGuiTableFlags_Borders |
                                 ImGuiTableFlags_Resizable;
 
-        if (ImGui::BeginTable("Locals", 2, flags))
+        if (0 && ImGui::BeginTable("Locals", 2, flags))
         {
             ImGui::TableSetupColumn("Name");
             ImGui::TableSetupColumn("Value");
@@ -1273,7 +1296,7 @@ void GDB_Draw(GLFWwindow *window)
 
                 ImGui::TableSetColumnIndex(1);
                 ImColor color = (iter.changed) 
-                                ? IM_COL32(255, 128, 128, 255)
+                                ? IM_COL32(255, 128, 128, 255)  // light red
                                 : IM_COL32_WHITE;
                 ImGui::TextColored(color, "%s", iter.value.c_str());
             }
@@ -1282,8 +1305,85 @@ void GDB_Draw(GLFWwindow *window)
         }
 
 
-#if 0
-        // -data-list-register-names 
+#if 1
+        struct RegisterName
+        {
+            String text;
+            bool registered;
+        };
+        static Vector<RegisterName> all_registers;
+        static bool show_add_register_window = false;
+
+        if (ImGui::Button("Modify Registers##button"))
+        {
+            show_add_register_window = true;
+            all_registers.clear();
+            GDB_SendBlocking("-data-list-register-names", rec);
+            const RecordAtom *regs = GDB_ExtractAtom("register-names", rec);
+
+            for (const RecordAtom &reg : GDB_IterChild(rec, *regs))
+            {
+                RegisterName add = {};
+                add.text = GetAtomString(reg.value, rec);
+                if (add.text != "") 
+                {
+                    String to_find = GLOBAL_NAME_PREFIX + add.text;
+                    add.registered = false;
+                    for (const VarObj &iter : prog.global_vars)
+                    {
+                        if (iter.name == add.text) 
+                        {
+                            add.registered = true;
+                            break;
+                        }
+                    }
+                    all_registers.emplace_back(add);
+                }
+            }
+        }
+
+        // add register window: query GDB for the list of register
+        // names then let the user pick which ones to use
+        if (show_add_register_window)
+        {
+            ImGui::SetNextWindowSize({ 400, 400 });
+            ImGui::Begin("Modify Registers##window", &show_add_register_window);
+
+            for (const RegisterName &reg : all_registers)
+            {
+                if ( ImGui::Checkbox(reg.text.c_str(), (bool *)&reg.registered) )
+                {
+                    if (reg.registered)
+                    {
+                        // add register varobj
+                        char buf[256];
+                        tsnprintf(buf, "-var-create " GLOBAL_NAME_PREFIX "%s @ $%s",
+                                  reg.text.c_str(), reg.text.c_str());
+                        GDB_SendBlocking(buf, rec);
+                        prog.global_vars.push_back( {reg.text, "???"} );
+                    }
+                    else
+                    {
+                        // delete register varobj
+                        for (size_t i = 0; i < prog.global_vars.size(); i++)
+                        {
+                            auto &src = prog.global_vars;
+                            if (src[i].name == reg.text) 
+                            {
+                                src.erase(src.begin() + i,
+                                          src.begin() + i + 1);
+                                char buf[256];
+                                tsnprintf(buf, "-var-delete " GLOBAL_NAME_PREFIX "%s", reg.text.c_str());
+                                GDB_SendBlocking(buf);
+                            }
+                        }
+                    }
+                }
+            }
+
+            ImGui::End();
+        }
+
         if (ImGui::BeginTable("Registers", 2, flags))
         {
             ImGui::TableSetupColumn("Register");
@@ -1293,7 +1393,7 @@ void GDB_Draw(GLFWwindow *window)
             for (size_t i = 0; i < prog.global_vars.size(); i++)
             {
                 const VarObj &iter = prog.global_vars[i];
-                ImGui::TableNextRow(i);
+                ImGui::TableNextRow();
 
                 ImGui::TableSetColumnIndex(0);
                 ImGui::Text("%s", iter.name.c_str());
@@ -1318,7 +1418,7 @@ void GDB_Draw(GLFWwindow *window)
             for (size_t i = 0; i < prog.watch_vars.size(); i++)
             {
                 const VarObj &iter = prog.watch_vars[i];
-                ImGui::TableNextRow(i);
+                ImGui::TableNextRow();
 
                 ImGui::TableSetColumnIndex(0);
                 ImGui::Text("%s", iter.name.c_str());
@@ -1330,7 +1430,7 @@ void GDB_Draw(GLFWwindow *window)
 
             // display emtpy input as last value that gets added on 
             // pressing enter 
-            ImGui::TableNextRow( prog.watch_vars.size() );
+            ImGui::TableNextRow();
             ImGui::TableSetColumnIndex(0);
             static char watch[64];
 
@@ -1345,7 +1445,7 @@ void GDB_Draw(GLFWwindow *window)
                           WATCH_NAME_PREFIX "%s @ %s", watch, watch);
                 GDB_SendBlocking(watch_msg, rec);
 
-                String s = GDB_ExtractString("value", rec);
+                String s = GDB_ExtractValue("value", rec);
                 if (s == "") s = "???";
                 prog.watch_vars.push_back( {watch, s} );
             }

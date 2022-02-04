@@ -159,7 +159,7 @@ enum AtomType
     Atom_String,
 };
 
-// data range that exists inside an external buffer
+// range of data that lives inside another buffer
 struct Span
 {
     size_t index;
@@ -307,14 +307,14 @@ struct AtomIter
 AtomIter GDB_IterChild(const Record &rec, const RecordAtom &array);
 
 // extract values from parsed records
-String GDB_ExtractString(const char *name, const RecordAtom &root, const Record &rec);
+String GDB_ExtractValue(const char *name, const RecordAtom &root, const Record &rec);
 int GDB_ExtractInt(const char *name, const RecordAtom &root, const Record &rec);
 const RecordAtom *GDB_ExtractAtom(const char *name, const RecordAtom &root, const Record &rec);
 
 // helper functions for searching the root node of a record 
-inline String GDB_ExtractString(const char *name, const Record &rec)
+inline String GDB_ExtractValue(const char *name, const Record &rec)
 {
-    return (rec.atoms.size() == 0) ? "" : GDB_ExtractString(name, rec.atoms[0], rec);
+    return (rec.atoms.size() == 0) ? "" : GDB_ExtractValue(name, rec.atoms[0], rec);
 }
 inline int GDB_ExtractInt(const char *name, const Record &rec)
 {
@@ -325,11 +325,19 @@ inline const RecordAtom *GDB_ExtractAtom(const char *name, const Record &rec)
     return (rec.atoms.size() == 0) ? NULL : GDB_ExtractAtom(name, rec.atoms[0], rec);
 }
 
+String GetAtomString(Span s, const Record &rec)
+{
+    Assert(s.index + s.length <= rec.buf.size());
+    String result = {};
+    result.assign(rec.buf.data() + s.index, s.length);
+    return result;
+}
+
 // send a message to GDB, don't wait for result
 ssize_t GDB_Send(const char *cmd);
 
 // send a message to GDB, wait for a result record
-int GDB_SendBlocking(const char *cmd, const char *header = "done", bool remove_after = true);
+int GDB_SendBlocking(const char *cmd, const char *header = "^done", bool remove_after = true);
 
 // send a message to GDB, wait for a result record, then retrieve it
 void GDB_SendBlocking(const char *cmd, Record &rec, const char *header = "^done");

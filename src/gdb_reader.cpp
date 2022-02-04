@@ -300,15 +300,14 @@ const RecordAtom *GDB_ExtractAtom(const char *name, size_t namelen,
     return NULL;
 }
 
-String GDB_ExtractString(const char *name, const RecordAtom &root, const Record &rec)
+String GDB_ExtractValue(const char *keyname, const RecordAtom &root, const Record &rec)
 {
     String result = "";
-    const RecordAtom *target = GDB_ExtractAtom(name, strlen(name), 0, root, rec);
+    const RecordAtom *target = GDB_ExtractAtom(keyname, strlen(keyname), 0, root, rec);
     if (target)
     {
         Assert(target->type == Atom_String);
-        result.assign(&rec.buf[ target->value.index ], 
-                      target->value.length);
+        result = GetAtomString(target->value, rec);
     }
     return result;
 }
@@ -320,7 +319,7 @@ int GDB_ExtractInt(const char *name, const RecordAtom &root, const Record &rec)
     if (target)
     {
         Assert(target->type == Atom_String);
-        result = atoi( GDB_ExtractString(name, root, rec).c_str() );
+        result = atoi( GDB_ExtractValue(name, root, rec).c_str() );
     }
     return result;
 }
@@ -331,20 +330,6 @@ const RecordAtom *GDB_ExtractAtom(const char *name, const RecordAtom &root,
     const RecordAtom *result = GDB_ExtractAtom(name, strlen(name), 0, root, rec);
     return result;
 }
-
-// helper functions
-
-// TODO: 
-// step forwards
-// step backwards
-// step over
-// step out
-// breakpoints
-// watch values
-// local values
-// start execution
-// stop execution
-// pause execution
 
 void GDB_ReadELF(const char *elf_filename)
 {
@@ -682,7 +667,7 @@ int main(int argc, char **argv)
     r.atoms = ctx.atoms;
     r.buf.resize(sizeof(debug_str));
     r.buf.assign(debug_str, debug_str + sizeof(debug_str));
-    auto b = GDB_ExtractString("bkpt.addr", r);
+    auto b = GDB_ExtractValue("bkpt.addr", r);
 
     GDB_PrintRecordAtom(r, r.atoms[0], 0);
 
