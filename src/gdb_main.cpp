@@ -64,7 +64,7 @@ GuiContext gui;
 
 void GDB_LogLine(char *raw, size_t rawsize);
 
-void dbg() {};
+inline void dbg() {};
 
 void *RedirectStdin(void *ctx)
 {
@@ -82,9 +82,9 @@ void *RedirectStdin(void *ctx)
 void *ReadInterpreterBlocks(void *ctx)
 {
     // read data from GDB pipe
-    char tmp[16 * 1024] = {};
+    char tmp[32 * 1024] = {};
     size_t insert_idx = 0;
-    gdb.blocks.resize(16 * 1024);
+    gdb.blocks.resize(32 * 1024);
 
     while (!gdb.end_program)
     {
@@ -572,7 +572,6 @@ int GDB_SendBlocking(const char *cmd, const char *header, bool remove_after)
             rc = sem_timedwait(gdb.recv_block, &wait_for);
             if (rc < 0)
             {
-                dbg();
                 if (errno == ETIMEDOUT)
                 {
                     // TODO: retry counts
@@ -713,26 +712,16 @@ void GDB_Draw(GLFWwindow *window)
                 async_stopped = true;
                 String reason = GDB_ExtractValue("reason", rec);
 
-                // TODO: remote ARM32 debugging is this up after jsr macro
-                if (reason == "end-stepping-range" && prog.frames.size() > 0)
-                {
-                    Record stack_depth;
-                    size_t last_num_frames = prog.frames.size();
-                    GDB_SendBlocking("-stack-info-depth", stack_depth, "depth");
-                    size_t this_num_frames = (size_t)GDB_ExtractInt("depth", stack_depth);
-
-                    if (this_num_frames == last_num_frames)
-                    {
-                        prog.frames[0].line = GDB_ExtractInt("frame.line", rec);
-                        remake_callstack = false;
-                    }
-                }
-
                 if (reason == "exited-normally") // @@@ find exit
                 {
                     prog.started = false;
-                    if (prog.frames.size() > 0)
-                        prog.frames[0].line = 0;
+                    prog.frames.clear();
+                    // TODO: delete local vars
+                }
+                else
+                {
+                    // check if we have entered a new function frame
+                    // this is done to prevent unnecessary varobj creations/deletions
                 }
             }
         }
@@ -740,16 +729,13 @@ void GDB_Draw(GLFWwindow *window)
 
     if (async_stopped)
     {
-        // refresh the callstack
-        bool refresh_locals = false;
+        bool remake_varobjs = false;
         if (remake_callstack)
         {
-            refresh_locals = true;
             // TODO: remote ARM32 debugging is this up after jsr macro
             //GDB_SendBlocking("-stack-list-frames 0 0", rec, "stack");
             GDB_SendBlocking("-stack-list-frames", rec, "stack");
             const RecordAtom *callstack = GDB_ExtractAtom("stack", rec);
-
             if (callstack)
             {
                 prog.frames.clear();
@@ -759,6 +745,7 @@ void GDB_Draw(GLFWwindow *window)
                     Frame add = {};
                     add.line = (size_t)GDB_ExtractInt("line", level, rec);
                     add.addr = GDB_ExtractValue("addr", level, rec);
+                    add.func = GDB_ExtractValue("func", level, rec);
                     add.file_idx = ~0;
 
                     String fullname = GDB_ExtractValue("fullname", level, rec);
@@ -775,47 +762,66 @@ void GDB_Draw(GLFWwindow *window)
                 }
 
                 prog.frame_idx = 0;
-            }
-        }
 
-        if (refresh_locals)
-        {
-            // new stack frame, delete all locals
-            for (VarObj &iter : prog.local_vars)
-            {
-                char buf[256];
-                tsnprintf(buf, "-var-delete " LOCAL_NAME_PREFIX "%s", 
-                          iter.name.c_str());
-                GDB_SendBlocking(buf);
-            }
-            prog.local_vars.clear();
+                // make a unique signature from the function name and types
+                // if the signature has changed, need to delete/recreate varobj's
+                static String last_funcsig;
+                String this_funcsig = (prog.frames.size() == 0) ? "" : prog.frames[0].func;
+                GDB_SendBlocking("-stack-list-arguments --simple-values 0 0", rec);
+                const RecordAtom *args = GDB_ExtractAtom("stack-args[0].args", rec);
 
-            // get current frame values 
-            GDB_SendBlocking("-stack-list-variables 0", rec, "variables");
-
-            const RecordAtom *vars = GDB_ExtractAtom("variables", rec);
-            if (vars)
-            {
-                Vector<String> stack_vars;
-                for (const RecordAtom &child : GDB_IterChild(rec, *vars))
+                for (const RecordAtom &arg : GDB_IterChild(rec, *args))
                 {
-                    String name = GDB_ExtractValue("name", child, rec); 
-                    stack_vars.push_back(name);
+                    this_funcsig += GDB_ExtractValue("type", arg, rec);
                 }
+                this_funcsig += std::to_string( prog.frames.size() ).c_str();
 
-                // create MI variable objects for each stack variable
-                for (String &iter : stack_vars)
+                if (last_funcsig != this_funcsig)
                 {
-                    char buf[512];
-                    tsnprintf(buf, "-var-create " LOCAL_NAME_PREFIX "%s * %s",
-                              iter.c_str(), iter.c_str());
-                    GDB_SendBlocking(buf, rec);
+                    last_funcsig = this_funcsig;
+                    remake_varobjs = true;
+                }
+            }
 
-                    String value = GDB_ExtractValue("value", rec);
-                    if (value == "") value = "???";
+            if (remake_varobjs)
+            {
+                // new stack frame, delete all locals
+                for (VarObj &iter : prog.local_vars)
+                {
+                    char buf[256];
+                    tsnprintf(buf, "-var-delete " LOCAL_NAME_PREFIX "%s", 
+                              iter.name.c_str());
+                    GDB_SendBlocking(buf);
+                }
+                prog.local_vars.clear();
 
-                    VarObj insert = { iter, value, true };
-                    prog.local_vars.emplace_back(insert);
+                // get current frame values 
+                GDB_SendBlocking("-stack-list-variables 0", rec, "variables");
+
+                const RecordAtom *vars = GDB_ExtractAtom("variables", rec);
+                if (vars)
+                {
+                    Vector<String> stack_vars;
+                    for (const RecordAtom &child : GDB_IterChild(rec, *vars))
+                    {
+                        String name = GDB_ExtractValue("name", child, rec); 
+                        stack_vars.push_back(name);
+                    }
+
+                    // create MI variable objects for each stack variable
+                    for (String &iter : stack_vars)
+                    {
+                        char buf[512];
+                        tsnprintf(buf, "-var-create " LOCAL_NAME_PREFIX "%s * %s",
+                                  iter.c_str(), iter.c_str());
+                        GDB_SendBlocking(buf, rec);
+
+                        String value = GDB_ExtractValue("value", rec);
+                        if (value == "") value = "???";
+
+                        VarObj insert = { iter, value, true };
+                        prog.local_vars.emplace_back(insert);
+                    }
                 }
             }
         }
@@ -827,7 +833,7 @@ void GDB_Draw(GLFWwindow *window)
         {
             // clear all the old varobj changed flags
             // newly created local variables will be display changed
-            if (!refresh_locals) for (auto &iter : prog.local_vars) iter.changed = false;
+            if (!remake_varobjs) for (auto &iter : prog.local_vars) iter.changed = false;
             for (auto &iter : prog.global_vars) iter.changed = false;
             for (auto &iter : prog.watch_vars) iter.changed = false;
 
@@ -978,6 +984,8 @@ void GDB_Draw(GLFWwindow *window)
             // up line indices with line numbers
             for (size_t i = 1; i < file.lines.size(); i++)
             {
+                String &line = file.lines[i];
+
                 bool is_set = false;
                 for (Breakpoint &iter : prog.breakpoints)
                     if (iter.line == i)
@@ -1063,21 +1071,108 @@ void GDB_Draw(GLFWwindow *window)
                 }
 
                 ImGui::SameLine();
+                ImVec2 textstart = ImGui::GetCursorPos();
                 if (i == frame.line)
                 {
-                    ImGui::Selectable(file.lines[i].c_str(), true);
+                    ImGui::Selectable(line.c_str(), true);
                 }
                 else
                 {
                     if (highlight_search_found)
                     {
                         ImColor IM_COL_YELLOW = IM_COL32(255, 255, 0, 255);
-                        ImGui::TextColored(IM_COL_YELLOW, "%s", 
-                                           file.lines[i].c_str());
+                        ImGui::TextColored(IM_COL_YELLOW, "%s", line.c_str());
                     }
                     else
                     {
-                        ImGui::Text("%s", file.lines[i].c_str());
+                        ImGui::Text("%s", line.c_str());
+                    }
+                }
+
+                // query word value after hovering over it long enough
+                if (ImGui::IsItemHovered())
+                {
+                    ImVec2 relpos = {};
+                    relpos.x = ImGui::GetMousePos().x - ImGui::GetWindowPos().x;
+                    relpos.y = ImGui::GetMousePos().y - ImGui::GetWindowPos().y;
+
+                    // enumerate words of the line
+                    // if mouse pos is over the word, query the value of it
+                    dbg();
+                    const size_t BAD_INDEX = ~0;
+                    size_t word_idx = BAD_INDEX;
+                    size_t delim_idx = BAD_INDEX;
+                    for (size_t char_idx = 0; char_idx < line.size(); char_idx++)
+                    {
+                        char c = line[char_idx];
+                        bool is_ident = (c >= 'a' && c <= 'z') || 
+                                        (c >= 'A' && c <= 'Z') ||
+                                        (word_idx != BAD_INDEX && (c >= '0' && c <= '9')) ||
+                                        (c == '_');
+
+                        if (char_idx == line.size() - 1 && word_idx != BAD_INDEX)
+                        {
+                            // force a word on the last index
+                            // offset char_idx to get right text span
+                            is_ident = false;
+                            char_idx++;
+                        }
+
+                        if (!is_ident)
+                        {
+                            if (word_idx != BAD_INDEX)
+                            {
+                                // we got a word delimited by spaces
+                                // calculate size and see if mouse is over it 
+                                ImVec2 worddim = ImGui::CalcTextSize(line.data() + word_idx, 
+                                                                     line.data() + char_idx);
+                                if (relpos.x >= textstart.x && 
+                                    relpos.x <= textstart.x + worddim.x)
+                                {
+                                    // mouse over a word, query it 
+                                    static size_t hover_line;
+                                    static size_t hover_word;
+                                    static String hover_value;
+
+                                    if (hover_word != word_idx || hover_line != i)
+                                    {
+                                        hover_word = word_idx;
+                                        hover_line = i;
+                                        String word(line.data() + word_idx, char_idx - word_idx);
+
+                                        char cmd[256];
+                                        size_t len = tsnprintf(cmd, "-data-evaluate-expression %s", word.c_str());
+                                        GDB_LogLine(cmd, len);
+                                        GDB_SendBlocking(cmd, rec);
+                                        hover_value = GDB_ExtractValue("value", rec);
+                                    }
+                                    else
+                                    {
+                                        ImGui::BeginTooltip();
+                                        ImGui::Text("%s", hover_value.c_str());
+                                        ImGui::EndTooltip();
+                                    }
+                                }
+                                textstart.x += worddim.x;
+                            }
+
+                            word_idx = BAD_INDEX;
+                            if (delim_idx == BAD_INDEX)
+                            {
+                                delim_idx = char_idx;
+                            }
+                        }
+                        else if (word_idx == BAD_INDEX)
+                        {
+                            if (delim_idx != BAD_INDEX)
+                            {
+                                ImVec2 delimdim = ImGui::CalcTextSize(line.data() + delim_idx, 
+                                                                      line.data() + char_idx);
+                                textstart.x += delimdim.x;
+                            }
+                            word_idx = char_idx;
+                            delim_idx = BAD_INDEX;
+                        }
                     }
                 }
             }
@@ -1300,15 +1395,16 @@ void GDB_Draw(GLFWwindow *window)
                                 ImGuiTableFlags_Borders |
                                 ImGuiTableFlags_Resizable;
 
-        if (0 && ImGui::BeginTable("Locals", 2, flags))
+        if (ImGui::BeginTable("Locals", 2, flags, {300, 200} ))
         {
             ImGui::TableSetupColumn("Name");
             ImGui::TableSetupColumn("Value");
             ImGui::TableHeadersRow();
 
-            for (size_t i = 0; i < prog.local_vars.size(); i++)
+            Vector<VarObj> &frame_vars = (prog.frame_idx == 0) ? prog.local_vars : prog.other_frame_vars;
+            for (size_t i = 0; i < frame_vars.size(); i++)
             {
-                const VarObj &iter = prog.local_vars[i];
+                const VarObj &iter = frame_vars[i];
                 ImGui::TableNextRow();
 
                 ImGui::TableSetColumnIndex(0);
@@ -1325,7 +1421,7 @@ void GDB_Draw(GLFWwindow *window)
         }
 
 
-        if (ImGui::BeginTable("Callstack", 1, flags & ~ImGuiTableFlags_BordersInnerH))
+        if (ImGui::BeginTable("Callstack", 1, flags & ~ImGuiTableFlags_BordersInnerH, {300, 200}) )
         {
             //ImGui::TableSetupColumn("Function");
             //ImGui::TableSetupColumn("Value");
@@ -1341,11 +1437,30 @@ void GDB_Draw(GLFWwindow *window)
                                 : "???";
 
                 ImGui::TableSetColumnIndex(0);
-                char line[128];
+                char line[256];
                 tsnprintf(line, "%llu : %s##%llu", iter.line, file.c_str(), i);
                 if ( ImGui::Selectable(line, i == prog.frame_idx) )
                 {
+                    dbg();
                     prog.frame_idx = i;
+                    if (prog.frame_idx != 0)
+                    {
+                        // do a one-shot query of a non-current frame
+                        // prog.frames is stored from bottom to top so need to do size - 1
+                        prog.other_frame_vars.clear();
+                        char buf[256];
+                        tsnprintf(buf, "-stack-list-variables --frame %llu --thread 1 --all-values", i);
+                        GDB_SendBlocking(buf, rec);
+                        const RecordAtom *variables = GDB_ExtractAtom("variables", rec);
+                        for (const RecordAtom &iter : GDB_IterChild(rec, *variables))
+                        {
+                            VarObj add = {}; 
+                            add.name = GDB_ExtractValue("name", iter, rec);
+                            add.value = GDB_ExtractValue("value", iter, rec);
+                            add.changed = false;
+                            prog.other_frame_vars.emplace_back(add);
+                        }
+                    }
                 }
             }
 
@@ -1453,7 +1568,7 @@ void GDB_Draw(GLFWwindow *window)
             ImGui::EndTable();
         }
 
-        if (0) if (ImGui::BeginTable("Watch", 2, flags))
+        if (ImGui::BeginTable("Watch", 2, flags))
         {
             ImGui::TableSetupColumn("Name");
             ImGui::TableSetupColumn("Value");
@@ -1663,12 +1778,20 @@ int main(int, char**)
             // global styles
             //
 
+            // lessen the intensity of selectable hover color
+            ImVec4 active_col = ImGui::GetStyleColorVec4(ImGuiCol_HeaderActive);
+            active_col.x *= (1.0/2.0);
+            active_col.y *= (1.0/2.0);
+            active_col.z *= (1.0/2.0);
+
             ImColor IM_COL_BACKGROUND = IM_COL32(22,22,22,255);
             ImGui::PushStyleColor(ImGuiCol_WindowBg, IM_COL_BACKGROUND.Value);
+            ImGui::PushStyleColor(ImGuiCol_HeaderHovered, active_col);
+            ImGui::PushStyleColor(ImGuiCol_HeaderActive, active_col);
 
             GDB_Draw(window);
 
-            ImGui::PopStyleColor();
+            ImGui::PopStyleColor(3);
         }
         
         // Rendering

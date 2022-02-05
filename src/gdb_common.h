@@ -35,7 +35,7 @@ typedef intptr_t ssize_t;
 #define Assert(cond)\
 if ( !(cond) )\
 {\
-    char __gdb_buf[128]; tsnprintf(__gdb_buf, "gdb --pid %d", int(getpid())); system(__gdb_buf); exit(0); \
+    char __gdb_buf[128]; tsnprintf(__gdb_buf, "gdb --pid %d", int(getpid())); (void)system(__gdb_buf); exit(0); \
 }
 #define Malloc malloc
 #define Calloc malloc
@@ -74,9 +74,9 @@ do {\
 #define RECORD_ROOT_IDX 0
 
 // prefix for preventing name clashes
-#define GLOBAL_NAME_PREFIX "gdb_global_"
-#define LOCAL_NAME_PREFIX "gdb_local_"
-#define WATCH_NAME_PREFIX "gdb_watch_"
+#define GLOBAL_NAME_PREFIX "GB__"
+#define LOCAL_NAME_PREFIX "LC__"
+#define WATCH_NAME_PREFIX "WT__"
 
 
 // arm32
@@ -97,6 +97,7 @@ const char *const REG_AMD64[] = {
 // TODO: threads
 struct Frame
 {
+    String func;
     String addr;        // current PC/IP
     size_t file_idx;    // in prog.files
     size_t line;        // next line to be executed
@@ -260,9 +261,10 @@ struct ProgramContext
     int input_cmd_idx = -1;
     int num_input_cmds;
 
-    Vector<VarObj> local_vars;     // watch for the current frame, -var-create name * expr
-    Vector<VarObj> global_vars;    // watch for entire program, -var-create name @ expr
-    Vector<VarObj> watch_vars;     // user defined watch for entire program
+    Vector<VarObj> other_frame_vars;// one-shot view for non-current frame values
+    Vector<VarObj> local_vars;      // watch for the current frame, -var-create name * expr
+    Vector<VarObj> global_vars;     // watch for entire program, -var-create name @ expr
+    Vector<VarObj> watch_vars;      // user defined watch for entire program
     bool running;
     bool started;
     Vector<Breakpoint> breakpoints;
