@@ -372,15 +372,9 @@ int GDB_Init(GLFWwindow *window)
         for (const RecordAtom &file : GDB_IterChild(tmp, *files))
         {
             String fullpath = GDB_ExtractValue("fullname", file, tmp);
-            //printf("file: %s\n", fullpath.c_str());
-
-            if ( FileContext::Create(fullpath.c_str(), file_ctx) )
-            {
-                prog.files.emplace_back(file_ctx);
-            }
+            FileContext::Create(fullpath.c_str(), file_ctx);
+            prog.files.emplace_back(file_ctx);
         }
-
-        //GDB_SendBlocking("-exec-run --start", "running");
 
 #endif
 
@@ -779,6 +773,7 @@ void GDB_Draw(GLFWwindow *window)
 
                     prog.frames.emplace_back(add);
                 }
+
                 prog.frame_idx = 0;
             }
         }
@@ -897,6 +892,7 @@ void GDB_Draw(GLFWwindow *window)
                                         ImGuiWindowFlags_NoResize |
                                         ImGuiWindowFlags_NoCollapse;
 
+        ImGui::SetNextWindowBgAlpha(1.0);   // @@@: Imgui bug where GetStyleColor doesn't respect window opacity
         ImGui::SetNextWindowPos( { 0, 0 } );
         ImGui::SetNextWindowSize({ SOURCE_WIDTH, WINDOW_HEIGHT });
         ImGui::Begin("Source", NULL, window_flags);      // Create a window called "Hello, world!" and append into it.
@@ -932,8 +928,8 @@ void GDB_Draw(GLFWwindow *window)
                 if ( gui.IsKeyClicked(GLFW_KEY_N) &&
                      !ImGui::GetIO().WantCaptureKeyboard)
                 {
-                    // tab = search forward
-                    // shift tab = search backward
+                    // N = search forward
+                    // Shift N = search backward
                     bool shift_down = ( 0 != (gui.Key(GLFW_KEY_N).mods & GLFW_MOD_SHIFT) );
                     dir = (shift_down) ? -1 : 1;
 
@@ -978,6 +974,8 @@ void GDB_Draw(GLFWwindow *window)
             Frame &frame = prog.frames[ prog.frame_idx ];
             FileContext &file = prog.files[ frame.file_idx ];
 
+            // display file lines, skip over designated blank zero index to sync
+            // up line indices with line numbers
             for (size_t i = 1; i < file.lines.size(); i++)
             {
                 bool is_set = false;
@@ -986,19 +984,28 @@ void GDB_Draw(GLFWwindow *window)
                         is_set = true;
 
                 // start radio button style
-                ImColor bg_color = ImGui::GetStyleColorVec4(ImGuiCol_WindowBg);
-                ImColor hov_color = {};
-                const float inc = 32 / 255.0f;
-                hov_color.Value.x = bg_color.Value.x + inc;
-                hov_color.Value.y = bg_color.Value.y + inc;
-                hov_color.Value.z = bg_color.Value.z + inc;
-                hov_color.Value.w = 1.0f;
+                ImColor window_bg_color = ImGui::GetStyleColorVec4(ImGuiCol_WindowBg);
+                ImColor bkpt_active_color = IM_COL32(255, 64, 64, 255);
+                ImColor bkpt_hovered_color = {};
 
-                ImColor on_color = IM_COL32(255, 64, 64, 255);
-                ImGui::PushStyleColor(ImGuiCol_FrameBg, bg_color.Value);
-                ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, hov_color.Value);
-                ImGui::PushStyleColor(ImGuiCol_FrameBgActive, on_color.Value);    // color while clicking
-                ImGui::PushStyleColor(ImGuiCol_CheckMark, on_color.Value);        // color while active
+                const float inc = 32 / 255.0f;
+                bkpt_hovered_color.Value.x = window_bg_color.Value.x + inc;
+                bkpt_hovered_color.Value.y = window_bg_color.Value.y + inc;
+                bkpt_hovered_color.Value.z = window_bg_color.Value.z + inc;
+                bkpt_hovered_color.Value.w = window_bg_color.Value.w;
+
+                ImGui::PushStyleColor(ImGuiCol_FrameBg, 
+                                      window_bg_color.Value);
+                ImGui::PushStyleColor(ImGuiCol_FrameBgHovered, 
+                                      bkpt_hovered_color.Value);
+
+                // color while pressing mouse left on button
+                ImGui::PushStyleColor(ImGuiCol_FrameBgActive, 
+                                      bkpt_active_color.Value);    
+                
+                // color while active
+                ImGui::PushStyleColor(ImGuiCol_CheckMark, 
+                                      bkpt_active_color.Value);        
 
                 char buf[64]; tsnprintf(buf, "##bkpt%d", (int)i); 
                 if (ImGui::RadioButton(buf, is_set))
@@ -1040,12 +1047,12 @@ void GDB_Draw(GLFWwindow *window)
                 // automatically scroll to the next executed line
                 // if the current highlighted line is not close to it
                 int linediff = abs((int)gui.source_highlighted_line - (int)frame.line);
-                bool highlight_line = false;
+                bool highlight_search_found = false;
                 if (gui.source_search_bar_open)
                 {
                     if (i == gui.source_found_line_idx)
                     {
-                        highlight_line = true;
+                        highlight_search_found = true;
                         ImGui::SetScrollHereY();
                     }
                 }
@@ -1056,11 +1063,23 @@ void GDB_Draw(GLFWwindow *window)
                 }
 
                 ImGui::SameLine();
-                if (highlight_line)
-                    ImGui::TextColored(ImVec4(1.0f, 1.0f, 0.0f, 1.0f), 
-                                       "%s", file.lines[i].c_str());
+                if (i == frame.line)
+                {
+                    ImGui::Selectable(file.lines[i].c_str(), true);
+                }
                 else
-                    ImGui::Selectable(file.lines[i].c_str(), i == frame.line);
+                {
+                    if (highlight_search_found)
+                    {
+                        ImColor IM_COL_YELLOW = IM_COL32(255, 255, 0, 255);
+                        ImGui::TextColored(IM_COL_YELLOW, "%s", 
+                                           file.lines[i].c_str());
+                    }
+                    else
+                    {
+                        ImGui::Text("%s", file.lines[i].c_str());
+                    }
+                }
             }
 
             // scroll with up/down arrow key
@@ -1089,6 +1108,7 @@ void GDB_Draw(GLFWwindow *window)
                                         ImGuiWindowFlags_NoResize |
                                         ImGuiWindowFlags_NoCollapse;
 
+        ImGui::SetNextWindowBgAlpha(1.0);   // @@@: Imgui bug where GetStyleColor doesn't respect window opacity
         ImGui::SetNextWindowPos( { SOURCE_WIDTH, 0 } );
         ImGui::SetNextWindowSize({ WINDOW_WIDTH - SOURCE_WIDTH, WINDOW_HEIGHT });
         ImGui::Begin("Control", NULL, window_flags);
@@ -1187,7 +1207,7 @@ void GDB_Draw(GLFWwindow *window)
             "[]  = stop program\n"
             "--> = step into\n"
             "/\\> = step over\n"
-            R"(</\\= step out)";
+            R"(</\= step out)";
         DrawHelpMarker(button_desc);
 
         for (int i = 0; i < NUM_LOG_ROWS; i++)
@@ -1305,7 +1325,34 @@ void GDB_Draw(GLFWwindow *window)
         }
 
 
-#if 1
+        if (ImGui::BeginTable("Callstack", 1, flags & ~ImGuiTableFlags_BordersInnerH))
+        {
+            //ImGui::TableSetupColumn("Function");
+            //ImGui::TableSetupColumn("Value");
+            //ImGui::TableHeadersRow();
+
+            for (size_t i = 0; i < prog.frames.size(); i++)
+            {
+                const Frame &iter = prog.frames[i];
+                ImGui::TableNextRow();
+
+                String file = (iter.file_idx < prog.files.size())
+                                ? prog.files[ iter.file_idx ].fullpath
+                                : "???";
+
+                ImGui::TableSetColumnIndex(0);
+                char line[128];
+                tsnprintf(line, "%llu : %s##%llu", iter.line, file.c_str(), i);
+                if ( ImGui::Selectable(line, i == prog.frame_idx) )
+                {
+                    prog.frame_idx = i;
+                }
+            }
+
+            ImGui::EndTable();
+        }
+
+#if 0
         struct RegisterName
         {
             String text;
@@ -1467,7 +1514,7 @@ void GDB_Draw(GLFWwindow *window)
 
 
 //
-// from glfw_example_opengl2
+// yoinked from glfw_example_opengl2
 //
 #include "imgui.h"
 #include "imgui_impl_glfw.h"
@@ -1612,7 +1659,16 @@ int main(int, char**)
                 ImGui::GetForegroundDrawList()->AddText({ 0, 0 }, 0xFF000000, curpos);
             }
 
+            //
+            // global styles
+            //
+
+            ImColor IM_COL_BACKGROUND = IM_COL32(22,22,22,255);
+            ImGui::PushStyleColor(ImGuiCol_WindowBg, IM_COL_BACKGROUND.Value);
+
             GDB_Draw(window);
+
+            ImGui::PopStyleColor();
         }
         
         // Rendering

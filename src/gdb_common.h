@@ -124,18 +124,18 @@ struct FileContext
     static bool Create(const char *fullpath, FileContext &result)
     {
         result = {};
+        result.fullpath = fullpath;
+        result.lines.push_back("");    // lines[0] empty for syncing index with line number
         bool found = false;
 
         if (0 == access( fullpath, F_OK ))
         {
             found = true;
-            result.fullpath = fullpath;
             std::ifstream file(fullpath, std::ios::in | std::ios::binary);
 
             String tmp;
             int line = 1;
             char linebuf[10];
-            result.lines.push_back("");    // lines[0] empty for syncing index with line number
 
             while (std::getline(file, tmp))
             {
