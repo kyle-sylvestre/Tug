@@ -1130,18 +1130,26 @@ void GDB_Draw(GLFWwindow *window)
                                     relpos.x <= textstart.x + worddim.x)
                                 {
                                     // mouse over a word, query it 
+                                    // TODO: register hover needs '$' in front of name for asm debugging
                                     static size_t hover_line;
                                     static size_t hover_word;
+                                    static size_t hover_num_frames;
+                                    static size_t hover_frame_idx;
                                     static String hover_value;
 
-                                    if (hover_word != word_idx || hover_line != i)
+                                    if (hover_word != word_idx || hover_line != i || 
+                                        hover_num_frames != prog.frames.size() || 
+                                        hover_frame_idx != prog.frame_idx)
                                     {
                                         hover_word = word_idx;
                                         hover_line = i;
+                                        hover_num_frames = prog.frames.size();
+                                        hover_frame_idx = prog.frame_idx;
                                         String word(line.data() + word_idx, char_idx - word_idx);
 
                                         char cmd[256];
-                                        size_t len = tsnprintf(cmd, "-data-evaluate-expression %s", word.c_str());
+                                        size_t len = tsnprintf(cmd, "-data-evaluate-expression --frame %llu --thread 1 %s", 
+                                                               prog.frame_idx, word.c_str());
                                         GDB_LogLine(cmd, len);
                                         GDB_SendBlocking(cmd, rec);
                                         hover_value = GDB_ExtractValue("value", rec);
