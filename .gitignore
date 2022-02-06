@@ -2,3 +2,5 @@
 *.o
 *.ini
 debug.*
+*.ini
+*.elf

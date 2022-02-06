@@ -92,9 +92,9 @@ RecordAtom GDB_RecurseRecord(ParseRecordContext &ctx)
         fprintf(stderr, "   after error: %.*s\n", int(ctx.bufsize - (ctx.i + 1)), ctx.buf + ctx.i + 1);
         
         // force to end then bail out of here
+        Assert(false);
         ctx.error = true;
         ctx.i = ctx.bufsize;
-        Assert(false);
     };
 
     RecordAtom result = {};

@@ -34,7 +34,6 @@ struct GuiContext
     char source_search_keyword[256];
     size_t source_found_line_idx;
 
-    // TODO: multiple modifiers
     bool IsKeyClicked(int glfw_key, int glfw_mods = 0)
     {
         GlfwKey &this_key = Key(glfw_key);
@@ -62,7 +61,7 @@ ProgramContext prog;
 GDB gdb;
 GuiContext gui;
 
-void GDB_LogLine(char *raw, size_t rawsize);
+void GDB_LogLine(const char *raw, size_t rawsize);
 
 inline void dbg() {};
 
@@ -82,19 +81,21 @@ void *RedirectStdin(void *ctx)
 void *ReadInterpreterBlocks(void *ctx)
 {
     // read data from GDB pipe
-    char tmp[32 * 1024] = {};
+    char tmp[1024 * 1024 + 1] = {};
     size_t insert_idx = 0;
-    gdb.blocks.resize(32 * 1024);
+    gdb.blocks.resize(16 * 1024);
 
     while (!gdb.end_program)
     {
         ssize_t num_read = read(gdb.fd_in_read, tmp + insert_idx,
-                                sizeof(tmp) - insert_idx);
+                                sizeof(tmp) - insert_idx - 1 /*NT*/);
         if (num_read < 0)
         {
             LogStrError("gdb read block");
             break;
         }
+
+        dbg();
 
         tmp[insert_idx + num_read] = '\0';
         printf("%.*s\n\n", int(num_read), tmp + insert_idx);
@@ -112,7 +113,7 @@ void *ReadInterpreterBlocks(void *ctx)
 
                 // set to the last inserted to get bufsize
                 Span span;
-                if (gdb.num_blocks <= 0) span = {};
+                if (gdb.num_blocks == 0) span = {};
                 else span = gdb.block_spans[gdb.num_blocks - 1];
 
                 span.index += span.length; 
@@ -128,8 +129,10 @@ void *ReadInterpreterBlocks(void *ctx)
                 // advance record blocks, skip over trailing whitespace
                 const char *next = sig + RECORD_ENDSIG_SIZE;
                 while ( size_t(next - tmp) < insert_idx && 
-                       (*next == ' ' || *next == '\n') )
+                        (*next == ' ' || *next == '\n') )
+                {
                     next++;
+                }
 
                 size_t fullsize = next - tmp;
                 memset(tmp, 0, fullsize);
@@ -363,18 +366,25 @@ int GDB_Init(GLFWwindow *window)
         // clear the first (gdb) semaphore
 
 #if 1
+        // debug GAS
+        GDB_SendBlocking("-environment-cd /mnt/c/Users/Kyle/Documents/commercial-codebases/original/binutils/binutils-gdb/gas");
+        GDB_SendBlocking("-file-exec-and-symbols as-new");
+
         //GDB_SendBlocking("-environment-cd \"/mnt/c/Users/Kyle/Downloads/Chrome Downloads/ARM/AARCH32\"");
         //GDB_SendBlocking("-file-exec-and-symbols advent.out");
-        GDB_SendBlocking("-file-exec-and-symbols debug.elf");
-        GDB_SendBlocking("-file-list-exec-source-files", tmp, "files");
 
-        const RecordAtom *files = GDB_ExtractAtom("files", tmp);
-        for (const RecordAtom &file : GDB_IterChild(tmp, *files))
-        {
-            String fullpath = GDB_ExtractValue("fullname", file, tmp);
-            FileContext::Create(fullpath.c_str(), file_ctx);
-            prog.files.emplace_back(file_ctx);
-        }
+        //GDB_SendBlocking("-file-exec-and-symbols debug.elf");
+
+
+        // preload all the referenced files
+        //GDB_SendBlocking("-file-list-exec-source-files", tmp, "files");
+        //const RecordAtom *files = GDB_ExtractAtom("files", tmp);
+        //for (const RecordAtom &file : GDB_IterChild(tmp, *files))
+        //{
+        //    String fullpath = GDB_ExtractValue("fullname", file, tmp);
+        //    FileContext::Create(fullpath.c_str(), file_ctx);
+        //    prog.files.emplace_back(file_ctx);
+        //}
 
 #endif
 
@@ -479,11 +489,12 @@ static void DrawHelpMarker(const char *desc)
     }
 }
 
-void GDB_LogLine(char *raw, size_t rawsize)
+void GDB_LogLine(const char *raw, size_t rawsize)
 {
     // debug
     //printf("%.*s\n", int(rawsize), raw);
 
+#if 0   // disable line formatting
     for (size_t i = 0; i < rawsize; i++)
     {
         char c = raw[i];
@@ -502,6 +513,7 @@ void GDB_LogLine(char *raw, size_t rawsize)
             rawsize--;
         }
     }
+#endif
 
     // shift lines up, add to collection
     prog.log[NUM_LOG_ROWS - 1][NUM_LOG_COLS] = '\n'; // clear prev null terminator
@@ -518,8 +530,13 @@ ssize_t GDB_Send(const char *cmd)
 {
     if (*cmd == '\0') return 0; // special case: don't send but dec semaphore
 
+
     // write to GDB
     size_t cmdsize = strlen(cmd);
+
+    // DEBUG: log all outgoing traffic
+    GDB_LogLine(cmd, cmdsize);
+
     ssize_t written = write(gdb.fd_out_write, cmd, cmdsize);
     if (written != (ssize_t)cmdsize)
     {
@@ -639,6 +656,32 @@ void GDB_SendBlocking(const char *cmd, Record &rec, const char *end_pattern)
     rec = prog.read_recs[rc_or_index].rec;
     prog.read_recs[rc_or_index].parsed = true;
 }
+
+size_t GDB_CreateOrGetFile(const String &fullpath)
+{
+    size_t result = BAD_INDEX;
+
+    // search for the stored file context
+    for (size_t i = 0; i < prog.files.size(); i++)
+    {
+        if (prog.files[i].fullpath == fullpath)
+        {
+            result = i;
+            break;
+        }
+    }
+
+    // file context not found, create it 
+    if (result == BAD_INDEX)
+    {
+        result = prog.files.size();
+        prog.files.resize( prog.files.size() + 1);
+        FileContext::Create(fullpath.c_str(), 
+                            prog.files[ result ]);
+    }
+
+    return result;
+}
  
 void GDB_Draw(GLFWwindow *window)
 {
@@ -681,9 +724,11 @@ void GDB_Draw(GLFWwindow *window)
                 if (prefix_word == "breakpoint-created")
                 {
                     Breakpoint res = {};
-                    res.file = GDB_ExtractValue("bkpt.fullname", rec);
                     res.number = GDB_ExtractInt("bkpt.number", rec);
                     res.line = GDB_ExtractInt("bkpt.line", rec);
+
+                    String fullpath = GDB_ExtractValue("bkpt.fullname", rec);
+                    res.file_idx = GDB_CreateOrGetFile(fullpath);
 
                     prog.breakpoints.push_back(res);
                 }
@@ -746,17 +791,9 @@ void GDB_Draw(GLFWwindow *window)
                     add.line = (size_t)GDB_ExtractInt("line", level, rec);
                     add.addr = GDB_ExtractValue("addr", level, rec);
                     add.func = GDB_ExtractValue("func", level, rec);
-                    add.file_idx = ~0;
 
-                    String fullname = GDB_ExtractValue("fullname", level, rec);
-                    for (size_t i = 0; i < prog.files.size(); i++)
-                    {
-                        if (prog.files[i].fullpath == fullname)
-                        {
-                            add.file_idx = i;
-                            break;
-                        }
-                    }
+                    String fullpath = GDB_ExtractValue("fullname", level, rec);
+                    add.file_idx = GDB_CreateOrGetFile(fullpath);
 
                     prog.frames.emplace_back(add);
                 }
@@ -988,7 +1025,7 @@ void GDB_Draw(GLFWwindow *window)
 
                 bool is_set = false;
                 for (Breakpoint &iter : prog.breakpoints)
-                    if (iter.line == i)
+                    if (iter.line == i && iter.file_idx == frame.file_idx)
                         is_set = true;
 
                 // start radio button style
@@ -1015,7 +1052,8 @@ void GDB_Draw(GLFWwindow *window)
                 ImGui::PushStyleColor(ImGuiCol_CheckMark, 
                                       bkpt_active_color.Value);        
 
-                char buf[64]; tsnprintf(buf, "##bkpt%d", (int)i); 
+                char buf[512]; 
+                tsnprintf(buf, "##bkpt%d", (int)i); 
                 if (ImGui::RadioButton(buf, is_set))
                 {
                     // dispatch command to set breakpoint
@@ -1023,13 +1061,15 @@ void GDB_Draw(GLFWwindow *window)
                     {
                         for (size_t b = 0; b < prog.breakpoints.size(); b++)
                         {
-                            if (prog.breakpoints[b].line == i)
+                            Breakpoint &iter = prog.breakpoints[b];
+                            if (iter.line == i && iter.file_idx == frame.file_idx)
                             {
                                 // remove breakpoint
-                                tsnprintf(buf, "-break-delete %d", (int)prog.breakpoints[b].number);
+                                tsnprintf(buf, "-break-delete %d", iter.number);
+
                                 GDB_SendBlocking(buf);
                                 prog.breakpoints.erase(prog.breakpoints.begin() + b,
-                                                      prog.breakpoints.begin() + b + 1);
+                                                       prog.breakpoints.begin() + b + 1);
                                 break;
                             }
                         }
@@ -1037,13 +1077,16 @@ void GDB_Draw(GLFWwindow *window)
                     else
                     {
                         // insert breakpoint
-                        tsnprintf(buf, "-break-insert %d", (int)i);
+                        tsnprintf(buf, "-break-insert --source \"%s\" --line %d", 
+                                  file.fullpath.c_str(), (int)i);
                         GDB_SendBlocking(buf, rec);
 
                         Breakpoint res = {};
-                        res.file = GDB_ExtractValue("bkpt.fullname", rec);
                         res.number = GDB_ExtractInt("bkpt.number", rec);
                         res.line = GDB_ExtractInt("bkpt.line", rec);
+
+                        String fullpath = GDB_ExtractValue("bkpt.fullname", rec);
+                        res.file_idx = GDB_CreateOrGetFile(fullpath);
 
                         prog.breakpoints.push_back(res);
                     }
@@ -1089,17 +1132,14 @@ void GDB_Draw(GLFWwindow *window)
                     }
                 }
 
-                // query word value after hovering over it long enough
                 if (ImGui::IsItemHovered())
                 {
+                    // convert absolute mouse to window relative position
                     ImVec2 relpos = {};
                     relpos.x = ImGui::GetMousePos().x - ImGui::GetWindowPos().x;
                     relpos.y = ImGui::GetMousePos().y - ImGui::GetWindowPos().y;
 
                     // enumerate words of the line
-                    // if mouse pos is over the word, query the value of it
-                    dbg();
-                    const size_t BAD_INDEX = ~0;
                     size_t word_idx = BAD_INDEX;
                     size_t delim_idx = BAD_INDEX;
                     for (size_t char_idx = 0; char_idx < line.size(); char_idx++)
@@ -1110,12 +1150,14 @@ void GDB_Draw(GLFWwindow *window)
                                         (word_idx != BAD_INDEX && (c >= '0' && c <= '9')) ||
                                         (c == '_');
 
-                        if (char_idx == line.size() - 1 && word_idx != BAD_INDEX)
+                        if (char_idx == line.size() - 1 && is_ident)
                         {
                             // force a word on the last index
-                            // offset char_idx to get right text span
-                            is_ident = false;
+                            if (word_idx == BAD_INDEX)
+                                word_idx = char_idx;
+
                             char_idx++;
+                            is_ident = false;
                         }
 
                         if (!is_ident)
@@ -1129,7 +1171,7 @@ void GDB_Draw(GLFWwindow *window)
                                 if (relpos.x >= textstart.x && 
                                     relpos.x <= textstart.x + worddim.x)
                                 {
-                                    // mouse over a word, query it 
+                                    // query a word if we moved words / callstack frames
                                     // TODO: register hover needs '$' in front of name for asm debugging
                                     static size_t hover_line;
                                     static size_t hover_word;
@@ -1174,9 +1216,10 @@ void GDB_Draw(GLFWwindow *window)
                         {
                             if (delim_idx != BAD_INDEX)
                             {
-                                ImVec2 delimdim = ImGui::CalcTextSize(line.data() + delim_idx, 
-                                                                      line.data() + char_idx);
-                                textstart.x += delimdim.x;
+                                // advance non-ident text width
+                                ImVec2 dim = ImGui::CalcTextSize(line.data() + delim_idx, 
+                                                                 line.data() + char_idx);
+                                textstart.x += dim.x;
                             }
                             word_idx = char_idx;
                             delim_idx = BAD_INDEX;

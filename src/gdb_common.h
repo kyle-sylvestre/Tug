@@ -105,9 +105,9 @@ struct Frame
 
 struct Breakpoint
 {
-    size_t number;
-    size_t line;
-    String file;
+    size_t number;      // ordinal assigned by GDB
+    size_t line;        // file line number
+    size_t file_idx;    // index in prog.files
 };
 
 struct VarObj
@@ -227,6 +227,8 @@ struct RecordHolder
 
 #define MAX_STORED_BLOCKS 64
 
+const size_t BAD_INDEX = ~0;
+
 
 struct GDB
 {
@@ -248,6 +250,7 @@ struct GDB
     int fd_out_write;
 
     // raw data, guarded by modify_storage_lock
+    // a block is one or more Records
     Vector<char> blocks;
     Span block_spans[MAX_STORED_BLOCKS];      // block ending in (gdb) endsig
     size_t num_blocks;
