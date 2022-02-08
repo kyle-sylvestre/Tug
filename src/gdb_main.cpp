@@ -98,7 +98,7 @@ void *ReadInterpreterBlocks(void *ctx)
         dbg();
 
         tmp[insert_idx + num_read] = '\0';
-        //printf("%.*s\n\n", int(num_read), tmp + insert_idx);
+        printf("%.*s\n\n", int(num_read), tmp + insert_idx);
         insert_idx += num_read;
 
         const char *sig = strstr(tmp, RECORD_ENDSIG);
@@ -1414,6 +1414,8 @@ void GDB_Draw(GLFWwindow *window)
                              ImGuiInputTextFlags_CallbackHistory, 
                              HistoryCallback, NULL))
         {
+            kill(gdb.spawned_pid, SIGINT);
+
             // retain focus on the input line
             ImGui::SetKeyboardFocusHere(-1);
 
@@ -1482,7 +1484,7 @@ void GDB_Draw(GLFWwindow *window)
 
 
         int csflags = flags & ~ImGuiTableFlags_BordersInnerH;
-        if (0 && ImGui::BeginTable("Callstack", 1, csflags, {300, 200}) )
+        if (ImGui::BeginTable("Callstack", 1, csflags, {300, 200}) )
         {
             //ImGui::TableSetupColumn("Function");
             //ImGui::TableSetupColumn("Value");
@@ -1513,6 +1515,7 @@ void GDB_Draw(GLFWwindow *window)
                         tsnprintf(buf, "-stack-list-variables --frame %llu --thread 1 --all-values", i);
                         GDB_SendBlocking(buf, rec);
                         const RecordAtom *variables = GDB_ExtractAtom("variables", rec);
+
                         for (const RecordAtom &iter : GDB_IterChild(rec, *variables))
                         {
                             VarObj add = {}; 
@@ -1521,6 +1524,9 @@ void GDB_Draw(GLFWwindow *window)
                             add.changed = false;
                             prog.other_frame_vars.emplace_back(add);
                         }
+
+                        // set async stopped to re-evaluate watch variables for the selected frame
+                        async_stopped = true;
                     }
                 }
             }
@@ -1629,7 +1635,7 @@ void GDB_Draw(GLFWwindow *window)
         }
 
         bool added_watch = false;
-        if (ImGui::BeginTable("Watch", 2, flags))
+        if (ImGui::BeginTable("Watch", 2, flags, {300, 200}))
         {
             ImGui::TableSetupColumn("Name");
             ImGui::TableSetupColumn("Value");
@@ -1683,7 +1689,9 @@ void GDB_Draw(GLFWwindow *window)
             // declaration below the program counter
             for (VarObj &iter : prog.watch_vars)
             {
-                char buf[256]; tsnprintf(buf, "-data-evaluate-expression \"%s\"", iter.name.c_str());
+                char buf[256];
+                tsnprintf(buf, "-data-evaluate-expression --frame %llu --thread 1 \"%s\"", 
+                          prog.frame_idx, iter.name.c_str());
                 GDB_SendBlocking(buf, rec);
                 String s = GDB_ExtractValue("value", rec);
                 if (s == "") s = "???";
