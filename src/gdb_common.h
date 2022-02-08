@@ -225,7 +225,7 @@ struct RecordHolder
 #define PREFIX_TARGET_LOG '@'
 #define PREFIX_CONSOLE_LOG '~'
 
-#define MAX_STORED_BLOCKS 64
+#define MAX_STORED_BLOCKS 128
 
 const size_t BAD_INDEX = ~0;
 
@@ -248,6 +248,9 @@ struct GDB
     // commands sent to GDB
     int fd_out_read;
     int fd_out_write;
+
+    // @@@: WSL2 isn't closing PTY so they are a bunch left open
+    // int fd_pty_master;
 
     // raw data, guarded by modify_storage_lock
     // a block is one or more Records
@@ -345,6 +348,6 @@ ssize_t GDB_Send(const char *cmd);
 int GDB_SendBlocking(const char *cmd, const char *header = "^done", bool remove_after = true);
 
 // send a message to GDB, wait for a result record, then retrieve it
-void GDB_SendBlocking(const char *cmd, Record &rec, const char *header = "^done");
+int GDB_SendBlocking(const char *cmd, Record &rec, const char *header = "^done");
 
 bool GDB_ParseRecord(char *buf, size_t bufsize, ParseRecordContext &ctx);

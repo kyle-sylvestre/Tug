@@ -29,7 +29,7 @@ struct GuiContext
 {
     GlfwKeyboardState this_keystate;
     GlfwKeyboardState last_keystate;
-    size_t source_highlighted_line = ~0;
+    size_t source_highlighted_line = BAD_INDEX;
     bool source_search_bar_open = false;
     char source_search_keyword[256];
     size_t source_found_line_idx;
@@ -98,7 +98,7 @@ void *ReadInterpreterBlocks(void *ctx)
         dbg();
 
         tmp[insert_idx + num_read] = '\0';
-        printf("%.*s\n\n", int(num_read), tmp + insert_idx);
+        //printf("%.*s\n\n", int(num_read), tmp + insert_idx);
         insert_idx += num_read;
 
         const char *sig = strstr(tmp, RECORD_ENDSIG);
@@ -159,10 +159,9 @@ void *ReadInterpreterBlocks(void *ctx)
 int GDB_Shutdown()
 {
     gdb.end_program = true;
-    GDB_Send("gobbledygook");   // active the read() to re-evaluate gdb.endprogram
+    pthread_kill(gdb.thread_read_interp, SIGINT);
     pthread_join(gdb.thread_read_interp, NULL);
     kill(gdb.spawned_pid, SIGINT);
-    //kill(gdb.spawned_pid, SIGTERM);
 
     pthread_mutex_destroy(&gdb.modify_block);
     sem_close(gdb.recv_block);
@@ -287,6 +286,30 @@ int GDB_Init(GLFWwindow *window)
             break;
         }
 
+        //if (0 > (gdb.fd_pty_master = posix_openpt(O_RDWR | O_NOCTTY | O_NONBLOCK)))
+        //{
+        //    LogStrError("posix_openpt");
+        //    break;
+        //}
+
+        //if (0 > (rc = grantpt(gdb.fd_pty_master)) )
+        //{
+        //    LogStrError("grantpt");
+        //    break;
+        //}
+        //if (0 > (rc = unlockpt(gdb.fd_pty_master)) )
+        //{
+        //    LogStrError("grantpt");
+        //    break;
+        //}
+        //printf("pty slave: %s\n", ptsname(gdb.fd_pty_master));
+
+
+
+
+
+
+
         //rc = chdir("/mnt/c/Users/Kyle/Downloads/Chrome Downloads/ARM/AARCH32");
         //if (rc < 0)
         //{
@@ -367,13 +390,13 @@ int GDB_Init(GLFWwindow *window)
 
 #if 1
         // debug GAS
-        GDB_SendBlocking("-environment-cd /mnt/c/Users/Kyle/Documents/commercial-codebases/original/binutils/binutils-gdb/gas");
-        GDB_SendBlocking("-file-exec-and-symbols as-new");
+        //GDB_SendBlocking("-environment-cd /mnt/c/Users/Kyle/Documents/commercial-codebases/original/binutils/binutils-gdb/gas");
+        //GDB_SendBlocking("-file-exec-and-symbols as-new");
 
         //GDB_SendBlocking("-environment-cd \"/mnt/c/Users/Kyle/Downloads/Chrome Downloads/ARM/AARCH32\"");
         //GDB_SendBlocking("-file-exec-and-symbols advent.out");
 
-        //GDB_SendBlocking("-file-exec-and-symbols debug.elf");
+        GDB_SendBlocking("-file-exec-and-symbols debug.elf");
 
 
         // preload all the referenced files
@@ -389,16 +412,21 @@ int GDB_Init(GLFWwindow *window)
 #endif
 
         // setup global var objects that will last the duration of the program
+        break; // @@@ no reg
+        String reg_cmd;
         for (const char *reg : REG_AMD64)
         {
             char name[256];
             char cmd[512];
             tsnprintf(name, GLOBAL_NAME_PREFIX "%s", reg);
-            tsnprintf(cmd, "-var-create %s @ $%s", name, reg);
+            tsnprintf(cmd, "-var-create %s @ $%s\n", name, reg);
+            reg_cmd += cmd;
 
-            GDB_SendBlocking(cmd);
             prog.global_vars.push_back( { reg, "", false} );
         }
+
+        reg_cmd.pop_back(); // last \n
+        GDB_Send(reg_cmd.c_str());
 
     } while(0);
 
@@ -426,43 +454,8 @@ int GDB_Init(GLFWwindow *window)
     return rc;
 }
 
-int pthread_main(int argc, char **argv)
+int _main(int argc, char **argv)
 {
-    const auto ThreadFn = [](void *ctx) -> void *
-    {
-        //sleep(5);
-        printf("signal cond...\n");
-        pthread_cond_signal((pthread_cond_t *)ctx);
-        return NULL;
-    };
-    int rc;
-
-    pthread_mutex_t record_consumer_lock;
-    pthread_cond_t record_consumer_cond;
-    rc = pthread_cond_init(&record_consumer_cond, NULL);
-    Assert(rc == 0);
-
-    rc = pthread_mutex_init(&record_consumer_lock, NULL);
-    Assert(rc == 0);
-
-    pthread_t x;
-
-    rc = pthread_create(&x, NULL, ThreadFn, &record_consumer_cond);
-    Assert(rc == 0);
-
-    printf("waiting for cond...\n");
-    //pthread_cond_wait(&cond, &cond_lock);
-
-    timespec wait_for;
-    clock_gettime(CLOCK_REALTIME, &wait_for);
-    wait_for.tv_sec += 1;
-    rc = pthread_cond_timedwait(&record_consumer_cond, &record_consumer_lock, &wait_for);
-    Assert(rc == 0);
-
-    printf("got signal, continuing...\n");
-
-    pthread_join(x, NULL);
-
     return 0;
 }
 
@@ -584,7 +577,7 @@ int GDB_SendBlocking(const char *cmd, const char *header, bool remove_after)
         {
             timespec wait_for;
             clock_gettime(CLOCK_REALTIME, &wait_for);
-            wait_for.tv_sec += 3;
+            wait_for.tv_sec += 1;
 
             rc = sem_timedwait(gdb.recv_block, &wait_for);
             if (rc < 0)
@@ -643,18 +636,21 @@ int GDB_SendBlocking(const char *cmd, const char *header, bool remove_after)
     return rc;
 }
 
-void GDB_SendBlocking(const char *cmd, Record &rec, const char *end_pattern)
+int GDB_SendBlocking(const char *cmd, Record &rec, const char *end_pattern)
 {
     // errno or result record index
     int rc_or_index = GDB_SendBlocking(cmd, end_pattern, false);
     if (rc_or_index < 0)
     {
         rec = {};
-        return;
+    }
+    else
+    {
+        rec = prog.read_recs[rc_or_index].rec;
+        prog.read_recs[rc_or_index].parsed = true;
     }
 
-    rec = prog.read_recs[rc_or_index].rec;
-    prog.read_recs[rc_or_index].parsed = true;
+    return rc_or_index;
 }
 
 size_t GDB_CreateOrGetFile(const String &fullpath)
@@ -872,7 +868,6 @@ void GDB_Draw(GLFWwindow *window)
             // newly created local variables will be display changed
             if (!remake_varobjs) for (auto &iter : prog.local_vars) iter.changed = false;
             for (auto &iter : prog.global_vars) iter.changed = false;
-            for (auto &iter : prog.watch_vars) iter.changed = false;
 
             for (const RecordAtom &iter : GDB_IterChild(rec, *changelist))
             {
@@ -910,22 +905,9 @@ void GDB_Draw(GLFWwindow *window)
                         }
                     }
                 }
-                else if ( (namestart = strstr(srcname, WATCH_NAME_PREFIX)) )
-                {
-                    // user defined watch variables
-                    namestart += strlen(WATCH_NAME_PREFIX);
-                    for (VarObj &iter : prog.watch_vars)
-                    {
-                        if (iter.name == namestart)
-                        {
-                            iter.changed = (iter.value != value);
-                            iter.value = value;
-                            break;
-                        }
-                    }
-                }
             }
         }
+
     }
 
 
@@ -1190,7 +1172,7 @@ void GDB_Draw(GLFWwindow *window)
                                         String word(line.data() + word_idx, char_idx - word_idx);
 
                                         char cmd[256];
-                                        size_t len = tsnprintf(cmd, "-data-evaluate-expression --frame %llu --thread 1 %s", 
+                                        size_t len = tsnprintf(cmd, "-data-evaluate-expression --frame %llu --thread 1 \"%s\"", 
                                                                prog.frame_idx, word.c_str());
                                         GDB_LogLine(cmd, len);
                                         GDB_SendBlocking(cmd, rec);
@@ -1282,6 +1264,33 @@ void GDB_Draw(GLFWwindow *window)
             // TODO: remote doesn't support exec run
             if (!prog.started)
             {
+
+                static bool b = true;
+                if (b) 
+                { 
+                    b = false;
+                    const auto Boob = [](void *)->void*
+                    {
+                        int rfd = open("/tmp/foobar.fifo", O_RDONLY/* | O_NONBLOCK */);
+                        if (rfd < 0)
+                        {
+                            perror("open fifo");
+                            return NULL;
+                        }
+
+                        for (;;)
+                        {
+                            char buf[1024]; 
+                            ssize_t num_read = read(rfd, buf, sizeof(buf)); 
+                            if (num_read < 0) break;
+                            printf("%.*s", (int)num_read, buf);
+                        }
+                        return NULL;
+                    };
+
+                    pthread_t ass;
+                    pthread_create(&ass, NULL, Boob, (void*) NULL);
+                }
                 GDB_SendBlocking("-exec-run --start", "stopped", false);
                 prog.started = true;
             }
@@ -1441,7 +1450,7 @@ void GDB_Draw(GLFWwindow *window)
         ImGui::Text("Application average %.3f ms/frame (%.1f FPS)",
                     1000.0f / ImGui::GetIO().Framerate, ImGui::GetIO().Framerate);
 
-        ImGuiTableFlags flags = ImGuiTableFlags_ScrollX |
+        ImGuiTableFlags flags = //ImGuiTableFlags_ScrollX | // @@@: last column is resizable but it makes the table look like it has an extra column
                                 ImGuiTableFlags_ScrollY |
                                 ImGuiTableFlags_Borders |
                                 ImGuiTableFlags_Resizable;
@@ -1458,10 +1467,10 @@ void GDB_Draw(GLFWwindow *window)
                 const VarObj &iter = frame_vars[i];
                 ImGui::TableNextRow();
 
-                ImGui::TableSetColumnIndex(0);
+                ImGui::TableNextColumn();
                 ImGui::Text("%s", iter.name.c_str());
 
-                ImGui::TableSetColumnIndex(1);
+                ImGui::TableNextColumn();
                 ImColor color = (iter.changed) 
                                 ? IM_COL32(255, 128, 128, 255)  // light red
                                 : IM_COL32_WHITE;
@@ -1472,7 +1481,8 @@ void GDB_Draw(GLFWwindow *window)
         }
 
 
-        if (ImGui::BeginTable("Callstack", 1, flags & ~ImGuiTableFlags_BordersInnerH, {300, 200}) )
+        int csflags = flags & ~ImGuiTableFlags_BordersInnerH;
+        if (0 && ImGui::BeginTable("Callstack", 1, csflags, {300, 200}) )
         {
             //ImGui::TableSetupColumn("Function");
             //ImGui::TableSetupColumn("Value");
@@ -1487,13 +1497,13 @@ void GDB_Draw(GLFWwindow *window)
                                 ? prog.files[ iter.file_idx ].fullpath
                                 : "???";
 
-                ImGui::TableSetColumnIndex(0);
+                ImGui::TableNextColumn();
                 char line[256];
                 tsnprintf(line, "%llu : %s##%llu", iter.line, file.c_str(), i);
                 if ( ImGui::Selectable(line, i == prog.frame_idx) )
                 {
-                    dbg();
                     prog.frame_idx = i;
+                    gui.source_highlighted_line = BAD_INDEX; // force a re-center;
                     if (prog.frame_idx != 0)
                     {
                         // do a one-shot query of a non-current frame
@@ -1518,7 +1528,6 @@ void GDB_Draw(GLFWwindow *window)
             ImGui::EndTable();
         }
 
-#if 0
         struct RegisterName
         {
             String text;
@@ -1527,7 +1536,7 @@ void GDB_Draw(GLFWwindow *window)
         static Vector<RegisterName> all_registers;
         static bool show_add_register_window = false;
 
-        if (ImGui::Button("Modify Registers##button"))
+        if (0 && ImGui::Button("Modify Registers##button"))
         {
             show_add_register_window = true;
             all_registers.clear();
@@ -1597,7 +1606,7 @@ void GDB_Draw(GLFWwindow *window)
             ImGui::End();
         }
 
-        if (ImGui::BeginTable("Registers", 2, flags))
+        if (0 && ImGui::BeginTable("Registers", 2, flags))
         {
             ImGui::TableSetupColumn("Register");
             ImGui::TableSetupColumn("Value");
@@ -1608,10 +1617,10 @@ void GDB_Draw(GLFWwindow *window)
                 const VarObj &iter = prog.global_vars[i];
                 ImGui::TableNextRow();
 
-                ImGui::TableSetColumnIndex(0);
+                ImGui::TableNextColumn();
                 ImGui::Text("%s", iter.name.c_str());
 
-                ImGui::TableSetColumnIndex(1);
+                ImGui::TableNextColumn();
                 ImGui::Text("%s", iter.value.c_str());
                 //ImGui::Text("%s %s", iter.name.c_str(), iter.value.c_str());
             }
@@ -1619,6 +1628,7 @@ void GDB_Draw(GLFWwindow *window)
             ImGui::EndTable();
         }
 
+        bool added_watch = false;
         if (ImGui::BeginTable("Watch", 2, flags))
         {
             ImGui::TableSetupColumn("Name");
@@ -1633,18 +1643,19 @@ void GDB_Draw(GLFWwindow *window)
                 const VarObj &iter = prog.watch_vars[i];
                 ImGui::TableNextRow();
 
-                ImGui::TableSetColumnIndex(0);
+                ImGui::TableNextColumn();
                 ImGui::Text("%s", iter.name.c_str());
 
-                ImGui::TableSetColumnIndex(1);
-                ImGui::Text("%s", iter.value.c_str());
-                //ImGui::Text("%s %s", iter.name.c_str(), iter.value.c_str());
+                ImGui::TableNextColumn();
+                ImColor color = (iter.changed) 
+                                ? IM_COL32(255, 128, 128, 255)  // light red
+                                : IM_COL32_WHITE;
+                ImGui::TextColored(color, "%s", iter.value.c_str());
             }
 
-            // display emtpy input as last value that gets added on 
             // pressing enter 
             ImGui::TableNextRow();
-            ImGui::TableSetColumnIndex(0);
+            ImGui::TableNextColumn();
             static char watch[64];
 
             if (ImGui::InputText("##create_new_watch", watch, 
@@ -1652,27 +1663,40 @@ void GDB_Draw(GLFWwindow *window)
                              ImGuiInputTextFlags_EnterReturnsTrue,
                              NULL, NULL))
             {
-                // attempt to create new variable object
-                char watch_msg[256];
-                tsnprintf(watch_msg, "-var-create " 
-                          WATCH_NAME_PREFIX "%s @ %s", watch, watch);
-                GDB_SendBlocking(watch_msg, rec);
-
-                String s = GDB_ExtractValue("value", rec);
-                if (s == "") s = "???";
-                prog.watch_vars.push_back( {watch, s} );
+                prog.watch_vars.push_back( {watch, "???"} );
+                added_watch = true;
             }
             ImGui::PopStyleColor();
 
-            ImGui::TableSetColumnIndex(1);
+            ImGui::TableNextColumn();
             ImGui::Text("%s", "");  // -Wformat
 
             ImGui::EndTable();
         }
-#endif
+
+
+        if (async_stopped || added_watch)
+        {
+            // update user defined watch variables
+            // these aren't created as VarObj's because -var-create 
+            // fails for any local object not yet initialized i.e. 
+            // declaration below the program counter
+            for (VarObj &iter : prog.watch_vars)
+            {
+                char buf[256]; tsnprintf(buf, "-data-evaluate-expression \"%s\"", iter.name.c_str());
+                GDB_SendBlocking(buf, rec);
+                String s = GDB_ExtractValue("value", rec);
+                if (s == "") s = "???";
+                iter.changed = (iter.value != s);
+                iter.value = s;
+            }
+        }
+
+        
         
         ImGui::End();
     }
+
 
     // set the last gui keyboard state
     gui.last_keystate = gui.this_keystate;
@@ -1710,7 +1734,7 @@ int main(int, char**)
 
     glfwMakeContextCurrent(window);
     glfwSwapInterval(1); // Enable vsync
-    if (0 != GDB_Init(window))
+    if (0 < GDB_Init(window))
         return 1;
 
     // Setup Dear ImGui context
@@ -1741,9 +1765,7 @@ int main(int, char**)
     //io.Fonts->AddFontFromFileTTF("../../misc/fonts/DroidSans.ttf", 16.0f);
     //io.Fonts->AddFontFromFileTTF("../../misc/fonts/ProggyTiny.ttf", 10.0f);
     //ImFont* font = io.Fonts->AddFontFromFileTTF("c:\\Windows\\Fonts\\ArialUni.ttf", 18.0f, NULL, io.Fonts->GetGlyphRangesJapanese());
-    //IM_ASSERT(font != NULL);
 
-    // Our state
     ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
 
 
