@@ -1,18 +1,17 @@
-#include <stdio.h>
-#include <unistd.h>
-#include <assert.h>
-#include <stdlib.h>
-#include <string.h>
-#include <stdint.h>
-#include <errno.h>
-#include <pthread.h>
-#include <spawn.h>
-#include <signal.h>
-#include <fcntl.h>
-#include <semaphore.h>
-
 #include "gdb_common.h"
+
+//
+// yoinked from glfw_example_opengl2
+//
 #include "imgui.h"
+#include "imgui_impl_glfw.h"
+#include "imgui_impl_opengl2.h"
+#include <stdio.h>
+#ifdef __APPLE__
+#define GL_SILENCE_DEPRECATION
+#endif
+#include <GLFW/glfw3.h>
+
 
 struct GlfwKey
 {
@@ -94,8 +93,6 @@ void *ReadInterpreterBlocks(void *ctx)
             LogStrError("gdb read block");
             break;
         }
-
-        dbg();
 
         tmp[insert_idx + num_read] = '\0';
         printf("%.*s\n\n", int(num_read), tmp + insert_idx);
@@ -412,7 +409,6 @@ int GDB_Init(GLFWwindow *window)
 #endif
 
         // setup global var objects that will last the duration of the program
-        break; // @@@ no reg
         String reg_cmd;
         for (const char *reg : REG_AMD64)
         {
@@ -927,7 +923,6 @@ void GDB_Draw(GLFWwindow *window)
             gui.source_search_bar_open = true;
             ImGui::SetKeyboardFocusHere(0); // auto click the input box
             gui.source_search_keyword[0] = '\0';
-            gui.source_found_line_idx = 0;
         }
         else if (gui.source_search_bar_open && gui.IsKeyClicked(GLFW_KEY_ESCAPE))
         {
@@ -936,6 +931,8 @@ void GDB_Draw(GLFWwindow *window)
 
 
 
+        // TODO: is there another way to make a fixed position widget
+        //       without making a child window
         if (gui.source_search_bar_open)
         {
             bool source_open = prog.frame_idx < prog.frames.size() &&
@@ -1047,7 +1044,7 @@ void GDB_Draw(GLFWwindow *window)
                             if (iter.line == i && iter.file_idx == frame.file_idx)
                             {
                                 // remove breakpoint
-                                tsnprintf(buf, "-break-delete %d", iter.number);
+                                tsnprintf(buf, "-break-delete %zu", iter.number);
 
                                 GDB_SendBlocking(buf);
                                 prog.breakpoints.erase(prog.breakpoints.begin() + b,
@@ -1078,16 +1075,21 @@ void GDB_Draw(GLFWwindow *window)
                 ImGui::PopStyleColor(4);
 
                 // automatically scroll to the next executed line
-                // if the current highlighted line is not close to it
-                int linediff = abs((int)gui.source_highlighted_line - (int)frame.line);
+                int linediff = abs((long long)gui.source_highlighted_line - (long long)frame.line);
                 bool highlight_search_found = false;
-                if (gui.source_search_bar_open)
+                if (i == gui.source_found_line_idx)
                 {
-                    if (i == gui.source_found_line_idx)
+                    if (gui.source_search_bar_open)
                     {
                         highlight_search_found = true;
-                        ImGui::SetScrollHereY();
                     }
+                    else
+                    {
+                        // we closed the window and no longer in child window,
+                        // retain the search index found
+                        gui.source_found_line_idx = 0;
+                    }
+                    ImGui::SetScrollHereY();
                 }
                 else if (linediff > 10 && i == frame.line)
                 {
@@ -1144,6 +1146,7 @@ void GDB_Draw(GLFWwindow *window)
 
                         if (!is_ident)
                         {
+                            bool not_delim_struct = true;
                             if (word_idx != BAD_INDEX)
                             {
                                 // we got a word delimited by spaces
@@ -1156,23 +1159,27 @@ void GDB_Draw(GLFWwindow *window)
                                     // query a word if we moved words / callstack frames
                                     // TODO: register hover needs '$' in front of name for asm debugging
                                     static size_t hover_line;
-                                    static size_t hover_word;
+                                    static size_t hover_word_idx;
+                                    static size_t hover_char_idx;
                                     static size_t hover_num_frames;
                                     static size_t hover_frame_idx;
                                     static String hover_value;
 
-                                    if (hover_word != word_idx || hover_line != i || 
+                                    if (hover_word_idx != word_idx || 
+                                        hover_char_idx != char_idx || 
+                                        hover_line != frame.line || 
                                         hover_num_frames != prog.frames.size() || 
                                         hover_frame_idx != prog.frame_idx)
                                     {
-                                        hover_word = word_idx;
-                                        hover_line = i;
+                                        hover_word_idx = word_idx;
+                                        hover_char_idx = char_idx;
+                                        hover_line = frame.line;
                                         hover_num_frames = prog.frames.size();
                                         hover_frame_idx = prog.frame_idx;
                                         String word(line.data() + word_idx, char_idx - word_idx);
 
                                         char cmd[256];
-                                        size_t len = tsnprintf(cmd, "-data-evaluate-expression --frame %llu --thread 1 \"%s\"", 
+                                        size_t len = tsnprintf(cmd, "-data-evaluate-expression --frame %zu --thread 1 \"%s\"", 
                                                                prog.frame_idx, word.c_str());
                                         GDB_LogLine(cmd, len);
                                         GDB_SendBlocking(cmd, rec);
@@ -1184,14 +1191,38 @@ void GDB_Draw(GLFWwindow *window)
                                         ImGui::Text("%s", hover_value.c_str());
                                         ImGui::EndTooltip();
                                     }
+
+                                    break;
                                 }
-                                textstart.x += worddim.x;
+
+                                char n = '\0';
+                                if (char_idx + 1 < line.size())
+                                    n = line[char_idx + 1];
+
+                                // C/C++: skip over struct syntax chars to evaluate their members
+                                if (c == '.')
+                                {
+                                    char_idx += 1;
+                                    not_delim_struct = false;
+                                }
+                                else if (c == '-' && n == '>')
+                                {
+                                    char_idx += 2;
+                                    not_delim_struct = false;
+                                }
+                                else
+                                {
+                                    textstart.x += worddim.x;
+                                }
                             }
 
-                            word_idx = BAD_INDEX;
-                            if (delim_idx == BAD_INDEX)
+                            if (not_delim_struct)
                             {
-                                delim_idx = char_idx;
+                                word_idx = BAD_INDEX;
+                                if (delim_idx == BAD_INDEX)
+                                {
+                                    delim_idx = char_idx;
+                                }
                             }
                         }
                         else if (word_idx == BAD_INDEX)
@@ -1222,8 +1253,8 @@ void GDB_Draw(GLFWwindow *window)
             {
                 ImGui::SetScrollY(scroll_y + line_height);
             }
+            
         }
-
 
         if (gui.source_search_bar_open)
             ImGui::EndChild();
@@ -1501,18 +1532,18 @@ void GDB_Draw(GLFWwindow *window)
 
                 ImGui::TableNextColumn();
                 char line[256];
-                tsnprintf(line, "%llu : %s##%llu", iter.line, file.c_str(), i);
+                tsnprintf(line, "%zu : %s##%zu", iter.line, file.c_str(), i);
                 if ( ImGui::Selectable(line, i == prog.frame_idx) )
                 {
                     prog.frame_idx = i;
-                    gui.source_highlighted_line = BAD_INDEX; // force a re-center;
+                    gui.source_highlighted_line = BAD_INDEX; // force a re-center
                     if (prog.frame_idx != 0)
                     {
                         // do a one-shot query of a non-current frame
                         // prog.frames is stored from bottom to top so need to do size - 1
                         prog.other_frame_vars.clear();
                         char buf[256];
-                        tsnprintf(buf, "-stack-list-variables --frame %llu --thread 1 --all-values", i);
+                        tsnprintf(buf, "-stack-list-variables --frame %zu --thread 1 --all-values", i);
                         GDB_SendBlocking(buf, rec);
                         const RecordAtom *variables = GDB_ExtractAtom("variables", rec);
 
@@ -1683,14 +1714,11 @@ void GDB_Draw(GLFWwindow *window)
 
         if (async_stopped || added_watch)
         {
-            // update user defined watch variables
-            // these aren't created as VarObj's because -var-create 
-            // fails for any local object not yet initialized i.e. 
-            // declaration below the program counter
+            // evaluate user defined watch variables
             for (VarObj &iter : prog.watch_vars)
             {
                 char buf[256];
-                tsnprintf(buf, "-data-evaluate-expression --frame %llu --thread 1 \"%s\"", 
+                tsnprintf(buf, "-data-evaluate-expression --frame %zu --thread 1 \"%s\"", 
                           prog.frame_idx, iter.name.c_str());
                 GDB_SendBlocking(buf, rec);
                 String s = GDB_ExtractValue("value", rec);
@@ -1709,19 +1737,6 @@ void GDB_Draw(GLFWwindow *window)
     // set the last gui keyboard state
     gui.last_keystate = gui.this_keystate;
 }
-
-
-//
-// yoinked from glfw_example_opengl2
-//
-#include "imgui.h"
-#include "imgui_impl_glfw.h"
-#include "imgui_impl_opengl2.h"
-#include <stdio.h>
-#ifdef __APPLE__
-#define GL_SILENCE_DEPRECATION
-#endif
-#include <GLFW/glfw3.h>
 
 static void glfw_error_callback(int error, const char* description)
 {

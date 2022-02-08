@@ -350,7 +350,7 @@ void GDB_ReadELF(const char *elf_filename)
         {
             tsnprintf(buf, "label: %s, errno: %s",
                      label, strerror(errno));
-            throw(buf);
+            throw buf;
         }
     };
 
@@ -389,7 +389,7 @@ void GDB_ReadELF(const char *elf_filename)
         f = fopen(elf_filename, "rb");
         if (f == NULL)
         {
-            tsnprintf(buf, "GDB_ReadELF error opening %s:", elf_filename);
+            tsnprintf(buf, "GDB_ReadELF error opening file: %s", strerror(errno));
             throw buf;
         }
 

@@ -1,11 +1,28 @@
 #pragma once
 
+// sepples
 #include <string>
 #include <vector>
 #include <fstream>
+
+// cstd
 #include <assert.h>
+#include <stdio.h>
+#include <unistd.h>
+#include <stdlib.h>
+#include <string.h>
+#include <stdint.h>
+
+// linoox
+#include <errno.h>
+#include <pthread.h>
+#include <spawn.h>
+#include <signal.h>
+#include <fcntl.h>
+#include <semaphore.h>
 
 #include "gdb_utility.h"
+
 
 #ifdef _WIN32
 
@@ -320,20 +337,20 @@ int GDB_ExtractInt(const char *name, const RecordAtom &root, const Record &rec);
 const RecordAtom *GDB_ExtractAtom(const char *name, const RecordAtom &root, const Record &rec);
 
 // helper functions for searching the root node of a record 
-inline String GDB_ExtractValue(const char *name, const Record &rec)
+static String GDB_ExtractValue(const char *name, const Record &rec)
 {
     return (rec.atoms.size() == 0) ? "" : GDB_ExtractValue(name, rec.atoms[0], rec);
 }
-inline int GDB_ExtractInt(const char *name, const Record &rec)
+static int GDB_ExtractInt(const char *name, const Record &rec)
 {
     return (rec.atoms.size() == 0) ? 0 : GDB_ExtractInt(name, rec.atoms[0], rec);
 }
-inline const RecordAtom *GDB_ExtractAtom(const char *name, const Record &rec)
+static const RecordAtom *GDB_ExtractAtom(const char *name, const Record &rec)
 {
     return (rec.atoms.size() == 0) ? NULL : GDB_ExtractAtom(name, rec.atoms[0], rec);
 }
 
-String GetAtomString(Span s, const Record &rec)
+inline String GetAtomString(Span s, const Record &rec)
 {
     Assert(s.index + s.length <= rec.buf.size());
     String result = {};
