@@ -90,6 +90,19 @@ RecordAtom GDB_RecurseRecord(ParseRecordContext &ctx)
         fprintf(stderr, "   before error: %.*s\n", int(ctx.i), ctx.buf);
         fprintf(stderr, "   error char: %c\n", error_char);
         fprintf(stderr, "   after error: %.*s\n", int(ctx.bufsize - (ctx.i + 1)), ctx.buf + ctx.i + 1);
+
+        timeval te;
+        gettimeofday(&te, NULL); // get current time
+        long long msec = te.tv_sec*1000LL + te.tv_usec/1000; 
+
+        char filename[128]; 
+        tsnprintf(filename, "badrecord_%lld.txt", msec);
+
+        FILE *f = fopen(filename, "wb");
+        fprintf(f, "error message: %s\n", message);
+        fprintf(f, "error index: %zu\n", ctx.i);
+        fprintf(f, "%.*s", (int)ctx.bufsize, ctx.buf);
+        fclose(f);
         
         // force to end then bail out of here
         Assert(false);
@@ -162,10 +175,13 @@ RecordAtom GDB_RecurseRecord(ParseRecordContext &ctx)
                 // TODO: pointer previews of strings are messing this up
                 //       ex: value="0x555555556004 "%d""
                 char n = '\0';
+                char p = '\0';
                 if (ctx.i + 1 < ctx.bufsize)
-                    n = ctx.buf[ ctx.i + 1];
+                    n = ctx.buf[ ctx.i + 1 ];
+                if (ctx.i >= 1)
+                    p = ctx.buf[ ctx.i - 1 ];
 
-                if (c == '"' && (n == '\0' || n == ',' || n == '}' || n == ']'))
+                if (c == '"' && p != '\\' && (n == ',' || n == '}' || n == ']'))
                 {
                     // hit closing quote
                     // make the string, advance idx, return
@@ -329,6 +345,22 @@ const RecordAtom *GDB_ExtractAtom(const char *name, const RecordAtom &root,
 {
     const RecordAtom *result = GDB_ExtractAtom(name, strlen(name), 0, root, rec);
     return result;
+}
+
+// 
+// helper functions
+//
+String GDB_ExtractValue(const char *name, const Record &rec)
+{
+    return (rec.atoms.size() == 0) ? "" : GDB_ExtractValue(name, rec.atoms[0], rec);
+}
+int GDB_ExtractInt(const char *name, const Record &rec)
+{
+    return (rec.atoms.size() == 0) ? 0 : GDB_ExtractInt(name, rec.atoms[0], rec);
+}
+const RecordAtom *GDB_ExtractAtom(const char *name, const Record &rec)
+{
+    return (rec.atoms.size() == 0) ? NULL : GDB_ExtractAtom(name, rec.atoms[0], rec);
 }
 
 void GDB_ReadELF(const char *elf_filename)

@@ -1,14 +1,14 @@
-sources := $(shell find . -name "*.cpp")
-objects := $(patsubst %.cpp,%.o,$(sources))
+SRC := $(shell find . -name "*.cpp")
+OBJ := $(patsubst %.cpp,%.o,$(SRC))
 
 CXXFLAGS = -I./third-party/dear-imgui -I./third-party -I./src
 CXXFLAGS += -g -O0 -Wall -Wformat
-CXXFLAGS += `pkg-config --cflags glfw3` -lpthread -lGL `pkg-config --static --libs glfw3`
+CXXFLAGS += -L./third-party/glfw -lglfw -lGL -lpthread
 
 %.o: %.cpp
 	g++ $(CXXFLAGS) -c -o $@ $<
 
-tug.elf: $(objects)
+tug.elf: $(OBJ)
 	g++ -o $@ $^ $(CXXFLAGS)
 	
 clean:

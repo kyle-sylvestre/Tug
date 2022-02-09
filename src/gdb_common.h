@@ -20,6 +20,7 @@
 #include <signal.h>
 #include <fcntl.h>
 #include <semaphore.h>
+#include <sys/time.h>
 
 #include "gdb_utility.h"
 
@@ -315,7 +316,7 @@ struct ParseRecordContext
     size_t num_end_atoms;   // contiguous atoms stored at the end of atoms
 
     bool error;
-    size_t error_idx;
+
     size_t i;
     char *buf;      // record line data
     size_t bufsize;
@@ -337,18 +338,9 @@ int GDB_ExtractInt(const char *name, const RecordAtom &root, const Record &rec);
 const RecordAtom *GDB_ExtractAtom(const char *name, const RecordAtom &root, const Record &rec);
 
 // helper functions for searching the root node of a record 
-static String GDB_ExtractValue(const char *name, const Record &rec)
-{
-    return (rec.atoms.size() == 0) ? "" : GDB_ExtractValue(name, rec.atoms[0], rec);
-}
-static int GDB_ExtractInt(const char *name, const Record &rec)
-{
-    return (rec.atoms.size() == 0) ? 0 : GDB_ExtractInt(name, rec.atoms[0], rec);
-}
-static const RecordAtom *GDB_ExtractAtom(const char *name, const Record &rec)
-{
-    return (rec.atoms.size() == 0) ? NULL : GDB_ExtractAtom(name, rec.atoms[0], rec);
-}
+String GDB_ExtractValue(const char *name, const Record &rec);
+int GDB_ExtractInt(const char *name, const Record &rec);
+const RecordAtom *GDB_ExtractAtom(const char *name, const Record &rec);
 
 inline String GetAtomString(Span s, const Record &rec)
 {

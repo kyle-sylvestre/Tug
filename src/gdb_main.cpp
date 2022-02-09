@@ -13,7 +13,7 @@
 #include <GLFW/glfw3.h>
 
 
-struct GlfwKey
+struct GlfwInput
 {
     uint8_t action;
     uint8_t mods;
@@ -21,13 +21,21 @@ struct GlfwKey
 
 struct GlfwKeyboardState
 {
-    GlfwKey keys[ GLFW_KEY_LAST + 1 ];
+    GlfwInput keys[ GLFW_KEY_LAST + 1 ];
+};
+
+struct GlfwMouseState
+{
+    GlfwInput buttons[ GLFW_MOUSE_BUTTON_LAST + 1 ];
 };
 
 struct GuiContext
 {
     GlfwKeyboardState this_keystate;
     GlfwKeyboardState last_keystate;
+    GlfwMouseState this_mousestate;
+    GlfwMouseState last_mousestate;
+
     size_t source_highlighted_line = BAD_INDEX;
     bool source_search_bar_open = false;
     char source_search_keyword[256];
@@ -35,8 +43,8 @@ struct GuiContext
 
     bool IsKeyClicked(int glfw_key, int glfw_mods = 0)
     {
-        GlfwKey &this_key = Key(glfw_key);
-        GlfwKey &last_key = LastKey(glfw_key);
+        GlfwInput &this_key = Key(glfw_key);
+        GlfwInput &last_key = LastKey(glfw_key);
         bool result = last_key.action == GLFW_RELEASE && 
                       this_key.action == GLFW_PRESS;
 
@@ -46,11 +54,24 @@ struct GuiContext
         }
         return result;
     }
-    GlfwKey &Key(int glfw_key)
+    bool IsMouseClicked(int glfw_mouse_button, int glfw_mods = 0)
+    {
+        GlfwInput &this_button = this_mousestate.buttons[glfw_mouse_button];
+        GlfwInput &last_button = last_mousestate.buttons[glfw_mouse_button];
+        bool result = this_button.action == GLFW_RELEASE && 
+                      last_button.action == GLFW_PRESS;
+
+        if (glfw_mods != 0)
+        {
+            result &= (glfw_mods == (this_button.mods & glfw_mods));
+        }
+        return result;
+    }
+    GlfwInput &Key(int glfw_key)
     {
         return this_keystate.keys[glfw_key];
     }
-    GlfwKey &LastKey(int glfw_key)
+    GlfwInput &LastKey(int glfw_key)
     {
         return last_keystate.keys[glfw_key];
     }
@@ -358,8 +379,39 @@ int GDB_Init(GLFWwindow *window)
             posix_spawnattr_init(&attrs);
             posix_spawnattr_setflags(&attrs, POSIX_SPAWN_SETSID);
 
+            dbg();
+            String env;
+            FILE *fsh = popen("printenv", "r");
+            if (fsh == NULL)
+            {
+                LogStrError("getenv popen");
+                break;
+            }
+
+            char tmp[1024];
+            ssize_t tmpread;
+            while (0 < (tmpread = fread(tmp, 1, sizeof(tmp), fsh)) )
+            {
+                env.insert(env.size(), tmp, tmpread);
+            }
+
+            Vector<char *> envptr;
+            size_t lineoff = 0;
+            for (size_t i = 0; i < env.size(); i++)
+            {
+                if (env[i] == '\n')
+                {
+                    envptr.push_back(&env[0] + lineoff);
+                    env[i] = '\0';
+                    lineoff = i + 1;
+                }
+            }
+            envptr.push_back(NULL);
+
+            pclose(fsh);
+
             rc = posix_spawnp((pid_t *) &gdb.spawned_pid, "/usr/bin/gdb-multiarch", 
-                              &actions, &attrs, argv, /*environ */ NULL);
+                              &actions, &attrs, argv, envptr.data());
             if (rc < 0) 
             {
                 LogStrError("posix_spawnp");
@@ -386,6 +438,10 @@ int GDB_Init(GLFWwindow *window)
         // clear the first (gdb) semaphore
 
 #if 1
+        //GDB_SendBlocking("-environment-cd /mnt/c/Users/Kyle/Documents/commercial-codebases/original/stevie");
+        //GDB_SendBlocking("-file-exec-and-symbols stevie");
+        //GDB_SendBlocking("-exec-arguments stevie.c");
+
         // debug GAS
         //GDB_SendBlocking("-environment-cd /mnt/c/Users/Kyle/Documents/commercial-codebases/original/binutils/binutils-gdb/gas");
         //GDB_SendBlocking("-file-exec-and-symbols as-new");
@@ -410,7 +466,7 @@ int GDB_Init(GLFWwindow *window)
 
         // setup global var objects that will last the duration of the program
         String reg_cmd;
-        for (const char *reg : REG_AMD64)
+        if (0) for (const char *reg : REG_AMD64)
         {
             char name[256];
             char cmd[512];
@@ -440,12 +496,25 @@ int GDB_Init(GLFWwindow *window)
         Assert((uint8_t)action <= UINT8_MAX && (uint8_t)mods <= UINT8_MAX);
         //printf("key pressed: %s, glfw_macro: %d", name, key);
 
-        GlfwKey &update = gui.this_keystate.keys[key];
+        GlfwInput &update = gui.this_keystate.keys[key];
+        update.action = action;
+        update.mods = mods;
+    };
+
+    const auto UpdateMouseButton = [](GLFWwindow *window, int button, 
+                                      int action, int mods)
+    {
+        Assert((size_t)button < ArrayCount(gui.this_mousestate.buttons));
+        Assert((uint8_t)action <= UINT8_MAX && (uint8_t)mods <= UINT8_MAX);
+        //printf("key pressed: %s, glfw_macro: %d", name, key);
+
+        GlfwInput &update = gui.this_mousestate.buttons[button];
         update.action = action;
         update.mods = mods;
     };
 
     glfwSetKeyCallback(window, UpdateKey);
+    glfwSetMouseButtonCallback(window, UpdateMouseButton);
 
     return rc;
 }
@@ -462,7 +531,7 @@ code;\
 ImGui::EndDisabled();
 
 #define WINDOW_WIDTH 1280
-#define WINDOW_HEIGHT 600
+#define WINDOW_HEIGHT 640
 #define SOURCE_WIDTH 800
 
 static void DrawHelpMarker(const char *desc)
@@ -749,7 +818,7 @@ void GDB_Draw(GLFWwindow *window)
                 async_stopped = true;
                 String reason = GDB_ExtractValue("reason", rec);
 
-                if (reason == "exited-normally") // @@@ find exit
+                if ( (NULL != strstr(reason.c_str(), "exited")) )
                 {
                     prog.started = false;
                     prog.frames.clear();
@@ -903,7 +972,6 @@ void GDB_Draw(GLFWwindow *window)
                 }
             }
         }
-
     }
 
 
@@ -1158,22 +1226,32 @@ void GDB_Draw(GLFWwindow *window)
                                 {
                                     // query a word if we moved words / callstack frames
                                     // TODO: register hover needs '$' in front of name for asm debugging
-                                    static size_t hover_line;
+                                    static size_t hover_frame_line;
                                     static size_t hover_word_idx;
                                     static size_t hover_char_idx;
                                     static size_t hover_num_frames;
                                     static size_t hover_frame_idx;
                                     static String hover_value;
 
+                                    // check to see if we should add the variable
+                                    // to the watch variables
+                                    if (gui.IsMouseClicked(GLFW_MOUSE_BUTTON_RIGHT))
+                                    {
+                                        //@@@ force a watch list update
+                                        async_stopped = true;
+                                        String hover_string(line.data() + word_idx, char_idx - word_idx);
+                                        prog.watch_vars.push_back({hover_string, "???"});
+                                    }
+
                                     if (hover_word_idx != word_idx || 
                                         hover_char_idx != char_idx || 
-                                        hover_line != frame.line || 
+                                        hover_frame_line != frame.line || 
                                         hover_num_frames != prog.frames.size() || 
                                         hover_frame_idx != prog.frame_idx)
                                     {
                                         hover_word_idx = word_idx;
                                         hover_char_idx = char_idx;
-                                        hover_line = frame.line;
+                                        hover_frame_line = frame.line;
                                         hover_num_frames = prog.frames.size();
                                         hover_frame_idx = prog.frame_idx;
                                         String word(line.data() + word_idx, char_idx - word_idx);
@@ -1281,9 +1359,8 @@ void GDB_Draw(GLFWwindow *window)
         ImGuiDisabled(prog.running, clicked = ImGui::Button("---"));
         if (clicked)
         {
-            // if not in same file, switch to active file
-            // scroll to next_active_line
-            gui.source_highlighted_line = ~0;
+            // jump to program counter line
+            gui.source_highlighted_line = BAD_INDEX;
         }
 
         // start
@@ -1293,35 +1370,12 @@ void GDB_Draw(GLFWwindow *window)
         if (clicked)
         {
             // TODO: remote doesn't support exec run
+
+            // jump to program counter line
+            gui.source_highlighted_line = BAD_INDEX;
+
             if (!prog.started)
             {
-
-                static bool b = true;
-                if (b) 
-                { 
-                    b = false;
-                    const auto Boob = [](void *)->void*
-                    {
-                        int rfd = open("/tmp/foobar.fifo", O_RDONLY/* | O_NONBLOCK */);
-                        if (rfd < 0)
-                        {
-                            perror("open fifo");
-                            return NULL;
-                        }
-
-                        for (;;)
-                        {
-                            char buf[1024]; 
-                            ssize_t num_read = read(rfd, buf, sizeof(buf)); 
-                            if (num_read < 0) break;
-                            printf("%.*s", (int)num_read, buf);
-                        }
-                        return NULL;
-                    };
-
-                    pthread_t ass;
-                    pthread_create(&ass, NULL, Boob, (void*) NULL);
-                }
                 GDB_SendBlocking("-exec-run --start", "stopped", false);
                 prog.started = true;
             }
@@ -1693,7 +1747,7 @@ void GDB_Draw(GLFWwindow *window)
             // pressing enter 
             ImGui::TableNextRow();
             ImGui::TableNextColumn();
-            static char watch[64];
+            static char watch[128];
 
             if (ImGui::InputText("##create_new_watch", watch, 
                              sizeof(watch), 
@@ -1702,6 +1756,7 @@ void GDB_Draw(GLFWwindow *window)
             {
                 prog.watch_vars.push_back( {watch, "???"} );
                 added_watch = true;
+                memset(watch, 0, sizeof(watch));
             }
             ImGui::PopStyleColor();
 
@@ -1733,9 +1788,9 @@ void GDB_Draw(GLFWwindow *window)
         ImGui::End();
     }
 
-
-    // set the last gui keyboard state
+    // update the last gui states
     gui.last_keystate = gui.this_keystate;
+    gui.last_mousestate = gui.this_mousestate;
 }
 
 static void glfw_error_callback(int error, const char* description)
