@@ -999,8 +999,8 @@ void GDB_Draw(GLFWwindow *window)
 
 
 
-        // TODO: is there another way to make a fixed position widget
-        //       without making a child window
+        // @Imgui: is there another way to make a fixed position widget
+        //         without making a child window
         if (gui.source_search_bar_open)
         {
             bool source_open = prog.frame_idx < prog.frames.size() &&
@@ -1537,12 +1537,18 @@ void GDB_Draw(GLFWwindow *window)
         ImGui::Text("Application average %.3f ms/frame (%.1f FPS)",
                     1000.0f / ImGui::GetIO().Framerate, ImGui::GetIO().Framerate);
 
-        ImGuiTableFlags flags = //ImGuiTableFlags_ScrollX | // @@@: last column is resizable but it makes the table look like it has an extra column
+        ImGuiTableFlags flags = ImGuiTableFlags_ScrollX |
                                 ImGuiTableFlags_ScrollY |
-                                ImGuiTableFlags_Borders |
-                                ImGuiTableFlags_Resizable;
+                                ImGuiTableFlags_Borders;
 
-        if (ImGui::BeginTable("Locals", 2, flags, {300, 200} ))
+        // @Imgui: can't figure out the right combo of table/column flags corresponding to 
+        //       a table with initial column widths that expands column width on elem width increase
+        char table_pad[128];
+        memset(table_pad, ' ', sizeof(table_pad));
+        const int MIN_TABLE_WIDTH_CHARS = 22;
+        table_pad[ MIN_TABLE_WIDTH_CHARS ] = '\0';
+
+        if (ImGui::BeginTable("Locals", 2, flags, {300, 200}))
         {
             ImGui::TableSetupColumn("Name");
             ImGui::TableSetupColumn("Value");
@@ -1563,6 +1569,13 @@ void GDB_Draw(GLFWwindow *window)
                                 : IM_COL32_WHITE;
                 ImGui::TextColored(color, "%s", iter.value.c_str());
             }
+
+            // empty columns to pad width
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::Text("%s", table_pad);
+            ImGui::TableNextColumn();
+            ImGui::Text("%s", table_pad);
 
             ImGui::EndTable();
         }
@@ -1719,9 +1732,13 @@ void GDB_Draw(GLFWwindow *window)
             ImGui::EndTable();
         }
 
-        bool added_watch = false;
+        bool modified_watchlist = false;
         if (ImGui::BeginTable("Watch", 2, flags, {300, 200}))
         {
+
+            static size_t edit_var_name_idx = -1;
+            static size_t max_name_length = 0;
+            static bool focus_name_input = false;
             ImGui::TableSetupColumn("Name");
             ImGui::TableSetupColumn("Value");
             ImGui::TableHeadersRow();
@@ -1729,13 +1746,97 @@ void GDB_Draw(GLFWwindow *window)
             ImGui::PushStyleColor(ImGuiCol_FrameBg,
                                   IM_COL32(255,255,255,16));
 
+            // @Imgui: how to see if an empty column cell has been clicked
+            // @VisualBug: after resizing a name column with a long name 
+            //             then clicking on a shorter name, the textbox will 
+            //             appear empty until arrow left or clicking
+            size_t this_max_name_length = MIN_TABLE_WIDTH_CHARS;
             for (size_t i = 0; i < prog.watch_vars.size(); i++)
             {
-                const VarObj &iter = prog.watch_vars[i];
+                VarObj &iter = prog.watch_vars[i];
                 ImGui::TableNextRow();
 
                 ImGui::TableNextColumn();
-                ImGui::Text("%s", iter.name.c_str());
+                ImGui::SetNextItemWidth(-FLT_MIN);
+
+                // is column clicked?
+                static char editwatch[256];
+                bool column_clicked = false;
+                if (i == edit_var_name_idx)
+                {
+
+
+                    if (ImGui::InputText("##edit_watch", editwatch, 
+                                     sizeof(editwatch), 
+                                     ImGuiInputTextFlags_EnterReturnsTrue,
+                                     NULL, NULL))
+                    {
+                        iter.name = editwatch;
+                        modified_watchlist = true;
+                        memset(editwatch, 0, sizeof(editwatch));
+                        edit_var_name_idx = -1;
+                    }
+
+
+                    static int hack = 0; // ImGui::WantCaptureKeyboard frame delay
+                    if (focus_name_input)
+                    {
+                        ImGui::SetKeyboardFocusHere(-1);
+                        focus_name_input = false;
+                        hack = 0;
+                    }
+                    else
+                    {
+                        bool deleted = false;
+                        hack++;
+                        bool active = ImGui::IsItemFocused() && (hack < 2 || ImGui::GetIO().WantCaptureKeyboard);
+                        if (gui.IsKeyClicked(GLFW_KEY_DELETE))
+                        {
+                            prog.watch_vars.erase(prog.watch_vars.begin() + i,
+                                                  prog.watch_vars.begin() + i + 1);
+                            size_t sz = prog.watch_vars.size();
+                            if (sz > 0)
+                            {
+                                // activate another watch variable input box
+                                ImGui::SetKeyboardFocusHere(0);
+                                edit_var_name_idx = (i > sz) ? sz - 1 : i;
+                                column_clicked = true;
+                            }
+                            else
+                            {
+                                deleted = true;
+                            } 
+                        }
+
+                        if (!active || deleted || gui.IsKeyClicked(GLFW_KEY_ESCAPE))
+                        {
+                            edit_var_name_idx = -1;
+                        }
+                    }
+
+                }
+                else
+                {
+                    if (iter.name.size() > this_max_name_length) 
+                        this_max_name_length = iter.name.size();
+
+                    // make a clickable region for the empty column space
+                    size_t padsize = (iter.name.size() < max_name_length)
+                                     ? max_name_length - iter.name.size() : 0;
+                    String pad(padsize, ' ');
+
+                    ImGui::Text("%s%s", iter.name.c_str(), pad.c_str());
+                    if (ImGui::IsItemClicked())
+                        column_clicked = true;
+                }
+
+                if (column_clicked)
+                {
+                    tsnprintf(editwatch, "%s", iter.name.c_str());
+                    focus_name_input = true;
+                    edit_var_name_idx = i;
+                }
+
 
                 ImGui::TableNextColumn();
                 ImColor color = (iter.changed) 
@@ -1744,7 +1845,8 @@ void GDB_Draw(GLFWwindow *window)
                 ImGui::TextColored(color, "%s", iter.value.c_str());
             }
 
-            // pressing enter 
+            max_name_length = this_max_name_length;
+
             ImGui::TableNextRow();
             ImGui::TableNextColumn();
             static char watch[128];
@@ -1755,7 +1857,7 @@ void GDB_Draw(GLFWwindow *window)
                              NULL, NULL))
             {
                 prog.watch_vars.push_back( {watch, "???"} );
-                added_watch = true;
+                modified_watchlist = true;
                 memset(watch, 0, sizeof(watch));
             }
             ImGui::PopStyleColor();
@@ -1763,11 +1865,18 @@ void GDB_Draw(GLFWwindow *window)
             ImGui::TableNextColumn();
             ImGui::Text("%s", "");  // -Wformat
 
+            // empty columns to pad width
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            ImGui::Text("%s", table_pad);
+            ImGui::TableNextColumn();
+            ImGui::Text("%s", table_pad);
+
             ImGui::EndTable();
         }
 
 
-        if (async_stopped || added_watch)
+        if (async_stopped || modified_watchlist)
         {
             // evaluate user defined watch variables
             for (VarObj &iter : prog.watch_vars)
@@ -1861,58 +1970,6 @@ int main(int, char**)
         ImGui_ImplOpenGL2_NewFrame();
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
-
-#if 0
-        ImGui::SetNextWindowSize({ 800, 600 });
-        ImGui::SetNextWindowPos({ 0,0 });
-        ImGui::Begin("Bag O Tricks");
-        {
-            ImGuiTableFlags flags = ImGuiTableFlags_ScrollX |
-                                    ImGuiTableFlags_ScrollY |
-                                    ImGuiTableFlags_RowBg |
-                                    ImGuiTableFlags_BordersOuter |
-                                    ImGuiTableFlags_BordersV |
-                                    ImGuiTableFlags_Resizable |
-                                    ImGuiTableFlags_Reorderable |
-                                    ImGuiTableFlags_Hideable;
-
-            if (ImGui::BeginTable("table_scrollx", 7, flags))
-            {
-                static int freeze_cols = 1;
-                static int freeze_rows = 1;
-                ImGui::TableSetupScrollFreeze(freeze_cols, freeze_rows);
-                ImGui::TableSetupColumn("Line #", ImGuiTableColumnFlags_NoHide); // Make the first column not hideable to match our use of TableSetupScrollFreeze()
-                ImGui::TableSetupColumn("One");
-                ImGui::TableSetupColumn("Two");
-                ImGui::TableSetupColumn("Three");
-                ImGui::TableSetupColumn("Four");
-                ImGui::TableSetupColumn("Five");
-                ImGui::TableSetupColumn("Six");
-                ImGui::TableHeadersRow();
-                for (int row = 0; row < 20; row++)
-                {
-                    ImGui::TableNextRow();
-                    for (int column = 0; column < 7; column++)
-                    {
-                        // Both TableNextColumn() and TableSetColumnIndex() return true when a column is visible or performing width measurement.
-                        // Because here we know that:
-                        // - A) all our columns are contributing the same to row height
-                        // - B) column 0 is always visible,
-                        // We only always submit this one column and can skip others.
-                        // More advanced per-column clipping behaviors may benefit from polling the status flags via TableGetColumnFlags().
-                        if (!ImGui::TableSetColumnIndex(column) && column > 0)
-                            continue;
-                        if (column == 0)
-                            ImGui::Text("Line %d", row);
-                        else
-                            ImGui::Text("Hello world %d,%d", column, row);
-                    }
-                }
-                ImGui::EndTable();
-            }
-        }
-        ImGui::End();
-#endif
 
         {
             char curpos[256];
