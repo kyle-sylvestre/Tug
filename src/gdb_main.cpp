@@ -3,15 +3,15 @@
 //
 // yoinked from glfw_example_opengl2
 //
-#include "imgui.h"
-#include "imgui_impl_glfw.h"
-#include "imgui_impl_opengl2.h"
-#include <stdio.h>
-#ifdef __APPLE__
-#define GL_SILENCE_DEPRECATION
-#endif
+
+#include <imgui/imgui.h>
+#include <imgui/imgui_internal.h>
+#include <imgui/imgui_impl_glfw.h>
+#include <imgui/imgui_impl_opengl2.h>
 #include <GLFW/glfw3.h>
 
+#define IMPL_FILE_WINDOW
+#include "imgui_file_window.h"
 
 struct GlfwInput
 {
@@ -997,8 +997,6 @@ void GDB_Draw(GLFWwindow *window)
             gui.source_search_bar_open = false;
         }
 
-
-
         // @Imgui: is there another way to make a fixed position widget
         //         without making a child window
         if (gui.source_search_bar_open)
@@ -1851,6 +1849,7 @@ void GDB_Draw(GLFWwindow *window)
             ImGui::TableNextColumn();
             static char watch[128];
 
+            ImGui::SetNextItemWidth(-FLT_MIN);
             if (ImGui::InputText("##create_new_watch", watch, 
                              sizeof(watch), 
                              ImGuiInputTextFlags_EnterReturnsTrue,
@@ -1971,7 +1970,24 @@ int main(int, char**)
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
 
+        ImGui::Begin("foobar");
+
+        static bool openit;
+        openit |= ImGui::Button("Clickeee");
+
+        if (openit)
         {
+            static FileWindowContext ctx;
+            if ( ImFileWindow(ctx, FileWindowMode_SelectFile, ".", "cpp") )
+            {
+                printf("%s\n", ctx.path.c_str());
+                openit = false;
+            }
+        }
+
+        ImGui::End();
+
+        if (0){
             char curpos[256];
             snprintf(curpos, sizeof(curpos), "Mouse Position: (%.1f,%.1f)", io.MousePos.x, io.MousePos.y);
             //ImGui::ShowDemoWindow();

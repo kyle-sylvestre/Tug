@@ -1,7 +1,7 @@
 SRC := $(shell find . -name "*.cpp")
 OBJ := $(patsubst %.cpp,%.o,$(SRC))
 
-CXXFLAGS = -I./third-party/dear-imgui -I./third-party -I./src
+CXXFLAGS = -I./third-party -I./src
 CXXFLAGS += -g -O0 -Wall -Wformat -fsanitize=undefined #-fsanitize-undefined-trap-on-error
 CXXFLAGS += -L./third-party/glfw -lglfw -lGL -lpthread
 
