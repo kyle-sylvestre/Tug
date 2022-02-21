@@ -96,6 +96,8 @@ do {\
 #define LOCAL_NAME_PREFIX "LC__"
 #define WATCH_NAME_PREFIX "WT__"
 
+#define TUG_CONFIG_FILENAME "tug.conf"
+
 
 // arm32
 const char *const REG_ARM32[] = {
@@ -150,7 +152,7 @@ struct FileContext
         if (0 == access( fullpath, F_OK ))
         {
             found = true;
-            std::ifstream file(fullpath, std::ios::in | std::ios::binary);
+            std::ifstream file(fullpath, std::ios::in);
 
             String tmp;
             int line = 1;
@@ -299,10 +301,16 @@ struct ProgramContext
 
     Vector<FileContext> files;
 
-    // TODO: this should be in a thread context
     Vector<Frame> frames;
     size_t frame_idx = -1;
-    pid_t pid;
+    pid_t inferior_process;
+
+    // values from tug.conf
+    String config_gdb_path;
+    String config_gdb_args;
+    String config_startup_debug_exe;
+    String config_font_filename;
+    String config_font_size;
 };
 
 

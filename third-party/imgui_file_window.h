@@ -1,19 +1,34 @@
+// The MIT License (MIT)
+// 
+// Copyright (c) 2022 Kyle Sylvestre
+// 
+// Permission is hereby granted, free of charge, to any person obtaining a copy
+// of this software and associated documentation files (the "Software"), to deal
+// in the Software without restriction, including without limitation the rights
+// to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+// copies of the Software, and to permit persons to whom the Software is
+// furnished to do so, subject to the following conditions:
+// 
+// The above copyright notice and this permission notice shall be included in all
+// copies or substantial portions of the Software.
+// 
+// THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+// IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+// FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+// AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+// LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+// OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+// SOFTWARE.
+
+
 #pragma once
 
 // bare bones file/directory picker, nothing fancy here
-// example of usage
-//
-// #include "imgui.h"
-// #include "imgui_internal.h"  // for ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
-//
-// #define IMPL_FILE_WINDOW     // include this line in only one cpp file
-// #include "imgui_file_window.h"
 
 #include <string>
 #include <vector>
 
 #include <stdio.h>
-#include <stdlib.h>
 #include <string.h>
 
 #if defined(_WIN32)
@@ -25,11 +40,11 @@
 #define stricmp strcasecmp
 #endif
 
-enum FileWindowMode
+enum ImGuiFileWindowMode
 {
-    FileWindowMode_SelectFile,
-    FileWindowMode_SelectDirectory,
-    FileWindowMode_WriteFile,
+    ImGuiFileWindowMode_SelectFile,
+    ImGuiFileWindowMode_SelectDirectory,
+    ImGuiFileWindowMode_WriteFile,
 };
 
 struct FileWindowContext 
@@ -43,6 +58,8 @@ struct FileWindowContext
     bool window_opened = true;
     bool query_directory = true;
     char user_input[MAX_PATH] = {};
+    bool show_path_as_input = false;
+    char path_input[MAX_PATH] = {};
     std::vector<std::string> dirs = {};
     std::vector<std::string> files = {};
 
@@ -64,36 +81,33 @@ struct FileWindowContext
 // param[in] filters:
 //     comma separated list of extensions to filter for, "*" for no filtering
 //     no spaces, no periods. ex: "cpp,c,h"
-//     (only used with FileWindowMode_SelectFile)
 // return: bool (window closed)
 //     -if submit or cancel has been clicked, return true
 //     -else, return false
-bool ImFileWindow(FileWindowContext &ctx, FileWindowMode mode, 
-                  const char *directory = ".", const char *filters = "*");
-
-
-
-#if defined(IMPL_FILE_WINDOW)
-
-#if !defined(IMGUI_VERSION)
-#error include imgui and imgui_internal headers above this #include
-#endif
-
+inline bool ImGuiFileWindow(FileWindowContext &ctx, ImGuiFileWindowMode mode, 
+                            const char *directory = ".", const char *filters = "*");
 
 #if defined(_WIN32)
 
 #include <Windows.h>
 
 #define PATHSEPSTR "\\"
-void OS_GetAbsolutePath(const char *relpath, char (&abspath)[MAX_PATH])
+inline bool OS_GetAbsolutePath(const char *relpath, char (&abspath)[MAX_PATH])
 {
+    bool result;
     GetFullPathNameA(relpath, sizeof(abspath), abspath, NULL);
     if (INVALID_FILE_ATTRIBUTES == GetFileAttributesA(abspath))
     {
-        fprintf(stderr, "file not found: %s", abspath):
+        fprintf(stderr, "file not found: %s\n", abspath):
+        result = false;
     }
+    else
+    {
+        result = true;
+    }
+    return result;
 }
-int OS_FilterFilename(ImGuiInputTextCallbackData *data)
+inline int OS_FilterFilename(ImGuiInputTextCallbackData *data)
 {
     if (data->BufTextLen == 0) return 0;
 
@@ -107,8 +121,8 @@ int OS_FilterFilename(ImGuiInputTextCallbackData *data)
         data->DeleteChars(data->BufTextLen - 1, 1);
 
     return 0;
-};
-void OS_PopulateDirEntries(const std::string &dirpath,
+}
+inline void OS_PopulateDirEntries(const std::string &dirpath,
                            std::vector<std::string> &dirs,
                            std::vector<std::string> &files,
                            const char *filters)
@@ -168,15 +182,22 @@ void OS_PopulateDirEntries(const std::string &dirpath,
 
 #include <dirent.h>
 #define PATHSEPSTR "/"
-void OS_GetAbsolutePath(const char *relpath, char (&abspath)[MAX_PATH])
+inline bool OS_GetAbsolutePath(const char *relpath, char (&abspath)[MAX_PATH])
 {
+    bool result;
     char *rc = realpath(relpath, abspath);
     if (rc == NULL)
     {
-        fprintf(stderr, "realpath on %s: %s", relpath, strerror(errno));
+        fprintf(stderr, "realpath on %s: %s\n", relpath, strerror(errno));
+        result = false;
     }
+    else
+    {
+        result = true;
+    }
+    return result;
 }
-int OS_FilterFilename(ImGuiInputTextCallbackData *data)
+inline int OS_FilterFilename(ImGuiInputTextCallbackData *data)
 {
     if (data->BufTextLen == 0) return 0;
 
@@ -188,10 +209,10 @@ int OS_FilterFilename(ImGuiInputTextCallbackData *data)
 
     return 0;
 }
-void OS_PopulateDirEntries(const std::string &dirpath,
-                           std::vector<std::string> &dirs,
-                           std::vector<std::string> &files,
-                           const char *filters)
+inline void OS_PopulateDirEntries(const std::string &dirpath,
+                                  std::vector<std::string> &dirs,
+                                  std::vector<std::string> &files,
+                                  const char *filters)
 {
     struct dirent *entry;
     DIR *dir;
@@ -199,7 +220,7 @@ void OS_PopulateDirEntries(const std::string &dirpath,
     dir = opendir(dirpath.c_str());
     if (dir == NULL) 
     {
-        fprintf(stderr, "opendir on %s: %s", dirpath.c_str(), strerror(errno));
+        fprintf(stderr, "opendir on %s: %s\n", dirpath.c_str(), strerror(errno));
     }
     else
     {
@@ -247,33 +268,22 @@ void OS_PopulateDirEntries(const std::string &dirpath,
 
 #endif
 
-struct DirectoryButton
-{
-    const char *button_text;
-    const char *path;
-};
-
-const DirectoryButton BOOKMARKS[] = 
-{
-    { "Downloads", "C:\\Users\\Kyle\\Downloads" },
-    { "Videos", "C:\\Users\\Kyle\\Videos" },
-    { "Pictures", "C:\\Users\\Kyle\\Pictures" },
-};
-
-bool ImFileWindow(FileWindowContext &ctx, FileWindowMode mode, 
-                  const char *directory, const char *filters)
+inline bool ImGuiFileWindow(FileWindowContext &ctx, ImGuiFileWindowMode mode, 
+                            const char *directory, const char *filters)
 {
     // TODO:
     // -displaying the current filters
-    // -button for transforming path bar into input box for copy/pasting paths
 
     bool close_window = false;
     char tmp[MAX_PATH]; // scratch for getting strings
 
     const char *window_name =
-        (mode == FileWindowMode_WriteFile) ? "Write File" :
-        (mode == FileWindowMode_SelectDirectory) ? "Open Directory" :
-        (mode == FileWindowMode_SelectFile) ? "Open File" : "???";
+        (mode == ImGuiFileWindowMode_WriteFile) ? "Write File" :
+        (mode == ImGuiFileWindowMode_SelectDirectory) ? "Open Directory" :
+        (mode == ImGuiFileWindowMode_SelectFile) ? "Open File" : "???";
+
+    if (mode == ImGuiFileWindowMode_SelectDirectory) 
+        filters = "";
 
     ImGui::Begin(window_name);
 
@@ -288,7 +298,7 @@ bool ImFileWindow(FileWindowContext &ctx, FileWindowMode mode,
     }
 
     bool submit_disabled;
-    if (mode == FileWindowMode_WriteFile)
+    if (mode == ImGuiFileWindowMode_WriteFile)
     {
         // compare the entered extension against the filters list
         // implemented again later in query_directory if branch
@@ -310,8 +320,7 @@ bool ImFileWindow(FileWindowContext &ctx, FileWindowMode mode,
 
             // parse the comma separated filters for acceptable file extensions
             char filter_buf[128]; 
-            snprintf(filter_buf, sizeof(filter_buf), 
-                     "%s", filters);
+            snprintf(filter_buf, sizeof(filter_buf), "%s", filters);
 
             for (char *iter = strtok(filter_buf, ","); 
                  iter != NULL; 
@@ -340,10 +349,10 @@ bool ImFileWindow(FileWindowContext &ctx, FileWindowMode mode,
 
     if (backward_clicked)
     {
+        history_idx_changed = true;
         ctx.history.idx--;
         ctx.path = ctx.history.paths[ctx.history.idx];
         ctx.query_directory = true;
-        history_idx_changed = true;
     } 
     ImGui::SameLine();
 
@@ -353,86 +362,110 @@ bool ImFileWindow(FileWindowContext &ctx, FileWindowMode mode,
 
     if (forward_clicked) 
     {
+        history_idx_changed = true;
         ctx.history.idx++;
         ctx.path = ctx.history.paths[ctx.history.idx];
-        history_idx_changed = true;
         ctx.query_directory = true;
     } 
-    ImGui::SameLine();
 
 
-    bool disable_input = mode == FileWindowMode_SelectDirectory ||
-                         mode == FileWindowMode_SelectFile;
+    bool disable_input = mode == ImGuiFileWindowMode_SelectDirectory ||
+        mode == ImGuiFileWindowMode_SelectFile;
 
-    // quick access directory buttons
-    for (const DirectoryButton &iter : BOOKMARKS)
-    {
-        ImGui::SameLine();
-        if (ImGui::Button(iter.button_text))
-        {
-            ctx.path = iter.path;
-            ctx.query_directory = true;
-        }
-    }
-
-
+    ImGui::Spacing();
+    ImGui::Spacing();
 
     const float LOCAL_WIN_WIDTH = ImGui::GetWindowWidth();
-    ImGui::Spacing();
-    const char PATHSEP = PATHSEPSTR[0];
-    size_t dirstart = 0;
 
-    for (size_t i = 0; i < ctx.path.size(); i++)
+    if (ctx.show_path_as_input)
     {
-        char c = ctx.path[i];
-        bool last_dir = false;
-        if (i == ctx.path.size() - 1)
+        if ( ImGui::InputText("##imfilewin_path_input", 
+                              ctx.path_input, sizeof(ctx.path_input), 
+                              ImGuiInputTextFlags_EnterReturnsTrue) )
         {
-            // offset by one to get proper dirname length
-            last_dir = true;
-            i++; 
-        }
-        else if (c != PATHSEP) 
-        {
-            continue;
-        }
-
-        const char *dirptr = ctx.path.data() + dirstart;
-        int dirlength = i - dirstart;
-
-        // hit path separator, get the dirname
-        // check if the next button fits on line
-        ImVec2 textsize = ImGui::CalcTextSize(dirptr, dirptr + dirlength, true);
-        ImVec2 curpos = ImGui::GetCursorPos();
-        if (curpos.x + textsize.x > LOCAL_WIN_WIDTH) 
-        {
-            // move to next line
-            curpos.y += textsize.y;
-            curpos.x = 0.0f;
-            ImGui::SetCursorPos(curpos);
-        }
-
-        snprintf(tmp, sizeof(tmp), "%.*s##%d", 
-                 dirlength, dirptr, uid++);
-
-        // dirlength of 0 causes the selectable to clobber its right neighbors
-        if (dirlength > 0 && ImGui::Selectable(tmp, false, 0, textsize))
-        {
-            if (!last_dir) // don't jump to current dir
+            ctx.show_path_as_input = false;
+            if (OS_GetAbsolutePath(ctx.path_input, tmp))
             {
-                ctx.path.erase(dirstart + dirlength);
+                ctx.path = tmp;
                 ctx.query_directory = true;
             }
         }
-        ImGui::SameLine();
-        ImGui::SeparatorEx(ImGuiSeparatorFlags_Vertical);
-        ImGui::SameLine();
-
-        dirstart = i + 1;
     }
-    
-    ImGui::Separator();
+    else
+    {
+        // draw path as a list of selectable text fields, 
+        // trailing ... is for converting the path into a text input box
+        // C:/Foo/Bar becomes C | Foo | Bar | ...
+        const char PATHSEP = PATHSEPSTR[0];
+        size_t dirstart = 0;
 
+        for (size_t i = 0; i < ctx.path.size(); i++)
+        {
+            char c = ctx.path[i];
+            bool last_dir = false;
+            if (i == ctx.path.size() - 1)
+            {
+                // offset by one to get proper dirname length
+                last_dir = true;
+                i++; 
+            }
+            else if (c != PATHSEP) 
+            {
+                continue;
+            }
+
+            const char *dirptr = ctx.path.data() + dirstart;
+            int dirlength = i - dirstart;
+
+            // hit path separator, get the dirname
+            // check if the next button fits on line
+            ImVec2 textsize = ImGui::CalcTextSize(dirptr, dirptr + dirlength, true);
+            ImVec2 padsize = ImGui::CalcTextSize("  "); // before/after name space
+            textsize.x += padsize.x;
+
+            ImVec2 curpos = ImGui::GetCursorPos();
+            if (curpos.x + textsize.x > LOCAL_WIN_WIDTH) 
+            {
+                // move to next line
+                curpos.y += textsize.y;
+                curpos.x = 0.0f;
+                ImGui::SetCursorPos(curpos);
+            }
+
+            snprintf(tmp, sizeof(tmp), " %.*s ##%d", 
+                     dirlength, dirptr, uid++);
+
+            // dirlength of 0 causes the selectable to clobber its right neighbors
+            if (dirlength > 0)
+            {
+                ImGui::SameLine();
+                if (ImGui::Selectable(tmp, false, 0, textsize) && !last_dir) 
+                {
+                    ctx.path.erase(dirstart + dirlength);
+                    ctx.query_directory = true;
+                }
+
+                ImGui::SameLine();
+                ImGui::TextColored(ImGui::GetStyleColorVec4(ImGuiCol_Separator),
+                                   "%s", "|");
+            }
+
+            dirstart = i + 1;
+        }
+
+        const char *str = " ... "; 
+        ImVec2 size = ImGui::CalcTextSize(str);
+        ImGui::SameLine();
+        if ( ImGui::Selectable(str, false, 0, size) )
+        {
+            ctx.show_path_as_input = true;
+            snprintf(ctx.path_input, sizeof(ctx.path_input), 
+                     "%s", ctx.path.c_str());
+        }
+    }
+
+    ImGui::Spacing();
+    ImGui::Spacing();
 
     const float BOTTOM_BAR_HEIGHT = 40.0f;
     ImVec2 childstart = ImGui::GetCursorPos();
@@ -441,7 +474,7 @@ bool ImFileWindow(FileWindowContext &ctx, FileWindowMode mode,
     childsize.x = 0.0f; // take up the full window width
 
     // draw active item, select and cancel button at the bottom of the window
-    ImVec2 bottomstart = {0.0f, ImGui::GetWindowSize().y - BOTTOM_BAR_HEIGHT };
+    ImVec2 bottomstart = {childstart.x, ImGui::GetWindowSize().y - BOTTOM_BAR_HEIGHT + 10.0f};
     ImGui::SetCursorPos(bottomstart);
 
     ImGui::BeginDisabled(disable_input);
@@ -491,6 +524,7 @@ bool ImFileWindow(FileWindowContext &ctx, FileWindowMode mode,
         }
 
         ctx.query_directory = false;
+        ctx.show_path_as_input = false;
         ctx.dirs.clear();
         ctx.files.clear();
 
@@ -507,7 +541,7 @@ bool ImFileWindow(FileWindowContext &ctx, FileWindowMode mode,
         std::string file = std::string(ctx.path) + PATHSEPSTR + dirname;
 
         // radio button for selecting directories 
-        if (mode == FileWindowMode_SelectDirectory)
+        if (mode == ImGuiFileWindowMode_SelectDirectory)
         {
             snprintf(tmp, sizeof(tmp), "##dirbutton_%d", uid++);
             if (ImGui::RadioButton( tmp, &ctx.select_index, dir_idx))
@@ -527,12 +561,13 @@ bool ImFileWindow(FileWindowContext &ctx, FileWindowMode mode,
             ctx.path = std::string(tmp);
             ctx.select_index = FileWindowContext::BAD_INDEX;
             ctx.query_directory = true;
+            ctx.show_path_as_input = false;
         }
         dir_idx++;
     }
 
     // draw the files as radio buttons
-    if (mode != FileWindowMode_SelectDirectory)
+    if (mode != ImGuiFileWindowMode_SelectDirectory)
     {
         int idx = 0;
         for (const std::string &filename : ctx.files)
@@ -569,5 +604,3 @@ bool ImFileWindow(FileWindowContext &ctx, FileWindowMode mode,
     ImGui::End();
     return close_window;
 }
-
-#endif

@@ -5,7 +5,6 @@
 //
 
 #include <imgui/imgui.h>
-#include <imgui/imgui_internal.h>
 #include <imgui/imgui_impl_glfw.h>
 #include <imgui/imgui_impl_opengl2.h>
 #include <GLFW/glfw3.h>
@@ -269,6 +268,40 @@ int GDB_Init(GLFWwindow *window)
 
     do
     {
+
+        // read in configuration file
+        {
+            std::string line;
+            std::ifstream file(TUG_CONFIG_FILENAME, std::ios::in);
+            while (std::getline(file, line))
+            {
+                size_t commentoff = line.find('#');
+                if (commentoff != std::string::npos)
+                    line.erase(commentoff);
+
+                if (line.size() > 0 && line[ line.size() - 1 ] == '\r')
+                    line.pop_back();
+
+                size_t equaloff = line.find('=');
+                if (equaloff != std::string::npos && equaloff + 1 < line.size())
+                {
+                    std::string key = line.substr(0, equaloff);
+                    std::string value = line.substr(equaloff + 1);
+
+                    #define KEYCONF(keyname) if (key == #keyname) prog.config_##keyname = value.c_str();
+
+                    KEYCONF(gdb_path)
+                    KEYCONF(startup_debug_exe)
+                    KEYCONF(font_filename)
+                    KEYCONF(font_size)
+
+                    #undef KEYCONF
+                }
+            }
+
+            file.close();
+        }
+
         int pipes[2] = {};
         rc = pipe(pipes);
         if (rc < 0)
@@ -324,10 +357,6 @@ int GDB_Init(GLFWwindow *window)
 
 
 
-
-
-
-
         //rc = chdir("/mnt/c/Users/Kyle/Downloads/Chrome Downloads/ARM/AARCH32");
         //if (rc < 0)
         //{
@@ -335,10 +364,9 @@ int GDB_Init(GLFWwindow *window)
         //    break;
         //}
 
-        // child process to start gdb interpreter
-        //if (fork() == 0)
+        if (prog.config_gdb_path != "")
         {
-#if 0 // old way, can't get PID
+#if 0 // old way, can't get gdb process PID this way
             dup2(gdb.fd_out_read, 0);           // stdin
             dup2(gdb.fd_in_write, 1);        // stdout
             dup2(gdb.fd_in_write, 2);        // stderr
@@ -349,26 +377,35 @@ int GDB_Init(GLFWwindow *window)
             rc = execl("/usr/bin/gdb-multiarch", "gdb-multiarch", "./advent.out", "--interpreter=mi", NULL);
             VerifyCond(rc == 0);
 #endif
-            // TODO: args are char * in params, does it mutate them?
-            //       this gobbledygook is for creating mutable strings
-            const char *cargv[] = {
-                "gdb-multiarch",
-                //"./advent.out",
-                "--interpreter=mi",
-            };
+            String args = prog.config_gdb_path + " " + prog.config_gdb_args;
+            args += " --interpreter=mi "; // TODO: config for MI version
 
-            char buf[1024];
-            char *argv[100] = {};
-            int buf_idx = 0;
-            int avi = 0;
+            std::string buf;
+            size_t startoff = 0;
+            size_t spaceoff = 0;
+            size_t bufoff = 0;
+            std::vector<char *> argv;
 
-            for (const char *cstr : cargv)
+    dbg();
+            while ( std::string::npos != (spaceoff = args.find(' ', startoff)) )
             {
-                argv[avi++] = buf + buf_idx;
-                buf_idx += snprintf(buf + buf_idx, sizeof(buf) - buf_idx, "%s", cstr);
-                buf_idx += 1; // NT
+                size_t arglen = spaceoff - startoff;
+                if (arglen != 0)
+                {
+                    argv.push_back((char *)bufoff);
+                    buf.insert(buf.size(), &args[ startoff ], arglen);
+                    buf.push_back('\0');
+                    bufoff += (arglen + 1);
+                }
+                startoff = spaceoff + 1;
             }
-            argv[avi++] = NULL;
+            argv.push_back(NULL);
+            
+            // convert base offsets to char pointers
+            for (size_t i = 0; i < argv.size(); i++)
+            {
+                argv[i] = (char *)((size_t)argv[i] + buf.data());
+            }
 
             posix_spawn_file_actions_t actions = {};
             posix_spawn_file_actions_adddup2(&actions, gdb.fd_out_read,  0);    // stdin
@@ -379,7 +416,6 @@ int GDB_Init(GLFWwindow *window)
             posix_spawnattr_init(&attrs);
             posix_spawnattr_setflags(&attrs, POSIX_SPAWN_SETSID);
 
-            dbg();
             String env;
             FILE *fsh = popen("printenv", "r");
             if (fsh == NULL)
@@ -397,6 +433,7 @@ int GDB_Init(GLFWwindow *window)
 
             Vector<char *> envptr;
             size_t lineoff = 0;
+
             for (size_t i = 0; i < env.size(); i++)
             {
                 if (env[i] == '\n')
@@ -410,8 +447,8 @@ int GDB_Init(GLFWwindow *window)
 
             pclose(fsh);
 
-            rc = posix_spawnp((pid_t *) &gdb.spawned_pid, "/usr/bin/gdb-multiarch", 
-                              &actions, &attrs, argv, envptr.data());
+            rc = posix_spawnp((pid_t *) &gdb.spawned_pid, prog.config_gdb_path.c_str(),
+                              &actions, &attrs, argv.data(), envptr.data());
             if (rc < 0) 
             {
                 LogStrError("posix_spawnp");
@@ -449,8 +486,13 @@ int GDB_Init(GLFWwindow *window)
         //GDB_SendBlocking("-environment-cd \"/mnt/c/Users/Kyle/Downloads/Chrome Downloads/ARM/AARCH32\"");
         //GDB_SendBlocking("-file-exec-and-symbols advent.out");
 
-        GDB_SendBlocking("-file-exec-and-symbols debug.elf");
-
+        if (prog.config_startup_debug_exe != "")
+        {
+            char tmp[1024];
+            tsnprintf(tmp, "-file-exec-and-symbols \"%s\"", 
+                      prog.config_startup_debug_exe.c_str());
+            GDB_SendBlocking(tmp);
+        }
 
         // preload all the referenced files
         //GDB_SendBlocking("-file-list-exec-source-files", tmp, "files");
@@ -809,7 +851,7 @@ void GDB_Draw(GLFWwindow *window)
                 }
                 else if (prefix_word == "thread-group-started")
                 {
-                    prog.pid = (pid_t)GDB_ExtractInt("pid", rec);
+                    prog.inferior_process = (pid_t)GDB_ExtractInt("pid", rec);
                 }
             }
             else if (prefix_word == "stopped")
@@ -974,13 +1016,13 @@ void GDB_Draw(GLFWwindow *window)
         }
     }
 
+    ImGuiWindowFlags window_flags = ImGuiWindowFlags_NoMove |
+                                    ImGuiWindowFlags_NoResize |
+                                    ImGuiWindowFlags_NoCollapse | 
+                                    ImGuiWindowFlags_NoBringToFrontOnFocus;
 
     // code window, see current instruction and set breakpoints
     {
-        ImGuiWindowFlags window_flags = ImGuiWindowFlags_NoMove |
-                                        ImGuiWindowFlags_NoResize |
-                                        ImGuiWindowFlags_NoCollapse;
-
         ImGui::SetNextWindowBgAlpha(1.0);   // @@@: Imgui bug where GetStyleColor doesn't respect window opacity
         ImGui::SetNextWindowPos( { 0, 0 } );
         ImGui::SetNextWindowSize({ SOURCE_WIDTH, WINDOW_HEIGHT });
@@ -1339,9 +1381,6 @@ void GDB_Draw(GLFWwindow *window)
 
     // control window, registers, locals, watch, program control
     {
-        ImGuiWindowFlags window_flags = ImGuiWindowFlags_NoMove |
-                                        ImGuiWindowFlags_NoResize |
-                                        ImGuiWindowFlags_NoCollapse;
 
         ImGui::SetNextWindowBgAlpha(1.0);   // @@@: Imgui bug where GetStyleColor doesn't respect window opacity
         ImGui::SetNextWindowPos( { SOURCE_WIDTH, 0 } );
@@ -1392,7 +1431,7 @@ void GDB_Draw(GLFWwindow *window)
         if (clicked)
         {
             // send SIGINT
-            kill(prog.pid, SIGINT);
+            kill(prog.inferior_process, SIGINT);
         }
 
         // stop
@@ -1400,8 +1439,8 @@ void GDB_Draw(GLFWwindow *window)
         ImGuiDisabled(!prog.started, clicked = ImGui::Button("[]"));
         if (clicked)
         {
-            kill(prog.pid, SIGTERM);
-            prog.pid = 0;
+            kill(prog.inferior_process, SIGTERM);
+            prog.inferior_process = 0;
         }
 
         // step line
@@ -1445,8 +1484,17 @@ void GDB_Draw(GLFWwindow *window)
             "[]  = stop program\n"
             "--> = step into\n"
             "/\\> = step over\n"
-            R"(</\= step out)";
+           R"(</\ = step out)";
         DrawHelpMarker(button_desc);
+
+        static bool show_config_window;
+        show_config_window |= ImGui::Button("config");
+        if (show_config_window)
+        {
+            ImGui::Begin("Tug Configuration", &show_config_window);   // Pass a pointer to our bool variable (the window will have a closing button that will clear the bool when clicked)
+
+            ImGui::End();
+        }
 
         for (int i = 0; i < NUM_LOG_ROWS; i++)
         {
@@ -1459,7 +1507,7 @@ void GDB_Draw(GLFWwindow *window)
         static char input_command[CMDSIZE] = 
             "target remote localhost:12345";
 
-        const auto HistoryCallback = [](ImGuiInputTextCallbackData *data) -> int
+        static const auto HistoryCallback = [](ImGuiInputTextCallbackData *data) -> int
         {
             if (data->EventKey == ImGuiKey_UpArrow &&
                 prog.input_cmd_idx + 1 < prog.num_input_cmds)
@@ -1531,9 +1579,6 @@ void GDB_Draw(GLFWwindow *window)
                 memset(input_command, 0, CMDSIZE);
             }
         }
-
-        ImGui::Text("Application average %.3f ms/frame (%.1f FPS)",
-                    1000.0f / ImGui::GetIO().Framerate, ImGui::GetIO().Framerate);
 
         ImGuiTableFlags flags = ImGuiTableFlags_ScrollX |
                                 ImGuiTableFlags_ScrollY |
@@ -1890,8 +1935,6 @@ void GDB_Draw(GLFWwindow *window)
                 iter.value = s;
             }
         }
-
-        
         
         ImGui::End();
     }
@@ -1954,7 +1997,6 @@ int main(int, char**)
 
     ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
 
-
     // Main loop
     while (!glfwWindowShouldClose(window))
     {
@@ -1970,24 +2012,8 @@ int main(int, char**)
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
 
-        ImGui::Begin("foobar");
 
-        static bool openit;
-        openit |= ImGui::Button("Clickeee");
-
-        if (openit)
         {
-            static FileWindowContext ctx;
-            if ( ImFileWindow(ctx, FileWindowMode_SelectFile, ".", "cpp") )
-            {
-                printf("%s\n", ctx.path.c_str());
-                openit = false;
-            }
-        }
-
-        ImGui::End();
-
-        if (0){
             char curpos[256];
             snprintf(curpos, sizeof(curpos), "Mouse Position: (%.1f,%.1f)", io.MousePos.x, io.MousePos.y);
             //ImGui::ShowDemoWindow();
@@ -1996,6 +2022,11 @@ int main(int, char**)
             {
                 ImGui::GetForegroundDrawList()->AddRectFilled({ 0, 0 }, { 250, 20 }, 0xFFFFFFFF);
                 ImGui::GetForegroundDrawList()->AddText({ 0, 0 }, 0xFF000000, curpos);
+
+                char tmp[128]; 
+                tsnprintf(tmp, "Application average %.3f ms/frame (%.1f FPS)",
+                          1000.0f / ImGui::GetIO().Framerate, 
+                          ImGui::GetIO().Framerate);
             }
 
             //
