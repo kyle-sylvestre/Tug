@@ -783,6 +783,7 @@ void GDB_Draw(GLFWwindow *window)
 {
     // process async events
     static Record rec;  // scratch record 
+    char tmpbuf[4096];  // scratch for snprintf
 
     // check for new blocks
     int recv_block_semvalue;
@@ -921,10 +922,9 @@ void GDB_Draw(GLFWwindow *window)
                 // new stack frame, delete all locals
                 for (VarObj &iter : prog.local_vars)
                 {
-                    char buf[256];
-                    tsnprintf(buf, "-var-delete " LOCAL_NAME_PREFIX "%s", 
+                    tsnprintf(tmpbuf, "-var-delete " LOCAL_NAME_PREFIX "%s", 
                               iter.name.c_str());
-                    GDB_SendBlocking(buf);
+                    GDB_SendBlocking(tmpbuf);
                 }
                 prog.local_vars.clear();
 
@@ -944,10 +944,9 @@ void GDB_Draw(GLFWwindow *window)
                     // create MI variable objects for each stack variable
                     for (String &iter : stack_vars)
                     {
-                        char buf[512];
-                        tsnprintf(buf, "-var-create " LOCAL_NAME_PREFIX "%s * %s",
+                        tsnprintf(tmpbuf, "-var-create " LOCAL_NAME_PREFIX "%s * %s",
                                   iter.c_str(), iter.c_str());
-                        GDB_SendBlocking(buf, rec);
+                        GDB_SendBlocking(tmpbuf, rec);
 
                         String value = GDB_ExtractValue("value", rec);
                         if (value == "") value = "???";
@@ -1132,9 +1131,8 @@ void GDB_Draw(GLFWwindow *window)
                 ImGui::PushStyleColor(ImGuiCol_CheckMark, 
                                       bkpt_active_color.Value);        
 
-                char buf[512]; 
-                tsnprintf(buf, "##bkpt%d", (int)i); 
-                if (ImGui::RadioButton(buf, is_set))
+                tsnprintf(tmpbuf, "##bkpt%d", (int)i); 
+                if (ImGui::RadioButton(tmpbuf, is_set))
                 {
                     // dispatch command to set breakpoint
                     if (is_set)
@@ -1145,9 +1143,8 @@ void GDB_Draw(GLFWwindow *window)
                             if (iter.line == i && iter.file_idx == frame.file_idx)
                             {
                                 // remove breakpoint
-                                tsnprintf(buf, "-break-delete %zu", iter.number);
-
-                                GDB_SendBlocking(buf);
+                                tsnprintf(tmpbuf, "-break-delete %zu", iter.number);
+                                GDB_SendBlocking(tmpbuf);
                                 prog.breakpoints.erase(prog.breakpoints.begin() + b,
                                                        prog.breakpoints.begin() + b + 1);
                                 break;
@@ -1157,9 +1154,9 @@ void GDB_Draw(GLFWwindow *window)
                     else
                     {
                         // insert breakpoint
-                        tsnprintf(buf, "-break-insert --source \"%s\" --line %d", 
+                        tsnprintf(tmpbuf, "-break-insert --source \"%s\" --line %d", 
                                   file.fullpath.c_str(), (int)i);
-                        GDB_SendBlocking(buf, rec);
+                        GDB_SendBlocking(tmpbuf, rec);
 
                         Breakpoint res = {};
                         res.number = GDB_ExtractInt("bkpt.number", rec);
@@ -1289,11 +1286,9 @@ void GDB_Draw(GLFWwindow *window)
                                         hover_frame_idx = prog.frame_idx;
                                         String word(line.data() + word_idx, char_idx - word_idx);
 
-                                        char cmd[256];
-                                        size_t len = tsnprintf(cmd, "-data-evaluate-expression --frame %zu --thread 1 \"%s\"", 
-                                                               prog.frame_idx, word.c_str());
-                                        GDB_LogLine(cmd, len);
-                                        GDB_SendBlocking(cmd, rec);
+                                        tsnprintf(tmpbuf, "-data-evaluate-expression --frame %zu --thread 1 \"%s\"", 
+                                                  prog.frame_idx, word.c_str());
+                                        GDB_SendBlocking(tmpbuf, rec);
                                         hover_value = GDB_ExtractValue("value", rec);
                                     }
                                     else
@@ -1640,9 +1635,8 @@ void GDB_Draw(GLFWwindow *window)
                                 : "???";
 
                 ImGui::TableNextColumn();
-                char line[256];
-                tsnprintf(line, "%zu : %s##%zu", iter.line, file.c_str(), i);
-                if ( ImGui::Selectable(line, i == prog.frame_idx) )
+                tsnprintf(tmpbuf, "%zu : %s##%zu", iter.line, file.c_str(), i);
+                if ( ImGui::Selectable(tmpbuf, i == prog.frame_idx) )
                 {
                     prog.frame_idx = i;
                     gui.source_highlighted_line = BAD_INDEX; // force a re-center
@@ -1651,9 +1645,8 @@ void GDB_Draw(GLFWwindow *window)
                         // do a one-shot query of a non-current frame
                         // prog.frames is stored from bottom to top so need to do size - 1
                         prog.other_frame_vars.clear();
-                        char buf[256];
-                        tsnprintf(buf, "-stack-list-variables --frame %zu --thread 1 --all-values", i);
-                        GDB_SendBlocking(buf, rec);
+                        tsnprintf(tmpbuf, "-stack-list-variables --frame %zu --thread 1 --all-values", i);
+                        GDB_SendBlocking(tmpbuf, rec);
                         const RecordAtom *variables = GDB_ExtractAtom("variables", rec);
 
                         for (const RecordAtom &iter : GDB_IterChild(rec, *variables))
@@ -1724,10 +1717,9 @@ void GDB_Draw(GLFWwindow *window)
                     if (reg.registered)
                     {
                         // add register varobj
-                        char buf[256];
-                        tsnprintf(buf, "-var-create " GLOBAL_NAME_PREFIX "%s @ $%s",
+                        tsnprintf(tmpbuf, "-var-create " GLOBAL_NAME_PREFIX "%s @ $%s",
                                   reg.text.c_str(), reg.text.c_str());
-                        GDB_SendBlocking(buf, rec);
+                        GDB_SendBlocking(tmpbuf, rec);
                         prog.global_vars.push_back( {reg.text, "???"} );
                     }
                     else
@@ -1740,9 +1732,8 @@ void GDB_Draw(GLFWwindow *window)
                             {
                                 src.erase(src.begin() + i,
                                           src.begin() + i + 1);
-                                char buf[256];
-                                tsnprintf(buf, "-var-delete " GLOBAL_NAME_PREFIX "%s", reg.text.c_str());
-                                GDB_SendBlocking(buf);
+                                tsnprintf(tmpbuf, "-var-delete " GLOBAL_NAME_PREFIX "%s", reg.text.c_str());
+                                GDB_SendBlocking(tmpbuf);
                             }
                         }
                     }
@@ -1924,10 +1915,9 @@ void GDB_Draw(GLFWwindow *window)
             // evaluate user defined watch variables
             for (VarObj &iter : prog.watch_vars)
             {
-                char buf[256];
-                tsnprintf(buf, "-data-evaluate-expression --frame %zu --thread 1 \"%s\"", 
+                tsnprintf(tmpbuf, "-data-evaluate-expression --frame %zu --thread 1 \"%s\"", 
                           prog.frame_idx, iter.name.c_str());
-                GDB_SendBlocking(buf, rec);
+                GDB_SendBlocking(tmpbuf, rec);
                 String s = GDB_ExtractValue("value", rec);
                 if (s == "") s = "???";
                 iter.changed = (iter.value != s);
