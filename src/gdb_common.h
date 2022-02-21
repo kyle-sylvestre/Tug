@@ -44,7 +44,7 @@ typedef intptr_t ssize_t;
 
 #endif
 
-#define PrintTrace() printf("(FILE: %s, LINE: %d, FUNCTION: %s) ", __FILE__, __LINE__, __FUNCTION__)
+#define PrintTrace() 
 #define Fatal(msg) Verify(0 && msg)
 #define ArrayCount(arr) (sizeof(arr) / sizeof(arr[0]))
 #define tsnprintf(buf, fmt, ...) snprintf(buf, sizeof(buf), fmt, ##__VA_ARGS__)
@@ -60,29 +60,20 @@ if ( !(cond) )\
 #define Free free
 
 // log errno and strerror, along with user error message
-#define LogStrError(msg) LogStrErrorf(msg)
-#define LogStrErrorf(fmt, ...)\
-do {\
-    PrintTrace();\
-    fprintf(stderr, fmt, ##__VA_ARGS__);\
-    fprintf(stderr, ", errno: %d, strerror: %s", errno, strerror(errno));\
-    Break();\
-    exit(0);\
-} while(0)
-
+#define PrintErrorLibC(msg) PrintErrorf("%s, errno(%d): %s", msg, errno, strerror(errno))
 
 // log user error message
-#define LogError(str) LogErrorf(str)
-#define LogErrorf(fmt, ...)\
+#define PrintError(str) PrintErrorf("%s", str)
+#define PrintErrorf(fmt, ...)\
 do {\
-    PrintTrace();\
+    fprintf(stderr, "(%s : %d : %s) ", __FILE__, __LINE__, __FUNCTION__);\
     fprintf(stderr, fmt, ##__VA_ARGS__);\
-    Break();\
+    Assert(0);\
     exit(0);\
 } while(0)
 
-#define Log printf
-
+#define Printf(fmt, ...) printf(fmt, ##__VA_ARGS__);
+#define Print(msg) Printf("%s", msg);
 
 #define NUM_LOG_ROWS 10
 #define NUM_LOG_COLS 60
@@ -96,8 +87,7 @@ do {\
 #define LOCAL_NAME_PREFIX "LC__"
 #define WATCH_NAME_PREFIX "WT__"
 
-#define TUG_CONFIG_FILENAME "tug.conf"
-
+#define TUG_CONFIG_FILENAME "tug.ini"
 
 // arm32
 const char *const REG_ARM32[] = {
@@ -308,7 +298,8 @@ struct ProgramContext
     // values from tug.conf
     String config_gdb_path;
     String config_gdb_args;
-    String config_startup_debug_exe;
+    String config_debug_exe;
+    String config_debug_exe_args;
     String config_font_filename;
     String config_font_size;
 };

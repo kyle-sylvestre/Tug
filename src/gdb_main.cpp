@@ -9,7 +9,6 @@
 #include <imgui/imgui_impl_opengl2.h>
 #include <GLFW/glfw3.h>
 
-#define IMPL_FILE_WINDOW
 #include "imgui_file_window.h"
 
 struct GlfwInput
@@ -92,7 +91,7 @@ void *RedirectStdin(void *ctx)
         char c = fgetc(stdin);
         ssize_t num_written = write(gdb.fd_out_write, &c, 1);
         if (num_written < 0)
-            LogStrError("console write to stdin");
+            PrintErrorLibC("console write to stdin");
     }
     return NULL;
 }
@@ -104,15 +103,12 @@ void *ReadInterpreterBlocks(void *ctx)
     size_t insert_idx = 0;
     gdb.blocks.resize(16 * 1024);
 
-    while (!gdb.end_program)
+    while (true)
     {
         ssize_t num_read = read(gdb.fd_in_read, tmp + insert_idx,
                                 sizeof(tmp) - insert_idx - 1 /*NT*/);
-        if (num_read < 0)
-        {
-            LogStrError("gdb read block");
+        if (num_read <= 0)
             break;
-        }
 
         tmp[insert_idx + num_read] = '\0';
         printf("%.*s\n\n", int(num_read), tmp + insert_idx);
@@ -169,13 +165,12 @@ void *ReadInterpreterBlocks(void *ctx)
         }
     }
 
-    Log("closing GDB interpreter read loop...\n");
+    Print("closing GDB interpreter read loop...\n");
     return NULL;
 }
 
 int GDB_Shutdown()
 {
-    gdb.end_program = true;
     pthread_kill(gdb.thread_read_interp, SIGINT);
     pthread_join(gdb.thread_read_interp, NULL);
     kill(gdb.spawned_pid, SIGINT);
@@ -183,6 +178,9 @@ int GDB_Shutdown()
     pthread_mutex_destroy(&gdb.modify_block);
     sem_close(gdb.recv_block);
     close(gdb.fd_in_read);
+    close(gdb.fd_out_read);
+    close(gdb.fd_in_write);
+    close(gdb.fd_out_write);
     return 0;
 }
 
@@ -291,7 +289,8 @@ int GDB_Init(GLFWwindow *window)
                     #define KEYCONF(keyname) if (key == #keyname) prog.config_##keyname = value.c_str();
 
                     KEYCONF(gdb_path)
-                    KEYCONF(startup_debug_exe)
+                    KEYCONF(debug_exe)
+                    KEYCONF(debug_exe_args)
                     KEYCONF(font_filename)
                     KEYCONF(font_size)
 
@@ -306,7 +305,7 @@ int GDB_Init(GLFWwindow *window)
         rc = pipe(pipes);
         if (rc < 0)
         {
-            LogStrError("from gdb pipe");
+            PrintErrorLibC("from gdb pipe");
             break;
         }
 
@@ -316,7 +315,7 @@ int GDB_Init(GLFWwindow *window)
         rc = pipe(pipes);
         if (rc < 0)
         {
-            LogStrError("to gdb pipe");
+            PrintErrorLibC("to gdb pipe");
             break;
         }
 
@@ -326,31 +325,31 @@ int GDB_Init(GLFWwindow *window)
         rc = pthread_mutex_init(&gdb.modify_block, NULL);
         if (rc < 0) 
         {
-            LogStrError("pthread_mutex_init");
+            PrintErrorLibC("pthread_mutex_init");
             break;
         }
 
         gdb.recv_block = sem_open("recv_gdb_block", O_CREAT, S_IRWXU, 0);
         if (gdb.recv_block == NULL) 
         {
-            LogStrError("sem_open");
+            PrintErrorLibC("sem_open");
             break;
         }
 
         //if (0 > (gdb.fd_pty_master = posix_openpt(O_RDWR | O_NOCTTY | O_NONBLOCK)))
         //{
-        //    LogStrError("posix_openpt");
+        //    PrintErrorLibC("posix_openpt");
         //    break;
         //}
 
         //if (0 > (rc = grantpt(gdb.fd_pty_master)) )
         //{
-        //    LogStrError("grantpt");
+        //    PrintErrorLibC("grantpt");
         //    break;
         //}
         //if (0 > (rc = unlockpt(gdb.fd_pty_master)) )
         //{
-        //    LogStrError("grantpt");
+        //    PrintErrorLibC("grantpt");
         //    break;
         //}
         //printf("pty slave: %s\n", ptsname(gdb.fd_pty_master));
@@ -360,7 +359,7 @@ int GDB_Init(GLFWwindow *window)
         //rc = chdir("/mnt/c/Users/Kyle/Downloads/Chrome Downloads/ARM/AARCH32");
         //if (rc < 0)
         //{
-        //    LogStrError("chdir");
+        //    PrintErrorLibC("chdir");
         //    break;
         //}
 
@@ -377,9 +376,10 @@ int GDB_Init(GLFWwindow *window)
             rc = execl("/usr/bin/gdb-multiarch", "gdb-multiarch", "./advent.out", "--interpreter=mi", NULL);
             VerifyCond(rc == 0);
 #endif
-            String args = prog.config_gdb_path + " " + prog.config_gdb_args;
-            args += " --interpreter=mi "; // TODO: config for MI version
+            // TODO: config for MI version used
+            String args = prog.config_gdb_path + " " + prog.config_gdb_args + " --interpreter=mi "; 
 
+            dbg();
             std::string buf;
             size_t startoff = 0;
             size_t spaceoff = 0;
@@ -399,13 +399,13 @@ int GDB_Init(GLFWwindow *window)
                 }
                 startoff = spaceoff + 1;
             }
-            argv.push_back(NULL);
             
             // convert base offsets to char pointers
             for (size_t i = 0; i < argv.size(); i++)
             {
                 argv[i] = (char *)((size_t)argv[i] + buf.data());
             }
+            argv.push_back(NULL);
 
             posix_spawn_file_actions_t actions = {};
             posix_spawn_file_actions_adddup2(&actions, gdb.fd_out_read,  0);    // stdin
@@ -420,7 +420,7 @@ int GDB_Init(GLFWwindow *window)
             FILE *fsh = popen("printenv", "r");
             if (fsh == NULL)
             {
-                LogStrError("getenv popen");
+                PrintErrorLibC("getenv popen");
                 break;
             }
 
@@ -449,9 +449,9 @@ int GDB_Init(GLFWwindow *window)
 
             rc = posix_spawnp((pid_t *) &gdb.spawned_pid, prog.config_gdb_path.c_str(),
                               &actions, &attrs, argv.data(), envptr.data());
-            if (rc < 0) 
+            if (rc < 0 || gdb.spawned_pid == 0) 
             {
-                LogStrError("posix_spawnp");
+                PrintErrorLibC("posix_spawnp");
                 break;
             }
         }
@@ -459,7 +459,7 @@ int GDB_Init(GLFWwindow *window)
         rc = pthread_create(&gdb.thread_read_interp, NULL, ReadInterpreterBlocks, (void*) NULL);
         if (rc < 0) 
         {
-            LogStrError("pthread_create");
+            PrintErrorLibC("pthread_create");
             break;
         }
 
@@ -486,11 +486,11 @@ int GDB_Init(GLFWwindow *window)
         //GDB_SendBlocking("-environment-cd \"/mnt/c/Users/Kyle/Downloads/Chrome Downloads/ARM/AARCH32\"");
         //GDB_SendBlocking("-file-exec-and-symbols advent.out");
 
-        if (prog.config_startup_debug_exe != "")
+        if (prog.config_debug_exe != "")
         {
             char tmp[1024];
             tsnprintf(tmp, "-file-exec-and-symbols \"%s\"", 
-                      prog.config_startup_debug_exe.c_str());
+                      prog.config_debug_exe.c_str());
             GDB_SendBlocking(tmp);
         }
 
@@ -524,13 +524,6 @@ int GDB_Init(GLFWwindow *window)
 
     } while(0);
 
-    // gdb gui initialization
-    //  @param[in] window The window that received the event.
-    //  @param[in] key The [keyboard key](@ref keys) that was pressed or released.
-    //  @param[in] scancode The system-specific scancode of the key.
-    //  @param[in] action `GLFW_PRESS`, `GLFW_RELEASE` or `GLFW_REPEAT`.
-    //  @param[in] mods Bit field describing which [modifier keys](@ref mods) were
-    //  held down.
     const auto UpdateKey = [](GLFWwindow *window, int key, int scancode,
                               int action, int mods) -> void
     {
@@ -640,14 +633,14 @@ ssize_t GDB_Send(const char *cmd)
     ssize_t written = write(gdb.fd_out_write, cmd, cmdsize);
     if (written != (ssize_t)cmdsize)
     {
-        LogStrErrorf("GDB_Send %s", cmd);
+        PrintErrorLibC("GDB_Send");
     }
     else
     {
         ssize_t newline_written = write(gdb.fd_out_write, "\n", 1);
         if (newline_written != 1)
         {
-            LogStrError("GDB_Send \\n");
+            PrintErrorLibC("GDB_Send");
         }
     }
 
@@ -698,7 +691,7 @@ int GDB_SendBlocking(const char *cmd, const char *header, bool remove_after)
                 }
                 else
                 {
-                    LogStrErrorf("sem_timedwait: %s", cmd);
+                    PrintErrorLibC("sem_timedwait");
                 }
                 break;
             }
@@ -1023,7 +1016,7 @@ void GDB_Draw(GLFWwindow *window)
 
     // code window, see current instruction and set breakpoints
     {
-        ImGui::SetNextWindowBgAlpha(1.0);   // @@@: Imgui bug where GetStyleColor doesn't respect window opacity
+        ImGui::SetNextWindowBgAlpha(1.0);   // @Imgui: bug where GetStyleColor doesn't respect window opacity
         ImGui::SetNextWindowPos( { 0, 0 } );
         ImGui::SetNextWindowSize({ SOURCE_WIDTH, WINDOW_HEIGHT });
         ImGui::Begin("Source", NULL, window_flags);      // Create a window called "Hello, world!" and append into it.
@@ -1382,7 +1375,7 @@ void GDB_Draw(GLFWwindow *window)
     // control window, registers, locals, watch, program control
     {
 
-        ImGui::SetNextWindowBgAlpha(1.0);   // @@@: Imgui bug where GetStyleColor doesn't respect window opacity
+        ImGui::SetNextWindowBgAlpha(1.0);   // @Imgui: bug where GetStyleColor doesn't respect window opacity
         ImGui::SetNextWindowPos( { SOURCE_WIDTH, 0 } );
         ImGui::SetNextWindowSize({ WINDOW_WIDTH - SOURCE_WIDTH, WINDOW_HEIGHT });
         ImGui::Begin("Control", NULL, window_flags);
@@ -1425,22 +1418,11 @@ void GDB_Draw(GLFWwindow *window)
             }
         }
 
-        // pause
+        // send SIGINT 
         ImGui::SameLine();
-        ImGuiDisabled(!prog.running, clicked = ImGui::Button("||"));
-        if (clicked)
+        if (ImGui::Button("||"))
         {
-            // send SIGINT
             kill(prog.inferior_process, SIGINT);
-        }
-
-        // stop
-        ImGui::SameLine();
-        ImGuiDisabled(!prog.started, clicked = ImGui::Button("[]"));
-        if (clicked)
-        {
-            kill(prog.inferior_process, SIGTERM);
-            prog.inferior_process = 0;
         }
 
         // step line
@@ -1481,7 +1463,6 @@ void GDB_Draw(GLFWwindow *window)
             "--- = display next executed line\n"
             "|>  = start/continue program\n"
             "||  = pause program\n"
-            "[]  = stop program\n"
             "--> = step into\n"
             "/\\> = step over\n"
            R"(</\ = step out)";
@@ -1491,7 +1472,25 @@ void GDB_Draw(GLFWwindow *window)
         show_config_window |= ImGui::Button("config");
         if (show_config_window)
         {
-            ImGui::Begin("Tug Configuration", &show_config_window);   // Pass a pointer to our bool variable (the window will have a closing button that will clear the bool when clicked)
+            ImGui::Begin("Tug Configuration", &show_config_window);
+
+            static char config_gdb_path[PATH_MAX];
+            ImGui::InputText("gdb path##config_gdb_path", config_gdb_path, 
+                             sizeof(config_gdb_path));
+
+            static bool pick_gdb_path;
+            ImGui::SameLine();
+            pick_gdb_path |= ImGui::Button("...");
+            if (pick_gdb_path)
+            {
+                static FileWindowContext ctx;
+                if ( ImGuiFileWindow(ctx, ImGuiFileWindowMode_SelectFile) )
+                {
+                    if (ctx.selected)
+                        tsnprintf(config_gdb_path, "%s", ctx.path.c_str());
+                    pick_gdb_path = false;
+                }
+            }
 
             ImGui::End();
         }
@@ -1585,7 +1584,7 @@ void GDB_Draw(GLFWwindow *window)
                                 ImGuiTableFlags_Borders;
 
         // @Imgui: can't figure out the right combo of table/column flags corresponding to 
-        //       a table with initial column widths that expands column width on elem width increase
+        //         a table with initial column widths that expands column width on elem width increase
         char table_pad[128];
         memset(table_pad, ' ', sizeof(table_pad));
         const int MIN_TABLE_WIDTH_CHARS = 22;
@@ -1683,7 +1682,7 @@ void GDB_Draw(GLFWwindow *window)
         static Vector<RegisterName> all_registers;
         static bool show_add_register_window = false;
 
-        if (0 && ImGui::Button("Modify Registers##button"))
+        if (ImGui::Button("Modify Registers##button"))
         {
             show_add_register_window = true;
             all_registers.clear();
@@ -1753,7 +1752,7 @@ void GDB_Draw(GLFWwindow *window)
             ImGui::End();
         }
 
-        if (0 && ImGui::BeginTable("Registers", 2, flags))
+        if (ImGui::BeginTable("Registers", 2, flags))
         {
             ImGui::TableSetupColumn("Register");
             ImGui::TableSetupColumn("Value");
@@ -1776,7 +1775,7 @@ void GDB_Draw(GLFWwindow *window)
         }
 
         bool modified_watchlist = false;
-        if (ImGui::BeginTable("Watch", 2, flags, {300, 200}))
+        if (0 && ImGui::BeginTable("Watch", 2, flags, {300, 200}))
         {
 
             static size_t edit_var_name_idx = -1;
@@ -1989,7 +1988,14 @@ int main(int, char**)
     // - Read 'docs/FONTS.md' for more instructions and details.
     // - Remember that in C/C++ if you want to include a backslash \ in a string literal you need to write a double backslash \\ !
     //io.Fonts->AddFontDefault();
-    io.Fonts->AddFontFromFileTTF("./third-party/Inconsolata.otf", 12.0f);
+
+    if (prog.config_font_filename != "")
+    {
+        float fontsize = atof(prog.config_font_filename.c_str());
+        if (fontsize == 0) fontsize = 12.0f;
+        io.Fonts->AddFontFromFileTTF(prog.config_font_filename.c_str(), fontsize);
+    }
+
     //io.Fonts->AddFontFromFileTTF("../../misc/fonts/Cousine-Regular.ttf", 15.0f);
     //io.Fonts->AddFontFromFileTTF("../../misc/fonts/DroidSans.ttf", 16.0f);
     //io.Fonts->AddFontFromFileTTF("../../misc/fonts/ProggyTiny.ttf", 10.0f);
@@ -2014,19 +2020,26 @@ int main(int, char**)
 
 
         {
-            char curpos[256];
-            snprintf(curpos, sizeof(curpos), "Mouse Position: (%.1f,%.1f)", io.MousePos.x, io.MousePos.y);
-            //ImGui::ShowDemoWindow();
 
             if (GLFW_PRESS == glfwGetKey(window, GLFW_KEY_F1))
             {
-                ImGui::GetForegroundDrawList()->AddRectFilled({ 0, 0 }, { 250, 20 }, 0xFFFFFFFF);
-                ImGui::GetForegroundDrawList()->AddText({ 0, 0 }, 0xFF000000, curpos);
+                char tmp[256];
+                ImDrawList *drawlist = ImGui::GetForegroundDrawList();
+                tsnprintf(tmp, "Mouse Position: (%.1f,%.1f)", io.MousePos.x, io.MousePos.y);
+                ImVec2 textsize = ImGui::CalcTextSize(tmp);
+                ImVec2 TL = { 0, 0 };
 
-                char tmp[128]; 
+                drawlist->AddRectFilled(TL, textsize, 0xFFFFFFFF);
+                drawlist->AddText(TL, 0xFF000000, tmp);
+
                 tsnprintf(tmp, "Application average %.3f ms/frame (%.1f FPS)",
                           1000.0f / ImGui::GetIO().Framerate, 
                           ImGui::GetIO().Framerate);
+
+                TL.y += textsize.y;
+                textsize = ImGui::CalcTextSize(tmp);
+                drawlist->AddRectFilled(TL, textsize, 0xFFFFFFFF);
+                drawlist->AddText(TL, 0xFF000000, tmp);
             }
 
             //
