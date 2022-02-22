@@ -271,6 +271,7 @@ enum ConfigType
 {
     ConfigType_Text, 
     ConfigType_File, 
+    ConfigType_Bool, 
 };
 
 struct ConfigPair
@@ -305,9 +306,8 @@ struct ProgramContext
     Vector<FileContext> files;
 
     Vector<Frame> frames;
-    size_t frame_idx = -1;
+    size_t frame_idx = BAD_INDEX;
     pid_t inferior_process;
-
 
     // key=value .ini configuration 
     struct Config

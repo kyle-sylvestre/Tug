@@ -754,8 +754,10 @@ int GDB_SendBlocking(const char *cmd, const char *header, bool remove_after)
                         }
                         else if (NULL != strstr(iter.rec.buf.data(), "^error"))
                         {
-                            char msg[] = "---Error---";
-                            LogLine(msg, strlen(msg));
+                            // convert error record to GDB console output record
+                            String errmsg = GDB_ExtractValue("msg", iter.rec);
+                            errmsg = "&\"GDB MI Error: " + errmsg + "\"\n";
+                            LogLine(errmsg.data(), errmsg.size());
                             iter.parsed = true;
                             return -1;
                         }

@@ -535,6 +535,14 @@ static void DrawHelpMarker(const char *desc)
 
 void LogLine(const char *raw, size_t rawsize)
 {
+    bool is_gdb_console = (rawsize > 0) && 
+                          (raw[0] == PREFIX_DEBUG_LOG || 
+                           raw[0] == PREFIX_CONSOLE_LOG ||
+                           raw[0] == PREFIX_TARGET_LOG);
+
+    //if (!is_gdb_console)
+    //    return; //@Temp
+
     // debug
     //printf("%.*s\n", int(rawsize), raw);
 
@@ -553,18 +561,27 @@ void LogLine(const char *raw, size_t rawsize)
             dest[dest_idx++] = c;
     };
 
-    for (size_t i = 0; i < rawsize; i++)
+    size_t i = 0;
+
+    if (is_gdb_console)
+    {
+        // console output is format ~"text text text"\n
+        // skip over the beginning/ending characters
+        i += 2;
+        rawsize = (rawsize > 2) ? rawsize - 2 : 0;
+    }
+
+    for (; i < rawsize; i++)
     {
         char c = raw[i];
         char n = (i + 1 < rawsize) ? raw[i + 1] : '\0';
 
-        if (c == '\\')
+        if (c == '\\' && is_gdb_console)
         {
-            // implement the literal character
             switch (n)
             {
                 case 't': 
-                    for (size_t t = 0; t < 4; t++)
+                    for (size_t t = 0; t < 2; t++)
                         PushChar(' ');
                     break;
                 case '\\':
@@ -575,7 +592,7 @@ void LogLine(const char *raw, size_t rawsize)
                     break;
             }
 
-            i++; // skip over the evaluated char
+            i++; // skip over the evaluated literal char
         }
         else
         {
@@ -615,8 +632,9 @@ size_t CreateOrGetFile(const String &fullpath)
 void Draw(GLFWwindow *window)
 {
     // process async events
-    static Record rec;  // scratch record 
-    char tmpbuf[4096];  // scratch for snprintf
+    static Record rec;                  // scratch record 
+    char tmpbuf[4096];                  // scratch for snprintf
+    bool query_watchlist = false;       // re-evaluate watchlist expressions
 
     // check for new blocks
     int recv_block_semvalue;
@@ -680,9 +698,46 @@ void Draw(GLFWwindow *window)
                 {
                     prog.inferior_process = (pid_t)GDB_ExtractInt("pid", parse_rec);
                 }
+                else if (prefix_word == "thread-selected")
+                {
+                    // user jumped to a new thread/frame from the console window
+                    int index = (size_t)GDB_ExtractInt("frame.level", parse_rec);
+                    if (index >= 0 && (size_t)index < prog.frames.size())
+                    {
+                        // jump to program counter line at this new frame
+                        // this code is copied from the Callstack window section
+
+                        prog.frame_idx = (size_t)index;
+                        gui.source_highlighted_line = BAD_INDEX; // force a re-center
+                        if (prog.frame_idx != 0)
+                        {
+                            // do a one-shot query of a non-current frame
+                            // prog.frames is stored from bottom to top so need to do size - 1
+
+                            prog.other_frame_vars.clear();
+                            tsnprintf(tmpbuf, "-stack-list-variables --frame %zu --thread 1 --all-values", prog.frame_idx);
+                            GDB_SendBlocking(tmpbuf, rec);
+                            const RecordAtom *variables = GDB_ExtractAtom("variables", rec);
+
+                            for (const RecordAtom &atom : GDB_IterChild(rec, *variables))
+                            {
+                                VarObj add = {}; 
+                                add.name = GDB_ExtractValue("name", atom, rec);
+                                add.value = GDB_ExtractValue("value", atom, rec);
+                                add.changed = false;
+                                prog.other_frame_vars.emplace_back(add);
+                            }
+
+                        }
+
+                        // re-evaluate watchlist variables for the selected frame
+                        query_watchlist = true;
+                    }
+                }
             }
             else if (prefix_word == "stopped")
             {
+                prog.frame_idx = 0;
                 prog.running = false;
                 async_stopped = true;
                 String reason = GDB_ExtractValue("reason", parse_rec);
@@ -700,6 +755,8 @@ void Draw(GLFWwindow *window)
 
     if (async_stopped)
     {
+        // re-evaluate the watchlist variables
+        query_watchlist = true;
         bool remake_varobjs = false;
 
         // TODO: remote ARM32 debugging is this up after jsr macro
@@ -722,9 +779,8 @@ void Draw(GLFWwindow *window)
                 prog.frames.emplace_back(add);
             }
 
-            Assert(prog.frames.size() > 0 && prog.frames[0].line == paranoid_line);
+            //Assert(prog.frames.size() > 0 && prog.frames[0].line == paranoid_line);
 
-            prog.frame_idx = 0;
 
             // make a unique signature from the function name and types
             // if the signature has changed, need to delete/recreate varobj's
@@ -1386,6 +1442,7 @@ void Draw(GLFWwindow *window)
 
             if ( ImGui::Button("config") )
             {
+                // set all of the initial values for the config input fields
                 show_config_window = true;
                 for (size_t i = 0; i < NUM_CONFIG; i++)
                     tsnprintf(config_input[i], "%s", src[i].value.c_str());
@@ -1623,9 +1680,10 @@ void Draw(GLFWwindow *window)
                             prog.other_frame_vars.emplace_back(add);
                         }
 
-                        // set async stopped to re-evaluate watch variables for the selected frame
-                        async_stopped = true;
                     }
+
+                    // re-evaluate the watchlist variables
+                    query_watchlist = true;
                 }
             }
 
@@ -1708,7 +1766,7 @@ void Draw(GLFWwindow *window)
             ImGui::End();
         }
 
-        if (ImGui::BeginTable("Registers", 2, flags))
+        if (0 && ImGui::BeginTable("Registers", 2, flags))
         {
             ImGui::TableSetupColumn("Register");
             ImGui::TableSetupColumn("Value");
@@ -1730,8 +1788,7 @@ void Draw(GLFWwindow *window)
             ImGui::EndTable();
         }
 
-        bool modified_watchlist = false;
-        if (0 && ImGui::BeginTable("Watch", 2, flags, {300, 200}))
+        if (ImGui::BeginTable("Watch", 2, flags, {300, 200}))
         {
 
             static size_t edit_var_name_idx = -1;
@@ -1770,7 +1827,7 @@ void Draw(GLFWwindow *window)
                                          NULL, NULL))
                     {
                         iter.name = editwatch;
-                        modified_watchlist = true;
+                        query_watchlist = true;
                         memset(editwatch, 0, sizeof(editwatch));
                         edit_var_name_idx = -1;
                     }
@@ -1856,7 +1913,7 @@ void Draw(GLFWwindow *window)
                                  NULL, NULL))
             {
                 prog.watch_vars.push_back( {watch, "???", false} );
-                modified_watchlist = true;
+                query_watchlist = true;
                 memset(watch, 0, sizeof(watch));
             }
             ImGui::PopStyleColor();
@@ -1875,7 +1932,7 @@ void Draw(GLFWwindow *window)
         }
 
 
-        if (async_stopped || modified_watchlist)
+        if (query_watchlist)
         {
             // evaluate user defined watch variables
             for (VarObj &iter : prog.watch_vars)
