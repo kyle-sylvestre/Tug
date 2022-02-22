@@ -628,13 +628,28 @@ size_t CreateOrGetFile(const String &fullpath)
 
     return result;
 }
+
+void QueryWatchlist()
+{
+    // evaluate user defined watch variables
+    Record rec;
+    for (VarObj &iter : prog.watch_vars)
+    {
+        String cmd = StringPrintf("-data-evaluate-expression --frame %zu --thread 1 \"%s\"", 
+                                  prog.frame_idx, iter.name.c_str());
+        GDB_SendBlocking(cmd.c_str(), rec);
+        String value = GDB_ExtractValue("value", rec);
+        if (value == "") value = "???";
+        iter.changed = (iter.value != value);
+        iter.value = value;
+    }
+}
  
 void Draw(GLFWwindow *window)
 {
     // process async events
     static Record rec;                  // scratch record 
     char tmpbuf[4096];                  // scratch for snprintf
-    bool query_watchlist = false;       // re-evaluate watchlist expressions
 
     // check for new blocks
     int recv_block_semvalue;
@@ -731,7 +746,7 @@ void Draw(GLFWwindow *window)
                         }
 
                         // re-evaluate watchlist variables for the selected frame
-                        query_watchlist = true;
+                        QueryWatchlist();
                     }
                 }
             }
@@ -756,7 +771,7 @@ void Draw(GLFWwindow *window)
     if (async_stopped)
     {
         // re-evaluate the watchlist variables
-        query_watchlist = true;
+        QueryWatchlist();
         bool remake_varobjs = false;
 
         // TODO: remote ARM32 debugging is this up after jsr macro
@@ -1136,7 +1151,7 @@ void Draw(GLFWwindow *window)
                 // stop radio button style
                 ImGui::PopStyleColor(4);
 
-                // automatically scroll to the next executed line
+                // automatically scroll to the next executed line if it is 
                 int linediff = abs((long long)gui.source_highlighted_line - (long long)frame.line);
                 bool highlight_search_found = false;
                 if (i == gui.source_found_line_idx)
@@ -1147,8 +1162,7 @@ void Draw(GLFWwindow *window)
                     }
                     else
                     {
-                        // we closed the window and no longer in child window,
-                        // retain the search index found
+                        // we closed the window and no longer in child window
                         gui.source_found_line_idx = 0;
                     }
                     ImGui::SetScrollHereY();
@@ -1231,10 +1245,9 @@ void Draw(GLFWwindow *window)
                                     // to the watch variables
                                     if (gui.IsMouseClicked(GLFW_MOUSE_BUTTON_RIGHT))
                                     {
-                                        //@@@ force a watch list update
-                                        async_stopped = true;
                                         String hover_string(line.data() + word_idx, char_idx - word_idx);
                                         prog.watch_vars.push_back({hover_string, "???", false});
+                                        QueryWatchlist();
                                     }
 
                                     if (hover_word_idx != word_idx || 
@@ -1683,7 +1696,7 @@ void Draw(GLFWwindow *window)
                     }
 
                     // re-evaluate the watchlist variables
-                    query_watchlist = true;
+                    QueryWatchlist();
                 }
             }
 
@@ -1819,15 +1832,13 @@ void Draw(GLFWwindow *window)
                 bool column_clicked = false;
                 if (i == edit_var_name_idx)
                 {
-
-
                     if (ImGui::InputText("##edit_watch", editwatch, 
                                          sizeof(editwatch), 
                                          ImGuiInputTextFlags_EnterReturnsTrue,
                                          NULL, NULL))
                     {
                         iter.name = editwatch;
-                        query_watchlist = true;
+                        QueryWatchlist();
                         memset(editwatch, 0, sizeof(editwatch));
                         edit_var_name_idx = -1;
                     }
@@ -1913,7 +1924,7 @@ void Draw(GLFWwindow *window)
                                  NULL, NULL))
             {
                 prog.watch_vars.push_back( {watch, "???", false} );
-                query_watchlist = true;
+                QueryWatchlist();
                 memset(watch, 0, sizeof(watch));
             }
             ImGui::PopStyleColor();
@@ -1931,21 +1942,6 @@ void Draw(GLFWwindow *window)
             ImGui::EndTable();
         }
 
-
-        if (query_watchlist)
-        {
-            // evaluate user defined watch variables
-            for (VarObj &iter : prog.watch_vars)
-            {
-                tsnprintf(tmpbuf, "-data-evaluate-expression --frame %zu --thread 1 \"%s\"", 
-                          prog.frame_idx, iter.name.c_str());
-                GDB_SendBlocking(tmpbuf, rec);
-                String s = GDB_ExtractValue("value", rec);
-                if (s == "") s = "???";
-                iter.changed = (iter.value != s);
-                iter.value = s;
-            }
-        }
 
         ImGui::End();
     }
