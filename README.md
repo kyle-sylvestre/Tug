@@ -18,6 +18,8 @@ GDB frontend made with Dear Imgui
 
 -hover over any word to query its value, right click it to create a new watch within the control window
 
+-add/remove breakpoint by clicking the empty column to the left of the line number
+
 # Control Window
 -top row: program execution buttons
 
