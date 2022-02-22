@@ -4,6 +4,7 @@
 #include <string>
 #include <vector>
 #include <fstream>
+#include <map>
 
 // cstd
 #include <assert.h>
@@ -22,7 +23,7 @@
 #include <semaphore.h>
 #include <sys/time.h>
 
-#include "gdb_utility.h"
+#include "utility.h"
 
 
 #ifdef _WIN32
@@ -259,16 +260,28 @@ struct GDB
     int fd_out_read;
     int fd_out_write;
 
-    // @@@: WSL2 isn't closing PTY so they are a bunch left open
-    // int fd_pty_master;
-
     // raw data, guarded by modify_storage_lock
     // a block is one or more Records
     Vector<char> blocks;
     Span block_spans[MAX_STORED_BLOCKS];      // block ending in (gdb) endsig
     size_t num_blocks;
 };
-extern GDB gdb;
+
+enum ConfigType
+{
+    ConfigType_Text, 
+    ConfigType_File, 
+};
+
+struct ConfigPair
+{
+    const char *const key;
+    String value;
+    ConfigType type;
+
+    ConfigPair(const char *const pkey, 
+               ConfigType ptype = ConfigType_Text) : key(pkey), value(""), type(ptype) {}
+};
 
 struct ProgramContext
 {
@@ -295,15 +308,35 @@ struct ProgramContext
     size_t frame_idx = -1;
     pid_t inferior_process;
 
-    // values from tug.conf
-    String config_gdb_path;
-    String config_gdb_args;
-    String config_debug_exe;
-    String config_debug_exe_args;
-    String config_font_filename;
-    String config_font_size;
+
+    // key=value .ini configuration 
+    struct Config
+    {
+        ConfigPair gdb_path         = ConfigPair("gdb_path", ConfigType_File);
+        ConfigPair gdb_args         = ConfigPair("gdb_args");
+        ConfigPair debug_exe_path   = ConfigPair("debug_exe_path", ConfigType_File);
+        ConfigPair debug_exe_args   = ConfigPair("debug_exe_args");
+        ConfigPair font_filename    = ConfigPair("font_filename", ConfigType_File);
+        ConfigPair font_size        = ConfigPair("font_size");
+    } config;
+
 };
 
+const size_t NUM_CONFIG = sizeof(ProgramContext::Config) / sizeof(ConfigPair);
+
+
+
+
+// 
+// main.cpp
+//
+extern ProgramContext prog;
+void LogLine(const char *raw, size_t rawsize);
+
+//
+// gdb.cpp
+//
+extern GDB gdb;
 
 // record management functions
 struct ParseRecordContext
@@ -358,4 +391,7 @@ int GDB_SendBlocking(const char *cmd, const char *header = "^done", bool remove_
 // send a message to GDB, wait for a result record, then retrieve it
 int GDB_SendBlocking(const char *cmd, Record &rec, const char *header = "^done");
 
+// extract a MI record
 bool GDB_ParseRecord(char *buf, size_t bufsize, ParseRecordContext &ctx);
+
+void GDB_GrabBlockData();

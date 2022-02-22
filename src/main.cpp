@@ -1,15 +1,20 @@
-#include "gdb_common.h"
+#include "common.h"
 
 //
 // yoinked from glfw_example_opengl2
 //
 
+// third party
 #include <imgui/imgui.h>
 #include <imgui/imgui_impl_glfw.h>
 #include <imgui/imgui_impl_opengl2.h>
 #include <GLFW/glfw3.h>
-
 #include "imgui_file_window.h"
+
+#define WINDOW_WIDTH 1280
+#define WINDOW_HEIGHT 640
+#define SOURCE_WIDTH 800
+
 
 struct GlfwInput
 {
@@ -78,8 +83,6 @@ struct GuiContext
 ProgramContext prog;
 GDB gdb;
 GuiContext gui;
-
-void GDB_LogLine(const char *raw, size_t rawsize);
 
 inline void dbg() {};
 
@@ -169,7 +172,7 @@ void *ReadInterpreterBlocks(void *ctx)
     return NULL;
 }
 
-int GDB_Shutdown()
+int Tug_Shutdown()
 {
     pthread_kill(gdb.thread_read_interp, SIGINT);
     pthread_join(gdb.thread_read_interp, NULL);
@@ -184,345 +187,285 @@ int GDB_Shutdown()
     return 0;
 }
 
-void GDB_ProcessBlock(char *block, size_t blocksize)
-{
-    // parse buffer of interpreter lines ending in (gdb)
-    // sync/async records get stored 
-    // console/debug logs get written to log_lines
-    size_t block_idx = 0;
-    while (block_idx < blocksize)
-    {
-        char *start = block + block_idx;
-        char *eol = strchr(start, '\n');
-        if (eol)
-        {
-            if (eol[-1] == '\r')
-            {
-                eol[-1] = ' ';
-            }
-            eol[0] = ' ';
-
-            eol++; // GDB_ParseRecord inserts a ']' at the end
-        }
-        else
-        {
-            // all records should be NL terminated
-            Assert(false);
-            break;
-        }
-
-        size_t linesize = eol - start;
-        GDB_LogLine(start, eol - start);
-
-        // get the record type
-        char c = start[0];
-        if (c == PREFIX_RESULT || c == PREFIX_ASYNC0 || c == PREFIX_ASYNC1) 
-        {
-            static ParseRecordContext ctx;
-            if ( GDB_ParseRecord(start, eol - start, ctx) )
-            {
-                // search for unused block before adding new one
-                RecordHolder *out = NULL;
-                for (size_t i = 0; i < prog.num_recs; i++)
-                {
-                    if (prog.read_recs[i].parsed)
-                    {
-                        // reused parsed elem in read records
-                        out = &prog.read_recs[i];
-                        break;
-                    }
-                }
-
-                if (out == NULL)
-                {
-                    if (prog.read_recs.size() < prog.num_recs + 1)
-                    {
-                        size_t newcount = (prog.num_recs + 1) * 4;
-                        prog.read_recs.resize(newcount);
-                    }
-
-                    out = &prog.read_recs[ prog.num_recs ];
-                    prog.num_recs++;
-                }
-
-                *out = {};
-                out->parsed = false;
-
-                Record &rec = out->rec;
-                rec.atoms = ctx.atoms;
-                rec.buf.resize(eol - start);
-                memcpy(rec.buf.data(), start, eol - start);
-            }
-        }
-
-        // advance to next line, skip over index of NT
-        block_idx = block_idx + linesize;
-    }
-}
-
-int GDB_Init(GLFWwindow *window)
+bool Tug_Init(GLFWwindow *window)
 {
     int rc = 0;
 
-    do
+    // read in configuration file
     {
-
-        // read in configuration file
+        std::string line;
+        std::ifstream file(TUG_CONFIG_FILENAME, std::ios::in);
+        while (std::getline(file, line))
         {
-            std::string line;
-            std::ifstream file(TUG_CONFIG_FILENAME, std::ios::in);
-            while (std::getline(file, line))
+            size_t commentoff = line.find('#');
+            if (commentoff != std::string::npos)
+                line.erase(commentoff);
+
+            if (line.size() > 0 && line[ line.size() - 1 ] == '\r')
+                line.pop_back();
+
+            size_t equaloff = line.find('=');
+            if (equaloff != std::string::npos && equaloff + 1 < line.size())
             {
-                size_t commentoff = line.find('#');
-                if (commentoff != std::string::npos)
-                    line.erase(commentoff);
+                std::string key = line.substr(0, equaloff);
+                std::string value = line.substr(equaloff + 1);
 
-                if (line.size() > 0 && line[ line.size() - 1 ] == '\r')
-                    line.pop_back();
-
-                size_t equaloff = line.find('=');
-                if (equaloff != std::string::npos && equaloff + 1 < line.size())
+                ConfigPair *str = reinterpret_cast<ConfigPair *>(&prog.config);
+                for (size_t i = 0; i < NUM_CONFIG; i++)
                 {
-                    std::string key = line.substr(0, equaloff);
-                    std::string value = line.substr(equaloff + 1);
-
-                    #define KEYCONF(keyname) if (key == #keyname) prog.config_##keyname = value.c_str();
-
-                    KEYCONF(gdb_path)
-                    KEYCONF(debug_exe)
-                    KEYCONF(debug_exe_args)
-                    KEYCONF(font_filename)
-                    KEYCONF(font_size)
-
-                    #undef KEYCONF
+                    if (key == str[i].key) 
+                        str[i].value = value.c_str();
                 }
+
+            }
+        }
+
+        file.close();
+    }
+
+    int pipes[2] = {};
+    rc = pipe(pipes);
+    if (rc < 0)
+    {
+        PrintErrorLibC("from gdb pipe");
+        return false;
+    }
+
+    gdb.fd_in_read = pipes[0];
+    gdb.fd_in_write = pipes[1];
+
+    rc = pipe(pipes);
+    if (rc < 0)
+    {
+        PrintErrorLibC("to gdb pipe");
+        return false;
+    }
+
+    gdb.fd_out_read = pipes[0];
+    gdb.fd_out_write = pipes[1];
+
+    rc = pthread_mutex_init(&gdb.modify_block, NULL);
+    if (rc < 0) 
+    {
+        PrintErrorLibC("pthread_mutex_init");
+        return false;
+    }
+
+    gdb.recv_block = sem_open("recv_gdb_block", O_CREAT, S_IRWXU, 0);
+    if (gdb.recv_block == NULL) 
+    {
+        PrintErrorLibC("sem_open");
+        return false;
+    }
+
+    //if (0 > (gdb.fd_pty_master = posix_openpt(O_RDWR | O_NOCTTY | O_NONBLOCK)))
+    //{
+    //    PrintErrorLibC("posix_openpt");
+    //    break;
+    //}
+
+    //if (0 > (rc = grantpt(gdb.fd_pty_master)) )
+    //{
+    //    PrintErrorLibC("grantpt");
+    //    break;
+    //}
+    //if (0 > (rc = unlockpt(gdb.fd_pty_master)) )
+    //{
+    //    PrintErrorLibC("grantpt");
+    //    break;
+    //}
+    //printf("pty slave: %s\n", ptsname(gdb.fd_pty_master));
+
+
+
+    //rc = chdir("/mnt/c/Users/Kyle/Downloads/Chrome Downloads/ARM/AARCH32");
+    //if (rc < 0)
+    //{
+    //    PrintErrorLibC("chdir");
+    //    break;
+    //}
+
+    if (prog.config.gdb_path.value != "")
+    {
+#if 0 // old way, can't get gdb process PID this way
+        dup2(gdb.fd_out_read, 0);           // stdin
+        dup2(gdb.fd_in_write, 1);        // stdout
+        dup2(gdb.fd_in_write, 2);        // stderr
+
+        close(gdb.fd_in_write);
+
+        //rc = execl("/usr/bin/gdb", "gdb", "--interpreter=mi", NULL);
+        rc = execl("/usr/bin/gdb-multiarch", "gdb-multiarch", "./advent.out", "--interpreter=mi", NULL);
+        VerifyCond(rc == 0);
+#endif
+        // TODO: config for MI version used
+        String args = prog.config.gdb_path.value + " " + prog.config.gdb_args.value + " --interpreter=mi "; 
+
+        std::string buf;
+        size_t startoff = 0;
+        size_t spaceoff = 0;
+        size_t bufoff = 0;
+        std::vector<char *> argv;
+        bool inside_string = false;
+        bool is_whitespace = true;
+
+        for (size_t i = 0; i < args.size(); i++)
+        {
+            char c = args[i];
+            char p = (i > 0) ? args[i - 1] : '\0';
+            is_whitespace &= (c == ' ' || c == '\t');
+
+            // make sure we don't get a command line arg from inside a user string literal
+            if ( (c == '\'' || c == '\"') && p != '\\')
+            {
+                inside_string = !inside_string;
             }
 
-            file.close();
-        }
-
-        int pipes[2] = {};
-        rc = pipe(pipes);
-        if (rc < 0)
-        {
-            PrintErrorLibC("from gdb pipe");
-            break;
-        }
-
-        gdb.fd_in_read = pipes[0];
-        gdb.fd_in_write = pipes[1];
-
-        rc = pipe(pipes);
-        if (rc < 0)
-        {
-            PrintErrorLibC("to gdb pipe");
-            break;
-        }
-
-        gdb.fd_out_read = pipes[0];
-        gdb.fd_out_write = pipes[1];
-
-        rc = pthread_mutex_init(&gdb.modify_block, NULL);
-        if (rc < 0) 
-        {
-            PrintErrorLibC("pthread_mutex_init");
-            break;
-        }
-
-        gdb.recv_block = sem_open("recv_gdb_block", O_CREAT, S_IRWXU, 0);
-        if (gdb.recv_block == NULL) 
-        {
-            PrintErrorLibC("sem_open");
-            break;
-        }
-
-        //if (0 > (gdb.fd_pty_master = posix_openpt(O_RDWR | O_NOCTTY | O_NONBLOCK)))
-        //{
-        //    PrintErrorLibC("posix_openpt");
-        //    break;
-        //}
-
-        //if (0 > (rc = grantpt(gdb.fd_pty_master)) )
-        //{
-        //    PrintErrorLibC("grantpt");
-        //    break;
-        //}
-        //if (0 > (rc = unlockpt(gdb.fd_pty_master)) )
-        //{
-        //    PrintErrorLibC("grantpt");
-        //    break;
-        //}
-        //printf("pty slave: %s\n", ptsname(gdb.fd_pty_master));
-
-
-
-        //rc = chdir("/mnt/c/Users/Kyle/Downloads/Chrome Downloads/ARM/AARCH32");
-        //if (rc < 0)
-        //{
-        //    PrintErrorLibC("chdir");
-        //    break;
-        //}
-
-        if (prog.config_gdb_path != "")
-        {
-#if 0 // old way, can't get gdb process PID this way
-            dup2(gdb.fd_out_read, 0);           // stdin
-            dup2(gdb.fd_in_write, 1);        // stdout
-            dup2(gdb.fd_in_write, 2);        // stderr
-
-            close(gdb.fd_in_write);
-
-            //rc = execl("/usr/bin/gdb", "gdb", "--interpreter=mi", NULL);
-            rc = execl("/usr/bin/gdb-multiarch", "gdb-multiarch", "./advent.out", "--interpreter=mi", NULL);
-            VerifyCond(rc == 0);
-#endif
-            // TODO: config for MI version used
-            String args = prog.config_gdb_path + " " + prog.config_gdb_args + " --interpreter=mi "; 
-
-            dbg();
-            std::string buf;
-            size_t startoff = 0;
-            size_t spaceoff = 0;
-            size_t bufoff = 0;
-            std::vector<char *> argv;
-
-    dbg();
-            while ( std::string::npos != (spaceoff = args.find(' ', startoff)) )
+            if (!inside_string && c == ' ')
             {
+                spaceoff = i;
                 size_t arglen = spaceoff - startoff;
-                if (arglen != 0)
+                if (arglen != 0 && !is_whitespace)
                 {
                     argv.push_back((char *)bufoff);
                     buf.insert(buf.size(), &args[ startoff ], arglen);
                     buf.push_back('\0');
                     bufoff += (arglen + 1);
                 }
+                is_whitespace = true;
                 startoff = spaceoff + 1;
-            }
-            
-            // convert base offsets to char pointers
-            for (size_t i = 0; i < argv.size(); i++)
-            {
-                argv[i] = (char *)((size_t)argv[i] + buf.data());
-            }
-            argv.push_back(NULL);
-
-            posix_spawn_file_actions_t actions = {};
-            posix_spawn_file_actions_adddup2(&actions, gdb.fd_out_read,  0);    // stdin
-            posix_spawn_file_actions_adddup2(&actions, gdb.fd_in_write, 1);     // stdout
-            posix_spawn_file_actions_adddup2(&actions, gdb.fd_in_write, 2);     // stderr
-
-            posix_spawnattr_t attrs = {};
-            posix_spawnattr_init(&attrs);
-            posix_spawnattr_setflags(&attrs, POSIX_SPAWN_SETSID);
-
-            String env;
-            FILE *fsh = popen("printenv", "r");
-            if (fsh == NULL)
-            {
-                PrintErrorLibC("getenv popen");
-                break;
-            }
-
-            char tmp[1024];
-            ssize_t tmpread;
-            while (0 < (tmpread = fread(tmp, 1, sizeof(tmp), fsh)) )
-            {
-                env.insert(env.size(), tmp, tmpread);
-            }
-
-            Vector<char *> envptr;
-            size_t lineoff = 0;
-
-            for (size_t i = 0; i < env.size(); i++)
-            {
-                if (env[i] == '\n')
-                {
-                    envptr.push_back(&env[0] + lineoff);
-                    env[i] = '\0';
-                    lineoff = i + 1;
-                }
-            }
-            envptr.push_back(NULL);
-
-            pclose(fsh);
-
-            rc = posix_spawnp((pid_t *) &gdb.spawned_pid, prog.config_gdb_path.c_str(),
-                              &actions, &attrs, argv.data(), envptr.data());
-            if (rc < 0 || gdb.spawned_pid == 0) 
-            {
-                PrintErrorLibC("posix_spawnp");
-                break;
             }
         }
         
-        rc = pthread_create(&gdb.thread_read_interp, NULL, ReadInterpreterBlocks, (void*) NULL);
-        if (rc < 0) 
+        // convert base offsets to char pointers
+        for (size_t i = 0; i < argv.size(); i++)
         {
-            PrintErrorLibC("pthread_create");
-            break;
+            argv[i] = (char *)((size_t)argv[i] + buf.data());
+        }
+        argv.push_back(NULL);
+
+        posix_spawn_file_actions_t actions = {};
+        posix_spawn_file_actions_adddup2(&actions, gdb.fd_out_read,  0);    // stdin
+        posix_spawn_file_actions_adddup2(&actions, gdb.fd_in_write, 1);     // stdout
+        posix_spawn_file_actions_adddup2(&actions, gdb.fd_in_write, 2);     // stderr
+
+        posix_spawnattr_t attrs = {};
+        posix_spawnattr_init(&attrs);
+        posix_spawnattr_setflags(&attrs, POSIX_SPAWN_SETSID);
+
+        String env;
+        FILE *fsh = popen("printenv", "r");
+        if (fsh == NULL)
+        {
+            PrintErrorLibC("getenv popen");
+            return false;
         }
 
-        // set initial state of log
-        char empty[] = ""; 
-        for (int i = 0; i < NUM_LOG_ROWS; i++)
-            GDB_LogLine(empty, 0);
+        char tmp[1024];
+        ssize_t tmpread;
+        while (0 < (tmpread = fread(tmp, 1, sizeof(tmp), fsh)) )
+        {
+            env.insert(env.size(), tmp, tmpread);
+        }
 
-        Record tmp = {};
-        FileContext file_ctx = {};
+        Vector<char *> envptr;
+        size_t lineoff = 0;
 
-        // wait for the prompt messages to show up
-        // clear the first (gdb) semaphore
+        for (size_t i = 0; i < env.size(); i++)
+        {
+            if (env[i] == '\n')
+            {
+                envptr.push_back(&env[0] + lineoff);
+                env[i] = '\0';
+                lineoff = i + 1;
+            }
+        }
+        envptr.push_back(NULL);
+
+        pclose(fsh);
+
+        rc = posix_spawnp((pid_t *) &gdb.spawned_pid, prog.config.gdb_path.value.c_str(),
+                          &actions, &attrs, argv.data(), envptr.data());
+        if (rc < 0 || gdb.spawned_pid == 0) 
+        {
+            PrintErrorLibC("posix_spawnp");
+            return false;
+        }
+    }
+    
+    rc = pthread_create(&gdb.thread_read_interp, NULL, ReadInterpreterBlocks, (void*) NULL);
+    if (rc < 0) 
+    {
+        PrintErrorLibC("pthread_create");
+        return false;
+    }
+
+    // set initial state of log
+    char empty[] = ""; 
+    for (int i = 0; i < NUM_LOG_ROWS; i++)
+        LogLine(empty, 0);
+
+    Record tmp = {};
+    FileContext file_ctx = {};
+
+    // wait for the prompt messages to show up
+    // clear the first (gdb) semaphore
 
 #if 1
-        //GDB_SendBlocking("-environment-cd /mnt/c/Users/Kyle/Documents/commercial-codebases/original/stevie");
-        //GDB_SendBlocking("-file-exec-and-symbols stevie");
-        //GDB_SendBlocking("-exec-arguments stevie.c");
+    //GDB_SendBlocking("-environment-cd /mnt/c/Users/Kyle/Documents/commercial-codebases/original/stevie");
+    //GDB_SendBlocking("-file-exec-and-symbols stevie");
+    //GDB_SendBlocking("-exec-arguments stevie.c");
 
-        // debug GAS
-        //GDB_SendBlocking("-environment-cd /mnt/c/Users/Kyle/Documents/commercial-codebases/original/binutils/binutils-gdb/gas");
-        //GDB_SendBlocking("-file-exec-and-symbols as-new");
+    // debug GAS
+    //GDB_SendBlocking("-environment-cd /mnt/c/Users/Kyle/Documents/commercial-codebases/original/binutils/binutils-gdb/gas");
+    //GDB_SendBlocking("-file-exec-and-symbols as-new");
 
-        //GDB_SendBlocking("-environment-cd \"/mnt/c/Users/Kyle/Downloads/Chrome Downloads/ARM/AARCH32\"");
-        //GDB_SendBlocking("-file-exec-and-symbols advent.out");
+    //GDB_SendBlocking("-environment-cd \"/mnt/c/Users/Kyle/Downloads/Chrome Downloads/ARM/AARCH32\"");
+    //GDB_SendBlocking("-file-exec-and-symbols advent.out");
 
-        if (prog.config_debug_exe != "")
-        {
-            char tmp[1024];
-            tsnprintf(tmp, "-file-exec-and-symbols \"%s\"", 
-                      prog.config_debug_exe.c_str());
-            GDB_SendBlocking(tmp);
-        }
+    if (prog.config.debug_exe_path.value != "")
+    {
+        char tmp[1024];
+        tsnprintf(tmp, "-file-exec-and-symbols \"%s\"", 
+                  prog.config.debug_exe_path.value.c_str());
+        GDB_SendBlocking(tmp);
+    }
 
-        // preload all the referenced files
-        //GDB_SendBlocking("-file-list-exec-source-files", tmp, "files");
-        //const RecordAtom *files = GDB_ExtractAtom("files", tmp);
-        //for (const RecordAtom &file : GDB_IterChild(tmp, *files))
-        //{
-        //    String fullpath = GDB_ExtractValue("fullname", file, tmp);
-        //    FileContext::Create(fullpath.c_str(), file_ctx);
-        //    prog.files.emplace_back(file_ctx);
-        //}
+    if (prog.config.debug_exe_args.value != "")
+    {
+        char tmp[1024];
+        tsnprintf(tmp, "-exec-arguments %s",
+                  prog.config.debug_exe_args.value.c_str());
+        GDB_SendBlocking(tmp);
+    }
+
+    // preload all the referenced files
+    //GDB_SendBlocking("-file-list-exec-source-files", tmp, "files");
+    //const RecordAtom *files = GDB_ExtractAtom("files", tmp);
+    //for (const RecordAtom &file : GDB_IterChild(tmp, *files))
+    //{
+    //    String fullpath = GDB_ExtractValue("fullname", file, tmp);
+    //    FileContext::Create(fullpath.c_str(), file_ctx);
+    //    prog.files.emplace_back(file_ctx);
+    //}
 
 #endif
 
-        // setup global var objects that will last the duration of the program
-        String reg_cmd;
-        if (0) for (const char *reg : REG_AMD64)
-        {
-            char name[256];
-            char cmd[512];
-            tsnprintf(name, GLOBAL_NAME_PREFIX "%s", reg);
-            tsnprintf(cmd, "-var-create %s @ $%s\n", name, reg);
-            reg_cmd += cmd;
+    // setup global var objects that will last the duration of the program
+    String reg_cmd;
+    if (0) for (const char *reg : REG_AMD64)
+    {
+        char name[256];
+        char cmd[512];
+        tsnprintf(name, GLOBAL_NAME_PREFIX "%s", reg);
+        tsnprintf(cmd, "-var-create %s @ $%s\n", name, reg);
+        reg_cmd += cmd;
 
-            prog.global_vars.push_back( { reg, "", false} );
-        }
+        prog.global_vars.push_back( { reg, "", false} );
+    }
 
-        reg_cmd.pop_back(); // last \n
-        GDB_Send(reg_cmd.c_str());
-
-    } while(0);
+    reg_cmd.pop_back(); // last \n
+    GDB_Send(reg_cmd.c_str());
 
     const auto UpdateKey = [](GLFWwindow *window, int key, int scancode,
                               int action, int mods) -> void
@@ -551,23 +494,13 @@ int GDB_Init(GLFWwindow *window)
     glfwSetKeyCallback(window, UpdateKey);
     glfwSetMouseButtonCallback(window, UpdateMouseButton);
 
-    return rc;
+    return true;
 }
-
-int _main(int argc, char **argv)
-{
-    return 0;
-}
-
 
 #define ImGuiDisabled(is_disabled, code)\
 ImGui::BeginDisabled(is_disabled);\
 code;\
 ImGui::EndDisabled();
-
-#define WINDOW_WIDTH 1280
-#define WINDOW_HEIGHT 640
-#define SOURCE_WIDTH 800
 
 static void DrawHelpMarker(const char *desc)
 {
@@ -582,7 +515,7 @@ static void DrawHelpMarker(const char *desc)
     }
 }
 
-void GDB_LogLine(const char *raw, size_t rawsize)
+void LogLine(const char *raw, size_t rawsize)
 {
     // debug
     //printf("%.*s\n", int(rawsize), raw);
@@ -619,141 +552,7 @@ void GDB_LogLine(const char *raw, size_t rawsize)
     memcpy(dest, raw, (rawsize > NUM_LOG_COLS) ? NUM_LOG_COLS : rawsize);
 }
 
-ssize_t GDB_Send(const char *cmd)
-{
-    if (*cmd == '\0') return 0; // special case: don't send but dec semaphore
-
-
-    // write to GDB
-    size_t cmdsize = strlen(cmd);
-
-    // DEBUG: log all outgoing traffic
-    GDB_LogLine(cmd, cmdsize);
-
-    ssize_t written = write(gdb.fd_out_write, cmd, cmdsize);
-    if (written != (ssize_t)cmdsize)
-    {
-        PrintErrorLibC("GDB_Send");
-    }
-    else
-    {
-        ssize_t newline_written = write(gdb.fd_out_write, "\n", 1);
-        if (newline_written != 1)
-        {
-            PrintErrorLibC("GDB_Send");
-        }
-    }
-
-    return written;
-}
-
-void GDB_GrabBlockData()
-{
-    pthread_mutex_lock(&gdb.modify_block);
-
-    size_t total_bytes = 0;
-    for (size_t i = 0; i < gdb.num_blocks; i++)
-    {
-        Span &iter = gdb.block_spans[i];
-        GDB_ProcessBlock(gdb.blocks.data() + iter.index, iter.length);
-        total_bytes = iter.index + iter.length;
-        iter = {};
-    }
-    memset(gdb.blocks.data(), 0, total_bytes);
-    gdb.num_blocks = 0;
-
-    pthread_mutex_unlock(&gdb.modify_block);
-}
-
-int GDB_SendBlocking(const char *cmd, const char *header, bool remove_after)
-{
-    int rc;
-    ssize_t num_sent = GDB_Send(cmd);
-
-    if (num_sent >= 0)
-    {
-        bool found = false;
-        do
-        {
-            timespec wait_for;
-            clock_gettime(CLOCK_REALTIME, &wait_for);
-            wait_for.tv_sec += 1;
-
-            rc = sem_timedwait(gdb.recv_block, &wait_for);
-            if (rc < 0)
-            {
-                if (errno == ETIMEDOUT)
-                {
-                    // TODO: retry counts
-                    char buf[512];
-                    size_t bufsize = tsnprintf(buf, "Command Timeout: %s", cmd);
-                    GDB_LogLine(buf, bufsize);
-                }
-                else
-                {
-                    PrintErrorLibC("sem_timedwait");
-                }
-                break;
-            }
-            else
-            {
-                GDB_GrabBlockData();
-
-                // scan the lines for a result record, mark it as read
-                // to prevent later processing
-                for (size_t i = 0; i < prog.num_recs; i++)
-                {
-                    RecordHolder &iter = prog.read_recs[i];
-                    auto &recbuf = iter.rec.buf;
-
-                    if (!iter.parsed && iter.rec.buf.size() > 0)
-                    {
-                        // cap for strstr
-                        char &last = recbuf[ recbuf.size() - 1 ];
-                        char c = last;
-                        if (NULL != strstr(iter.rec.buf.data(), header))
-                        {
-                            iter.parsed = remove_after;
-                            rc = i;
-                            found = true;
-                        }
-                        else if (NULL != strstr(iter.rec.buf.data(), "^error"))
-                        {
-                            char msg[] = "---Error---";
-                            GDB_LogLine(msg, strlen(msg));
-                            iter.parsed = true;
-                            return -1;
-                        }
-
-                        last = c;
-                    }
-                }
-            }
-
-        } while (!found);
-    }
-
-    return rc;
-}
-
-int GDB_SendBlocking(const char *cmd, Record &rec, const char *end_pattern)
-{
-    // errno or result record index
-    int rc_or_index = GDB_SendBlocking(cmd, end_pattern, false);
-    if (rc_or_index < 0)
-    {
-        rec = {};
-    }
-    else
-    {
-        rec = prog.read_recs[rc_or_index].rec;
-        prog.read_recs[rc_or_index].parsed = true;
-    }
-
-    return rc_or_index;
-}
-
-size_t GDB_CreateOrGetFile(const String &fullpath)
+size_t CreateOrGetFile(const String &fullpath)
 {
     size_t result = BAD_INDEX;
 
@@ -779,7 +578,7 @@ size_t GDB_CreateOrGetFile(const String &fullpath)
     return result;
 }
  
-void GDB_Draw(GLFWwindow *window)
+void Draw(GLFWwindow *window)
 {
     // process async events
     static Record rec;  // scratch record 
@@ -796,10 +595,10 @@ void GDB_Draw(GLFWwindow *window)
 
     // process and clear all records found
     bool async_stopped = false;
-    bool remake_callstack = true;
-
     size_t last_num_recs = prog.num_recs;
     prog.num_recs = 0;
+    size_t paranoid_line = 0;
+
     for (size_t i = 0; i < last_num_recs; i++)
     {
         RecordHolder &iter = prog.read_recs[i];
@@ -825,7 +624,7 @@ void GDB_Draw(GLFWwindow *window)
                     res.line = GDB_ExtractInt("bkpt.line", rec);
 
                     String fullpath = GDB_ExtractValue("bkpt.fullname", rec);
-                    res.file_idx = GDB_CreateOrGetFile(fullpath);
+                    res.file_idx = CreateOrGetFile(fullpath);
 
                     prog.breakpoints.push_back(res);
                 }
@@ -853,17 +652,13 @@ void GDB_Draw(GLFWwindow *window)
                 prog.running = false;
                 async_stopped = true;
                 String reason = GDB_ExtractValue("reason", rec);
+                paranoid_line = (size_t)GDB_ExtractInt("frame.line", rec);
 
                 if ( (NULL != strstr(reason.c_str(), "exited")) )
                 {
                     prog.started = false;
                     prog.frames.clear();
                     // TODO: delete local vars
-                }
-                else
-                {
-                    // check if we have entered a new function frame
-                    // this is done to prevent unnecessary varobj creations/deletions
                 }
             }
         }
@@ -872,54 +667,48 @@ void GDB_Draw(GLFWwindow *window)
     if (async_stopped)
     {
         bool remake_varobjs = false;
-        if (remake_callstack)
+
+        // TODO: remote ARM32 debugging is this up after jsr macro
+        //GDB_SendBlocking("-stack-list-frames 0 0", rec, "stack");
+        GDB_SendBlocking("-stack-list-frames", rec, "stack");
+        const RecordAtom *callstack = GDB_ExtractAtom("stack", rec);
+        if (callstack)
         {
-            // TODO: remote ARM32 debugging is this up after jsr macro
-            //GDB_SendBlocking("-stack-list-frames 0 0", rec, "stack");
-            GDB_SendBlocking("-stack-list-frames", rec, "stack");
-            const RecordAtom *callstack = GDB_ExtractAtom("stack", rec);
-            if (callstack)
+            prog.frames.clear();
+            for (const RecordAtom &level : GDB_IterChild(rec, *callstack))
             {
-                prog.frames.clear();
-                for (const RecordAtom &level : GDB_IterChild(rec, *callstack))
-                {
+                Frame add = {};
+                add.line = (size_t)GDB_ExtractInt("line", level, rec);
+                add.addr = GDB_ExtractValue("addr", level, rec);
+                add.func = GDB_ExtractValue("func", level, rec);
 
-                    Frame add = {};
-                    add.line = (size_t)GDB_ExtractInt("line", level, rec);
-                    add.addr = GDB_ExtractValue("addr", level, rec);
-                    add.func = GDB_ExtractValue("func", level, rec);
+                String fullpath = GDB_ExtractValue("fullname", level, rec);
+                add.file_idx = CreateOrGetFile(fullpath);
 
-                    String fullpath = GDB_ExtractValue("fullname", level, rec);
-                    add.file_idx = GDB_CreateOrGetFile(fullpath);
-
-                    prog.frames.emplace_back(add);
-                }
-
-                prog.frame_idx = 0;
-
-                // make a unique signature from the function name and types
-                // if the signature has changed, need to delete/recreate varobj's
-                static String last_funcsig;
-                String this_funcsig = (prog.frames.size() == 0) ? "" : prog.frames[0].func;
-                GDB_SendBlocking("-stack-list-arguments --simple-values 0 0", rec);
-                const RecordAtom *args = GDB_ExtractAtom("stack-args[0].args", rec);
-
-                for (const RecordAtom &arg : GDB_IterChild(rec, *args))
-                {
-                    this_funcsig += GDB_ExtractValue("type", arg, rec);
-                }
-                this_funcsig += std::to_string( prog.frames.size() ).c_str();
-
-                if (last_funcsig != this_funcsig)
-                {
-                    last_funcsig = this_funcsig;
-                    remake_varobjs = true;
-                }
+                prog.frames.emplace_back(add);
             }
 
-            if (remake_varobjs)
+            Assert(prog.frames.size() > 0 && prog.frames[0].line == paranoid_line);
+
+            prog.frame_idx = 0;
+
+            // make a unique signature from the function name and types
+            // if the signature has changed, need to delete/recreate varobj's
+            static String last_funcsig;
+            String this_funcsig = (prog.frames.size() == 0) ? "" : prog.frames[0].func;
+            GDB_SendBlocking("-stack-list-arguments --simple-values 0 0", rec);
+            const RecordAtom *args = GDB_ExtractAtom("stack-args[0].args", rec);
+
+            for (const RecordAtom &arg : GDB_IterChild(rec, *args))
             {
-                // new stack frame, delete all locals
+                this_funcsig += GDB_ExtractValue("type", arg, rec);
+            }
+            this_funcsig += std::to_string( prog.frames.size() ).c_str();
+
+            if (last_funcsig != this_funcsig)
+            {
+                // new stack frame, clear previous frame locals
+                last_funcsig = this_funcsig;
                 for (VarObj &iter : prog.local_vars)
                 {
                     tsnprintf(tmpbuf, "-var-delete " LOCAL_NAME_PREFIX "%s", 
@@ -927,33 +716,71 @@ void GDB_Draw(GLFWwindow *window)
                     GDB_SendBlocking(tmpbuf);
                 }
                 prog.local_vars.clear();
+            }
+        }
 
-                // get current frame values 
-                GDB_SendBlocking("-stack-list-variables 0", rec, "variables");
+        // get local variables for this stack frame that are visible at
+        // the current scope level in the function. Unfortunately we
+        // can't make VarObj's for locals once at the start because we 
+        // will potentially miss variables within deeper scopes
 
-                const RecordAtom *vars = GDB_ExtractAtom("variables", rec);
-                if (vars)
+        GDB_SendBlocking("-stack-list-variables 0", rec, "variables");
+        const RecordAtom *vars = GDB_ExtractAtom("variables", rec);
+        if (vars)
+        {
+            Vector<String> stack_vars;
+            for (const RecordAtom &child : GDB_IterChild(rec, *vars))
+            {
+                String name = GDB_ExtractValue("name", child, rec); 
+                stack_vars.push_back(name);
+            }
+
+            const char NAME_EXISTS_SUFFIX = '!';
+            for (String &iter : stack_vars)
+            {
+                // check if VarObj already exists
+                size_t index = BAD_INDEX;
+                for (size_t i = 0; i < prog.local_vars.size(); i++)
                 {
-                    Vector<String> stack_vars;
-                    for (const RecordAtom &child : GDB_IterChild(rec, *vars))
+                    if (iter == prog.local_vars[i].name)
                     {
-                        String name = GDB_ExtractValue("name", child, rec); 
-                        stack_vars.push_back(name);
+                        prog.local_vars[i].name.push_back(NAME_EXISTS_SUFFIX);
+                        index = i; 
+                        break;
                     }
+                }
 
-                    // create MI variable objects for each stack variable
-                    for (String &iter : stack_vars)
-                    {
-                        tsnprintf(tmpbuf, "-var-create " LOCAL_NAME_PREFIX "%s * %s",
-                                  iter.c_str(), iter.c_str());
-                        GDB_SendBlocking(tmpbuf, rec);
+                // not found, create a varobj for this variable
+                if (index == BAD_INDEX)
+                {
+                    tsnprintf(tmpbuf, "-var-create " LOCAL_NAME_PREFIX "%s * %s",
+                              iter.c_str(), iter.c_str());
+                    GDB_SendBlocking(tmpbuf, rec);
+                    String value = GDB_ExtractValue("value", rec);
+                    if (value == "") value = "???";
 
-                        String value = GDB_ExtractValue("value", rec);
-                        if (value == "") value = "???";
+                    VarObj insert = { iter, value, true };
+                    insert.name.push_back(NAME_EXISTS_SUFFIX);
+                    prog.local_vars.emplace_back(insert);
+                }
+            }
 
-                        VarObj insert = { iter, value, true };
-                        prog.local_vars.emplace_back(insert);
-                    }
+            for (size_t i = prog.local_vars.size(); i > 0; i--)
+            {
+                String &name = prog.local_vars[i - 1].name;
+                if (name.size() > 0 && 
+                    name[ name.size() - 1 ] == NAME_EXISTS_SUFFIX)
+                {
+                    name.pop_back();
+                }
+                else
+                {
+                    // var not found in the stack-list-variables, delete it  
+                    tsnprintf(tmpbuf, "-var-delete " LOCAL_NAME_PREFIX "%s", 
+                              name.c_str());
+                    GDB_SendBlocking(tmpbuf);
+                    prog.local_vars.erase( prog.local_vars.begin() + i - 1,
+                                           prog.local_vars.begin() + i);
                 }
             }
         }
@@ -1031,12 +858,53 @@ void GDB_Draw(GLFWwindow *window)
             gui.source_search_bar_open = false;
         }
 
-        // @Imgui: is there another way to make a fixed position widget
-        //         without making a child window
+
+        static bool goto_line_open;
+        bool goto_line_activate;
+        static int goto_line;
+
+        if ( gui.IsKeyClicked(GLFW_KEY_G, GLFW_MOD_CONTROL) )
+        {
+            goto_line_open = true;
+            goto_line_activate = true;
+        }
+
+        bool source_open = prog.frame_idx < prog.frames.size() &&
+                           prog.frames[ prog.frame_idx ].file_idx < prog.files.size();
+        if (goto_line_open && source_open)
+        {
+            ImGui::Begin("Goto Line", &goto_line_open);
+            if (goto_line_activate) 
+            {
+                ImGui::SetKeyboardFocusHere(0); // auto click the goto line field
+                goto_line_activate = false;
+            }
+
+            if (gui.IsKeyClicked(GLFW_KEY_ESCAPE))
+                goto_line_open = false;
+
+            if ( ImGui::InputInt("##goto_line", &goto_line, 1, 1, ImGuiInputTextFlags_EnterReturnsTrue) )    
+            {
+                Frame &this_frame = prog.frames[ prog.frame_idx ];
+                size_t linecount = 0;
+                if (this_frame.file_idx < prog.files.size())
+                {
+                    linecount = prog.files[ this_frame.file_idx ].lines.size();
+                }
+
+                if (goto_line < 0) goto_line = 0;
+                if ((size_t)goto_line >= linecount) goto_line = (linecount > 0) ? linecount - 1 : 0;
+
+                gui.source_found_line_idx = (size_t)goto_line; // @Hack: reuse the search source index for jumping to goto line
+                goto_line_open = false;
+            }
+            ImGui::End();
+        }
+
+
+
         if (gui.source_search_bar_open)
         {
-            bool source_open = prog.frame_idx < prog.frames.size() &&
-                               prog.frames[ prog.frame_idx ].file_idx < prog.files.size();
             ImGui::InputText("##source_search",
                              gui.source_search_keyword, 
                              sizeof(gui.source_search_keyword));
@@ -1163,7 +1031,7 @@ void GDB_Draw(GLFWwindow *window)
                         res.line = GDB_ExtractInt("bkpt.line", rec);
 
                         String fullpath = GDB_ExtractValue("bkpt.fullname", rec);
-                        res.file_idx = GDB_CreateOrGetFile(fullpath);
+                        res.file_idx = CreateOrGetFile(fullpath);
 
                         prog.breakpoints.push_back(res);
                     }
@@ -1256,7 +1124,7 @@ void GDB_Draw(GLFWwindow *window)
                                 {
                                     // query a word if we moved words / callstack frames
                                     // TODO: register hover needs '$' in front of name for asm debugging
-                                    static size_t hover_frame_line;
+                                    static size_t hover_line_idx;
                                     static size_t hover_word_idx;
                                     static size_t hover_char_idx;
                                     static size_t hover_num_frames;
@@ -1275,13 +1143,13 @@ void GDB_Draw(GLFWwindow *window)
 
                                     if (hover_word_idx != word_idx || 
                                         hover_char_idx != char_idx || 
-                                        hover_frame_line != frame.line || 
+                                        hover_line_idx != i || 
                                         hover_num_frames != prog.frames.size() || 
                                         hover_frame_idx != prog.frame_idx)
                                     {
                                         hover_word_idx = word_idx;
                                         hover_char_idx = char_idx;
-                                        hover_frame_line = frame.line;
+                                        hover_line_idx = i;
                                         hover_num_frames = prog.frames.size();
                                         hover_frame_idx = prog.frame_idx;
                                         String word(line.data() + word_idx, char_idx - word_idx);
@@ -1452,7 +1320,7 @@ void GDB_Draw(GLFWwindow *window)
                 GDB_SendBlocking("-exec-finish", "stopped", false);
             }
         }
-        
+
         ImGui::SameLine();
         const char *button_desc =
             "--- = display next executed line\n"
@@ -1460,35 +1328,91 @@ void GDB_Draw(GLFWwindow *window)
             "||  = pause program\n"
             "--> = step into\n"
             "/\\> = step over\n"
-           R"(</\ = step out)";
+            "</\\ = step out)";
+        //R"(</\ = step out)";
         DrawHelpMarker(button_desc);
 
-        static bool show_config_window;
-        show_config_window |= ImGui::Button("config");
-        if (show_config_window)
+
+        // configuration window
+        // @HACK(ish): all of prog.config needs to be ConfigPair for this to work
         {
-            ImGui::Begin("Tug Configuration", &show_config_window);
+            const size_t CONFIG_SIZE = 4096;
+            static char config_input[NUM_CONFIG][CONFIG_SIZE];
+            static bool show_config_window;
+            static_assert(sizeof(prog.config) % sizeof(ConfigPair) == 0);
 
-            static char config_gdb_path[PATH_MAX];
-            ImGui::InputText("gdb path##config_gdb_path", config_gdb_path, 
-                             sizeof(config_gdb_path));
+            ConfigPair *src = reinterpret_cast<ConfigPair *>(&prog.config);
 
-            static bool pick_gdb_path;
-            ImGui::SameLine();
-            pick_gdb_path |= ImGui::Button("...");
-            if (pick_gdb_path)
+            if ( ImGui::Button("config") )
             {
-                static FileWindowContext ctx;
-                if ( ImGuiFileWindow(ctx, ImGuiFileWindowMode_SelectFile) )
-                {
-                    if (ctx.selected)
-                        tsnprintf(config_gdb_path, "%s", ctx.path.c_str());
-                    pick_gdb_path = false;
-                }
+                show_config_window = true;
+                for (size_t i = 0; i < NUM_CONFIG; i++)
+                    tsnprintf(config_input[i], "%s", src[i].value.c_str());
             }
 
-            ImGui::End();
+            if (show_config_window)
+            {
+                ImGui::Begin("Tug Configuration", &show_config_window);
+
+                for (size_t i = 0; i < NUM_CONFIG; i++)
+                {
+                    ConfigPair &iter = src[i];
+                    tsnprintf(tmpbuf, "%s##config", iter.key);
+                    ImGui::InputText(tmpbuf, &config_input[i][0], CONFIG_SIZE);
+
+                    if (iter.type == ConfigType_File)
+                    {
+                        static size_t open_index = BAD_INDEX;
+
+                        ImGui::SameLine();
+                        tsnprintf(tmpbuf, "...##%zu", i);
+                        if (ImGui::Button(tmpbuf))
+                            open_index = i;
+
+                        if (open_index == i)
+                        {
+                            ImGuiFileWindowMode mode = ImGuiFileWindowMode_SelectFile;
+                            static FileWindowContext ctx;
+                            if ( ImGuiFileWindow(ctx, mode) )
+                            {
+                                if (ctx.selected)
+                                {
+                                    tsnprintf(config_input[i], "%s", 
+                                              ctx.path.c_str());
+                                }
+                                open_index = BAD_INDEX;
+                            }
+                        }
+                    }
+                }
+
+                if ( ImGui::Button("apply") )
+                {
+                    show_config_window = false;
+                    for (size_t i = 0; i < NUM_CONFIG; i++)
+                        src[i].value = config_input[i];
+
+                    FILE *f = fopen("tug.ini", "w");
+                    if (f == NULL) 
+                    {
+                        PrintErrorLibC("fopen tug.ini");
+                    }
+                    else
+                    {
+                        // write out key=value pairs, double spaced
+                        for (size_t i = 0; i < NUM_CONFIG; i++)
+                        {
+                            fprintf(f, "%s=%s\n\n", src[i].key, src[i].value.c_str());
+                        }        
+                        fclose(f);
+                    }
+                }
+
+                ImGui::End();
+            }
+
         }
+
 
         for (int i = 0; i < NUM_LOG_ROWS; i++)
         {
@@ -1575,8 +1499,8 @@ void GDB_Draw(GLFWwindow *window)
         }
 
         ImGuiTableFlags flags = ImGuiTableFlags_ScrollX |
-                                ImGuiTableFlags_ScrollY |
-                                ImGuiTableFlags_Borders;
+            ImGuiTableFlags_ScrollY |
+            ImGuiTableFlags_Borders;
 
         // @Imgui: can't figure out the right combo of table/column flags corresponding to 
         //         a table with initial column widths that expands column width on elem width increase
@@ -1602,8 +1526,8 @@ void GDB_Draw(GLFWwindow *window)
 
                 ImGui::TableNextColumn();
                 ImColor color = (iter.changed) 
-                                ? IM_COL32(255, 128, 128, 255)  // light red
-                                : IM_COL32_WHITE;
+                    ? IM_COL32(255, 128, 128, 255)  // light red
+                    : IM_COL32_WHITE;
                 ImGui::TextColored(color, "%s", iter.value.c_str());
             }
 
@@ -1631,8 +1555,8 @@ void GDB_Draw(GLFWwindow *window)
                 ImGui::TableNextRow();
 
                 String file = (iter.file_idx < prog.files.size())
-                                ? prog.files[ iter.file_idx ].fullpath
-                                : "???";
+                    ? prog.files[ iter.file_idx ].fullpath
+                    : "???";
 
                 ImGui::TableNextColumn();
                 tsnprintf(tmpbuf, "%zu : %s##%zu", iter.line, file.c_str(), i);
@@ -1800,9 +1724,9 @@ void GDB_Draw(GLFWwindow *window)
 
 
                     if (ImGui::InputText("##edit_watch", editwatch, 
-                                     sizeof(editwatch), 
-                                     ImGuiInputTextFlags_EnterReturnsTrue,
-                                     NULL, NULL))
+                                         sizeof(editwatch), 
+                                         ImGuiInputTextFlags_EnterReturnsTrue,
+                                         NULL, NULL))
                     {
                         iter.name = editwatch;
                         modified_watchlist = true;
@@ -1855,7 +1779,7 @@ void GDB_Draw(GLFWwindow *window)
 
                     // make a clickable region for the empty column space
                     size_t padsize = (iter.name.size() < max_name_length)
-                                     ? max_name_length - iter.name.size() : 0;
+                        ? max_name_length - iter.name.size() : 0;
                     String pad(padsize, ' ');
 
                     ImGui::Text("%s%s", iter.name.c_str(), pad.c_str());
@@ -1873,8 +1797,8 @@ void GDB_Draw(GLFWwindow *window)
 
                 ImGui::TableNextColumn();
                 ImColor color = (iter.changed) 
-                                ? IM_COL32(255, 128, 128, 255)  // light red
-                                : IM_COL32_WHITE;
+                    ? IM_COL32(255, 128, 128, 255)  // light red
+                    : IM_COL32_WHITE;
                 ImGui::TextColored(color, "%s", iter.value.c_str());
             }
 
@@ -1882,13 +1806,13 @@ void GDB_Draw(GLFWwindow *window)
 
             ImGui::TableNextRow();
             ImGui::TableNextColumn();
-            static char watch[128];
+            static char watch[256];
 
             ImGui::SetNextItemWidth(-FLT_MIN);
             if (ImGui::InputText("##create_new_watch", watch, 
-                             sizeof(watch), 
-                             ImGuiInputTextFlags_EnterReturnsTrue,
-                             NULL, NULL))
+                                 sizeof(watch), 
+                                 ImGuiInputTextFlags_EnterReturnsTrue,
+                                 NULL, NULL))
             {
                 prog.watch_vars.push_back( {watch, "???"} );
                 modified_watchlist = true;
@@ -1924,7 +1848,7 @@ void GDB_Draw(GLFWwindow *window)
                 iter.value = s;
             }
         }
-        
+
         ImGui::End();
     }
 
@@ -1952,7 +1876,7 @@ int main(int, char**)
 
     glfwMakeContextCurrent(window);
     glfwSwapInterval(1); // Enable vsync
-    if (0 < GDB_Init(window))
+    if (!Tug_Init(window))
         return 1;
 
     // Setup Dear ImGui context
@@ -1979,11 +1903,11 @@ int main(int, char**)
     // - Remember that in C/C++ if you want to include a backslash \ in a string literal you need to write a double backslash \\ !
     //io.Fonts->AddFontDefault();
 
-    if (prog.config_font_filename != "")
+    if (prog.config.font_filename.value != "")
     {
-        float fontsize = atof(prog.config_font_filename.c_str());
+        float fontsize = atof(prog.config.font_filename.value.c_str());
         if (fontsize == 0) fontsize = 12.0f;
-        io.Fonts->AddFontFromFileTTF(prog.config_font_filename.c_str(), fontsize);
+        io.Fonts->AddFontFromFileTTF(prog.config.font_filename.value.c_str(), fontsize);
     }
 
     //io.Fonts->AddFontFromFileTTF("../../misc/fonts/Cousine-Regular.ttf", 15.0f);
@@ -2047,7 +1971,7 @@ int main(int, char**)
             ImGui::PushStyleColor(ImGuiCol_HeaderHovered, active_col);
             ImGui::PushStyleColor(ImGuiCol_HeaderActive, active_col);
 
-            GDB_Draw(window);
+            Draw(window);
 
             ImGui::PopStyleColor(3);
         }
@@ -2072,7 +1996,7 @@ int main(int, char**)
         glfwSwapBuffers(window);
     }
 
-    GDB_Shutdown();
+    Tug_Shutdown();
 
     // Cleanup
     ImGui_ImplOpenGL2_Shutdown();

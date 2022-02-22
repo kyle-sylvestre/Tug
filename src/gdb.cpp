@@ -6,7 +6,7 @@
 #include <stdint.h>
 #include <iostream>
 
-#include "gdb_common.h"
+#include "common.h"
 
 AtomIter GDB_IterChild(const Record &rec, const RecordAtom &parent)
 {
@@ -568,7 +568,7 @@ void GDB_ReadELF(const char *elf_filename)
     }
     catch(const char *label)
     {
-        LogErrorf("GDB_ReadELF error: %s", label);
+        PrintErrorf("GDB_ReadELF error: %s", label);
     }
 
     if (f != NULL)
@@ -577,7 +577,7 @@ void GDB_ReadELF(const char *elf_filename)
         if (rc < 0)
         {
             tsnprintf(buf, "GDB_ReadELF error closing %s:", elf_filename);
-            LogStrError("close");
+            PrintErrorLibC("close");
         }
     }
 
@@ -670,6 +670,217 @@ bool GDB_ParseRecord(char *buf, size_t bufsize, ParseRecordContext &ctx)
     }
 
     return !ctx.error;
+}
+
+ssize_t GDB_Send(const char *cmd)
+{
+    if (*cmd == '\0') return 0; // special case: don't send but dec semaphore
+
+    // write to GDB
+    size_t cmdsize = strlen(cmd);
+
+#if defined(DEBUG)
+    LogLine(cmd, cmdsize);
+#endif
+
+    ssize_t written = write(gdb.fd_out_write, cmd, cmdsize);
+    if (written != (ssize_t)cmdsize)
+    {
+        PrintErrorLibC("GDB_Send");
+    }
+    else
+    {
+        ssize_t newline_written = write(gdb.fd_out_write, "\n", 1);
+        if (newline_written != 1)
+        {
+            PrintErrorLibC("GDB_Send");
+        }
+    }
+
+    return written;
+}
+
+int GDB_SendBlocking(const char *cmd, const char *header, bool remove_after)
+{
+    int rc;
+    ssize_t num_sent = GDB_Send(cmd);
+
+    if (num_sent >= 0)
+    {
+        bool found = false;
+        do
+        {
+            timespec wait_for;
+            clock_gettime(CLOCK_REALTIME, &wait_for);
+            wait_for.tv_sec += 1;
+
+            rc = sem_timedwait(gdb.recv_block, &wait_for);
+            if (rc < 0)
+            {
+                if (errno == ETIMEDOUT)
+                {
+                    // TODO: retry counts
+                    char buf[512];
+                    size_t bufsize = tsnprintf(buf, "Command Timeout: %s", cmd);
+                    LogLine(buf, bufsize);
+                }
+                else
+                {
+                    PrintErrorLibC("sem_timedwait");
+                }
+                break;
+            }
+            else
+            {
+                GDB_GrabBlockData();
+
+                // scan the lines for a result record, mark it as read
+                // to prevent later processing
+                for (size_t i = 0; i < prog.num_recs; i++)
+                {
+                    RecordHolder &iter = prog.read_recs[i];
+                    auto &recbuf = iter.rec.buf;
+
+                    if (!iter.parsed && iter.rec.buf.size() > 0)
+                    {
+                        // cap for strstr
+                        char &last = recbuf[ recbuf.size() - 1 ];
+                        char c = last;
+                        if (NULL != strstr(iter.rec.buf.data(), header))
+                        {
+                            iter.parsed = remove_after;
+                            rc = i;
+                            found = true;
+                        }
+                        else if (NULL != strstr(iter.rec.buf.data(), "^error"))
+                        {
+                            char msg[] = "---Error---";
+                            LogLine(msg, strlen(msg));
+                            iter.parsed = true;
+                            return -1;
+                        }
+
+                        last = c;
+                    }
+                }
+            }
+
+        } while (!found);
+    }
+
+    return rc;
+}
+
+int GDB_SendBlocking(const char *cmd, Record &rec, const char *end_pattern)
+{
+    // errno or result record index
+    int rc_or_index = GDB_SendBlocking(cmd, end_pattern, false);
+    if (rc_or_index < 0)
+    {
+        rec = {};
+    }
+    else
+    {
+        rec = prog.read_recs[rc_or_index].rec;
+        prog.read_recs[rc_or_index].parsed = true;
+    }
+
+    return rc_or_index;
+}
+
+static void GDB_ProcessBlock(char *block, size_t blocksize)
+{
+    // parse buffer of interpreter lines ending in (gdb)
+    // sync/async records get stored 
+    // console/debug logs get written to log_lines
+    size_t block_idx = 0;
+    while (block_idx < blocksize)
+    {
+        char *start = block + block_idx;
+        char *eol = strchr(start, '\n');
+        if (eol)
+        {
+            if (eol[-1] == '\r')
+            {
+                eol[-1] = ' ';
+            }
+            eol[0] = ' ';
+
+            eol++; // GDB_ParseRecord inserts a ']' at the end
+        }
+        else
+        {
+            // all records should be NL terminated
+            Assert(false);
+            break;
+        }
+
+        size_t linesize = eol - start;
+        LogLine(start, eol - start);
+
+        // get the record type
+        char c = start[0];
+        if (c == PREFIX_RESULT || c == PREFIX_ASYNC0 || c == PREFIX_ASYNC1) 
+        {
+            static ParseRecordContext ctx;
+            if ( GDB_ParseRecord(start, eol - start, ctx) )
+            {
+                // search for unused block before adding new one
+                RecordHolder *out = NULL;
+                for (size_t i = 0; i < prog.num_recs; i++)
+                {
+                    if (prog.read_recs[i].parsed)
+                    {
+                        // reused parsed elem in read records
+                        out = &prog.read_recs[i];
+                        break;
+                    }
+                }
+
+                if (out == NULL)
+                {
+                    if (prog.read_recs.size() < prog.num_recs + 1)
+                    {
+                        size_t newcount = (prog.num_recs + 1) * 4;
+                        prog.read_recs.resize(newcount);
+                    }
+
+                    out = &prog.read_recs[ prog.num_recs ];
+                    prog.num_recs++;
+                }
+
+                *out = {};
+                out->parsed = false;
+
+                Record &rec = out->rec;
+                rec.atoms = ctx.atoms;
+                rec.buf.resize(eol - start);
+                memcpy(rec.buf.data(), start, eol - start);
+            }
+        }
+
+        // advance to next line, skip over index of NT
+        block_idx = block_idx + linesize;
+    }
+}
+
+
+void GDB_GrabBlockData()
+{
+    pthread_mutex_lock(&gdb.modify_block);
+
+    size_t total_bytes = 0;
+    for (size_t i = 0; i < gdb.num_blocks; i++)
+    {
+        Span &iter = gdb.block_spans[i];
+        GDB_ProcessBlock(gdb.blocks.data() + iter.index, iter.length);
+        total_bytes = iter.index + iter.length;
+        iter = {};
+    }
+    memset(gdb.blocks.data(), 0, total_bytes);
+    gdb.num_blocks = 0;
+
+    pthread_mutex_unlock(&gdb.modify_block);
 }
 
 
