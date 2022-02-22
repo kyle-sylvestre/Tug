@@ -26,6 +26,7 @@ String _StringPrintf(int /* vargs_check */, const char *fmt, ...)
     va_list args;
     va_start(args, fmt);
     int rc = vsnprintf(NULL, 0, fmt, args);
+    va_end(args);
 
     if (rc < 0)
     {
@@ -34,9 +35,8 @@ String _StringPrintf(int /* vargs_check */, const char *fmt, ...)
     else
     {
         result.resize(rc + 1, '\0');
-        va_list args2;
-        va_copy(args2, args);
-        rc = vsnprintf((char *)result.data(), result.size(), fmt, args2);
+        va_start(args, fmt);
+        rc = vsnprintf((char *)result.data(), result.size(), fmt, args);
         va_end(args);
 
         if (rc < 0)
