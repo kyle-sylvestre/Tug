@@ -14,7 +14,45 @@
 #define WINDOW_WIDTH 1280
 #define WINDOW_HEIGHT 640
 #define SOURCE_WIDTH 800
+#define IM_COL32_LIGHT_RED IM_COL32(255, 128, 128, 255)
 
+// verify a printf-family variadic arguments, MSVC doesn't have attribute printf like GCC
+// pass this as a parameter to printf like function macro
+#define VARGS_CHECK(fmt, ...) (0 && snprintf(NULL, 0, fmt, ##__VA_ARGS__))
+#define StringPrintf(fmt, ...) _StringPrintf(VARGS_CHECK(fmt, ##__VA_ARGS__), fmt, ##__VA_ARGS__)
+String _StringPrintf(int /* vargs_check */, const char *fmt, ...)
+{
+    String result;
+    va_list args;
+    va_start(args, fmt);
+    int rc = vsnprintf(NULL, 0, fmt, args);
+
+    if (rc < 0)
+    {
+        PrintErrorLibC("vsnprintf");
+    }
+    else
+    {
+        result.resize(rc + 1, '\0');
+        va_list args2;
+        va_copy(args2, args);
+        rc = vsnprintf((char *)result.data(), result.size(), fmt, args2);
+        va_end(args);
+
+        if (rc < 0)
+        {
+            PrintErrorLibC("vsnprintf");
+            result = "";
+        }
+        else 
+        {
+            // remove trailing nt, string maintains one internally
+            result.pop_back();
+        }
+    }
+
+    return result;
+}
 
 struct GlfwInput
 {
@@ -84,9 +122,9 @@ ProgramContext prog;
 GDB gdb;
 GuiContext gui;
 
-inline void dbg() {};
+inline void dbg() {}
 
-void *RedirectStdin(void *ctx)
+void *RedirectStdin(void *)
 {
     // forward user input to GDB
     while (!gdb.end_program)
@@ -99,7 +137,7 @@ void *RedirectStdin(void *ctx)
     return NULL;
 }
 
-void *ReadInterpreterBlocks(void *ctx)
+void *ReadInterpreterBlocks(void *)
 {
     // read data from GDB pipe
     char tmp[1024 * 1024 + 1] = {};
@@ -210,6 +248,7 @@ bool Tug_Init(GLFWwindow *window)
                 std::string key = line.substr(0, equaloff);
                 std::string value = line.substr(equaloff + 1);
 
+                static_assert(sizeof(prog.config) % sizeof(ConfigPair) == 0, "prog.config not all ConfigPair's");
                 ConfigPair *str = reinterpret_cast<ConfigPair *>(&prog.config);
                 for (size_t i = 0; i < NUM_CONFIG; i++)
                 {
@@ -305,7 +344,7 @@ bool Tug_Init(GLFWwindow *window)
         size_t startoff = 0;
         size_t spaceoff = 0;
         size_t bufoff = 0;
-        std::vector<char *> argv;
+        Vector<char *> argv;
         bool inside_string = false;
         bool is_whitespace = true;
 
@@ -386,8 +425,9 @@ bool Tug_Init(GLFWwindow *window)
 
         rc = posix_spawnp((pid_t *) &gdb.spawned_pid, prog.config.gdb_path.value.c_str(),
                           &actions, &attrs, argv.data(), envptr.data());
-        if (rc < 0 || gdb.spawned_pid == 0) 
+        if (rc != 0) 
         {
+            errno = rc;
             PrintErrorLibC("posix_spawnp");
             return false;
         }
@@ -401,15 +441,8 @@ bool Tug_Init(GLFWwindow *window)
     }
 
     // set initial state of log
-    char empty[] = ""; 
     for (int i = 0; i < NUM_LOG_ROWS; i++)
-        LogLine(empty, 0);
-
-    Record tmp = {};
-    FileContext file_ctx = {};
-
-    // wait for the prompt messages to show up
-    // clear the first (gdb) semaphore
+        LogLine("", 0);
 
 #if 1
     //GDB_SendBlocking("-environment-cd /mnt/c/Users/Kyle/Documents/commercial-codebases/original/stevie");
@@ -451,23 +484,9 @@ bool Tug_Init(GLFWwindow *window)
 
 #endif
 
-    // setup global var objects that will last the duration of the program
-    String reg_cmd;
-    if (0) for (const char *reg : REG_AMD64)
-    {
-        char name[256];
-        char cmd[512];
-        tsnprintf(name, GLOBAL_NAME_PREFIX "%s", reg);
-        tsnprintf(cmd, "-var-create %s @ $%s\n", name, reg);
-        reg_cmd += cmd;
+    // TODO: setup global var objects that will last the duration of the program
 
-        prog.global_vars.push_back( { reg, "", false} );
-    }
-
-    reg_cmd.pop_back(); // last \n
-    GDB_Send(reg_cmd.c_str());
-
-    const auto UpdateKey = [](GLFWwindow *window, int key, int scancode,
+    const auto UpdateKey = [](GLFWwindow * /* window */, int key, int /* scancode */,
                               int action, int mods) -> void
     {
         Assert((size_t)key < ArrayCount(gui.this_keystate.keys));
@@ -479,8 +498,7 @@ bool Tug_Init(GLFWwindow *window)
         update.mods = mods;
     };
 
-    const auto UpdateMouseButton = [](GLFWwindow *window, int button, 
-                                      int action, int mods)
+    const auto UpdateMouseButton = [](GLFWwindow * /* window */, int button, int action, int mods)
     {
         Assert((size_t)button < ArrayCount(gui.this_mousestate.buttons));
         Assert((uint8_t)action <= UINT8_MAX && (uint8_t)mods <= UINT8_MAX);
@@ -520,36 +538,52 @@ void LogLine(const char *raw, size_t rawsize)
     // debug
     //printf("%.*s\n", int(rawsize), raw);
 
-#if 0   // disable line formatting
+    // shift lines up, add this line to the collection
+    prog.log[NUM_LOG_ROWS - 1][NUM_LOG_COLS] = '\n'; // clear prev null terminator
+    memmove(&prog.log[0][0], &prog.log[1][0], 
+            sizeof(prog.log) - sizeof(prog.log[0]));
+
+    char (&dest)[NUM_LOG_COLS + 1 /* NT */]  = prog.log[NUM_LOG_ROWS - 1];
+    memset(dest, ' ', NUM_LOG_COLS);
+    size_t dest_idx = 0;
+
+    const auto PushChar = [&](char c)
+    {
+        if (dest_idx < NUM_LOG_COLS)
+            dest[dest_idx++] = c;
+    };
+
     for (size_t i = 0; i < rawsize; i++)
     {
         char c = raw[i];
-        if (c == '\\' && i + 2 <= rawsize)
+        char n = (i + 1 < rawsize) ? raw[i + 1] : '\0';
+
+        if (c == '\\')
         {
-            // convert to literal, shift array up and decrease size
-            char n = raw[i + 1];
+            // implement the literal character
+            switch (n)
+            {
+                case 't': 
+                    for (size_t t = 0; t < 4; t++)
+                        PushChar(' ');
+                    break;
+                case '\\':
+                case '\"':
+                    PushChar(n);
+                    break;
+                default:
+                    break;
+            }
 
-            if (n == 'n') raw[i] = ' '; // skip over sent newlines
-            else if (n == '\\') raw[i] = '\\';
-            else if (n == '"') raw[i] = '"';
-
-            memmove(raw + i + 1,
-                    raw + i + 2,
-                    rawsize - (i + 2));
-            rawsize--;
+            i++; // skip over the evaluated char
+        }
+        else
+        {
+            PushChar(raw[i]);
         }
     }
-#endif
 
-    // shift lines up, add to collection
-    prog.log[NUM_LOG_ROWS - 1][NUM_LOG_COLS] = '\n'; // clear prev null terminator
-    memcpy(&prog.log[0][0], &prog.log[1][0], sizeof(prog.log) - sizeof(prog.log[0]));
-
-    // truncate line to NUM_LOG_COLS and omit the last " and \n
-    char *dest = &prog.log[NUM_LOG_ROWS - 1][0];
-    memset(dest, ' ', NUM_LOG_COLS);
     dest[NUM_LOG_COLS] = '\0';
-    memcpy(dest, raw, (rawsize > NUM_LOG_COLS) ? NUM_LOG_COLS : rawsize);
 }
 
 size_t CreateOrGetFile(const String &fullpath)
@@ -604,15 +638,15 @@ void Draw(GLFWwindow *window)
         RecordHolder &iter = prog.read_recs[i];
         if (!iter.parsed)
         {
-            Record &rec = iter.rec;
+            Record &parse_rec = iter.rec;
             iter.parsed = true;
-            char prefix = rec.buf[0];
+            char prefix = parse_rec.buf[0];
 
-            char *comma = (char *)memchr(rec.buf.data(), ',', rec.buf.size());
+            char *comma = (char *)memchr(parse_rec.buf.data(), ',', parse_rec.buf.size());
             if (comma == NULL) 
-                comma = &rec.buf[ rec.buf.size() ];
+                comma = &parse_rec.buf[ parse_rec.buf.size() ];
 
-            char *start = rec.buf.data() + 1;
+            char *start = parse_rec.buf.data() + 1;
             String prefix_word(start, comma - start);
 
             if (prefix == PREFIX_ASYNC0)
@@ -620,39 +654,39 @@ void Draw(GLFWwindow *window)
                 if (prefix_word == "breakpoint-created")
                 {
                     Breakpoint res = {};
-                    res.number = GDB_ExtractInt("bkpt.number", rec);
-                    res.line = GDB_ExtractInt("bkpt.line", rec);
+                    res.number = GDB_ExtractInt("bkpt.number", parse_rec);
+                    res.line = GDB_ExtractInt("bkpt.line", parse_rec);
 
-                    String fullpath = GDB_ExtractValue("bkpt.fullname", rec);
+                    String fullpath = GDB_ExtractValue("bkpt.fullname", parse_rec);
                     res.file_idx = CreateOrGetFile(fullpath);
 
                     prog.breakpoints.push_back(res);
                 }
                 else if (prefix_word == "breakpoint-deleted")
                 {
-                    size_t id = (size_t)GDB_ExtractInt("id", rec);
+                    size_t id = (size_t)GDB_ExtractInt("id", parse_rec);
                     auto &bpts = prog.breakpoints;
-                    for (size_t i = 0; i < bpts.size(); i++)
+                    for (size_t b = 0; b < bpts.size(); b++)
                     {
-                        if (bpts[i].number == id)
+                        if (bpts[b].number == id)
                         {
-                            bpts.erase(bpts.begin() + i, 
-                                       bpts.begin() + i + 1);
+                            bpts.erase(bpts.begin() + b, 
+                                       bpts.begin() + b + 1);
                             break;
                         }
                     }
                 }
                 else if (prefix_word == "thread-group-started")
                 {
-                    prog.inferior_process = (pid_t)GDB_ExtractInt("pid", rec);
+                    prog.inferior_process = (pid_t)GDB_ExtractInt("pid", parse_rec);
                 }
             }
             else if (prefix_word == "stopped")
             {
                 prog.running = false;
                 async_stopped = true;
-                String reason = GDB_ExtractValue("reason", rec);
-                paranoid_line = (size_t)GDB_ExtractInt("frame.line", rec);
+                String reason = GDB_ExtractValue("reason", parse_rec);
+                paranoid_line = (size_t)GDB_ExtractInt("frame.line", parse_rec);
 
                 if ( (NULL != strstr(reason.c_str(), "exited")) )
                 {
@@ -669,8 +703,8 @@ void Draw(GLFWwindow *window)
         bool remake_varobjs = false;
 
         // TODO: remote ARM32 debugging is this up after jsr macro
-        //GDB_SendBlocking("-stack-list-frames 0 0", rec, "stack");
-        GDB_SendBlocking("-stack-list-frames", rec, "stack");
+        /* !!! */ //GDB_SendBlocking("-stack-list-frames 0 0", rec, "stack");
+        /* !!! */ GDB_SendBlocking("-stack-list-frames", rec, "stack");
         const RecordAtom *callstack = GDB_ExtractAtom("stack", rec);
         if (callstack)
         {
@@ -807,12 +841,12 @@ void Draw(GLFWwindow *window)
                 {
                     // check for global variable change 
                     namestart += strlen(GLOBAL_NAME_PREFIX);
-                    for (VarObj &iter : prog.global_vars)
+                    for (VarObj &global : prog.global_vars)
                     {
-                        if (iter.name == namestart)
+                        if (global.name == namestart)
                         {
-                            iter.changed = (iter.value != value);
-                            iter.value = value;
+                            global.changed = (global.value != value);
+                            global.value = value;
                             break;
                         }
                     }
@@ -821,12 +855,12 @@ void Draw(GLFWwindow *window)
                 {
                     // check for local variable change 
                     namestart += strlen(LOCAL_NAME_PREFIX);
-                    for (VarObj &iter : prog.local_vars)
+                    for (VarObj &local : prog.local_vars)
                     {
-                        if (iter.name == namestart)
+                        if (local.name == namestart)
                         {
-                            iter.changed = (iter.value != value);
-                            iter.value = value;
+                            local.changed = (local.value != value);
+                            local.value = value;
                             break;
                         }
                     }
@@ -858,6 +892,9 @@ void Draw(GLFWwindow *window)
             gui.source_search_bar_open = false;
         }
 
+        //
+        // goto window: jump to a line in the source document
+        //
 
         static bool goto_line_open;
         bool goto_line_activate;
@@ -902,6 +939,9 @@ void Draw(GLFWwindow *window)
         }
 
 
+        //
+        // search bar: look for text in source window
+        //
 
         if (gui.source_search_bar_open)
         {
@@ -1138,7 +1178,7 @@ void Draw(GLFWwindow *window)
                                         //@@@ force a watch list update
                                         async_stopped = true;
                                         String hover_string(line.data() + word_idx, char_idx - word_idx);
-                                        prog.watch_vars.push_back({hover_string, "???"});
+                                        prog.watch_vars.push_back({hover_string, "???", false});
                                     }
 
                                     if (hover_word_idx != word_idx || 
@@ -1267,6 +1307,7 @@ void Draw(GLFWwindow *window)
             // jump to program counter line
             gui.source_highlighted_line = BAD_INDEX;
 
+            // !!!
             if (!prog.started)
             {
                 GDB_SendBlocking("-exec-run --start", "stopped", false);
@@ -1339,7 +1380,7 @@ void Draw(GLFWwindow *window)
             const size_t CONFIG_SIZE = 4096;
             static char config_input[NUM_CONFIG][CONFIG_SIZE];
             static bool show_config_window;
-            static_assert(sizeof(prog.config) % sizeof(ConfigPair) == 0);
+            static_assert(sizeof(prog.config) % sizeof(ConfigPair) == 0, "prog.config not all ConfigPair's");
 
             ConfigPair *src = reinterpret_cast<ConfigPair *>(&prog.config);
 
@@ -1499,8 +1540,8 @@ void Draw(GLFWwindow *window)
         }
 
         ImGuiTableFlags flags = ImGuiTableFlags_ScrollX |
-            ImGuiTableFlags_ScrollY |
-            ImGuiTableFlags_Borders;
+                                ImGuiTableFlags_ScrollY |
+                                ImGuiTableFlags_Borders;
 
         // @Imgui: can't figure out the right combo of table/column flags corresponding to 
         //         a table with initial column widths that expands column width on elem width increase
@@ -1526,7 +1567,7 @@ void Draw(GLFWwindow *window)
 
                 ImGui::TableNextColumn();
                 ImColor color = (iter.changed) 
-                    ? IM_COL32(255, 128, 128, 255)  // light red
+                    ? IM_COL32_LIGHT_RED
                     : IM_COL32_WHITE;
                 ImGui::TextColored(color, "%s", iter.value.c_str());
             }
@@ -1573,11 +1614,11 @@ void Draw(GLFWwindow *window)
                         GDB_SendBlocking(tmpbuf, rec);
                         const RecordAtom *variables = GDB_ExtractAtom("variables", rec);
 
-                        for (const RecordAtom &iter : GDB_IterChild(rec, *variables))
+                        for (const RecordAtom &atom : GDB_IterChild(rec, *variables))
                         {
                             VarObj add = {}; 
-                            add.name = GDB_ExtractValue("name", iter, rec);
-                            add.value = GDB_ExtractValue("value", iter, rec);
+                            add.name = GDB_ExtractValue("name", atom, rec);
+                            add.value = GDB_ExtractValue("value", atom, rec);
                             add.changed = false;
                             prog.other_frame_vars.emplace_back(add);
                         }
@@ -1644,7 +1685,7 @@ void Draw(GLFWwindow *window)
                         tsnprintf(tmpbuf, "-var-create " GLOBAL_NAME_PREFIX "%s @ $%s",
                                   reg.text.c_str(), reg.text.c_str());
                         GDB_SendBlocking(tmpbuf, rec);
-                        prog.global_vars.push_back( {reg.text, "???"} );
+                        prog.global_vars.push_back( {reg.text, "???", false} );
                     }
                     else
                     {
@@ -1735,18 +1776,18 @@ void Draw(GLFWwindow *window)
                     }
 
 
-                    static int hack = 0; // ImGui::WantCaptureKeyboard frame delay
+                    static int delay = 0; // @Imgui: need a delay or else it will auto de-focus
                     if (focus_name_input)
                     {
                         ImGui::SetKeyboardFocusHere(-1);
                         focus_name_input = false;
-                        hack = 0;
+                        delay = 0;
                     }
                     else
                     {
                         bool deleted = false;
-                        hack++;
-                        bool active = ImGui::IsItemFocused() && (hack < 2 || ImGui::GetIO().WantCaptureKeyboard);
+                        delay++;
+                        bool active = ImGui::IsItemFocused() && (delay < 2 || ImGui::GetIO().WantCaptureKeyboard);
                         if (gui.IsKeyClicked(GLFW_KEY_DELETE))
                         {
                             prog.watch_vars.erase(prog.watch_vars.begin() + i,
@@ -1797,7 +1838,7 @@ void Draw(GLFWwindow *window)
 
                 ImGui::TableNextColumn();
                 ImColor color = (iter.changed) 
-                    ? IM_COL32(255, 128, 128, 255)  // light red
+                    ? IM_COL32_LIGHT_RED
                     : IM_COL32_WHITE;
                 ImGui::TextColored(color, "%s", iter.value.c_str());
             }
@@ -1814,7 +1855,7 @@ void Draw(GLFWwindow *window)
                                  ImGuiInputTextFlags_EnterReturnsTrue,
                                  NULL, NULL))
             {
-                prog.watch_vars.push_back( {watch, "???"} );
+                prog.watch_vars.push_back( {watch, "???", false} );
                 modified_watchlist = true;
                 memset(watch, 0, sizeof(watch));
             }

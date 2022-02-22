@@ -372,12 +372,12 @@ void GDB_ReadELF(const char *elf_filename)
     bool is_elf_little_endian = true;   // start off not byte swapping
 
 
-    const auto ReadOffset = [&buf](FILE *f, size_t file_offset, const char *label,
+    const auto ReadOffset = [&buf](FILE *file, size_t file_offset, const char *label,
                                    void *dest, size_t bytes)
     {
-        fseek(f, file_offset, SEEK_SET);
+        fseek(file, file_offset, SEEK_SET);
 
-        size_t num_elems = fread(dest, bytes, 1, f);
+        size_t num_elems = fread(dest, bytes, 1, file);
         if (num_elems != 1)
         {
             tsnprintf(buf, "label: %s, errno: %s",

@@ -198,7 +198,7 @@ struct Record
     // data describing the line elements
     Vector<RecordAtom> atoms;
 
-    // line buffer, atoms point to data inside this
+    // line buffer, RecordAtom name/value strings point to data inside this
     Vector<char> buf;
 };
 
@@ -341,8 +341,6 @@ extern GDB gdb;
 // record management functions
 struct ParseRecordContext
 {
-    // stored as push/pop out at current depth
-    // copied to atoms once you hit the end
     Vector<RecordAtom> atoms;
     size_t atom_idx;
     size_t num_end_atoms;   // contiguous atoms stored at the end of atoms
