@@ -739,30 +739,48 @@ int GDB_SendBlocking(const char *cmd, const char *header, bool remove_after)
                 for (size_t i = 0; i < prog.num_recs; i++)
                 {
                     RecordHolder &iter = prog.read_recs[i];
-                    auto &recbuf = iter.rec.buf;
+                    const char *bufstr = iter.rec.buf.c_str();
 
                     if (!iter.parsed && iter.rec.buf.size() > 0)
                     {
-                        // cap for strstr
-                        char &last = recbuf[ recbuf.size() - 1 ];
-                        char c = last;
-                        if (NULL != strstr(iter.rec.buf.data(), header))
+                        if (NULL != strstr(bufstr, header))
                         {
                             iter.parsed = remove_after;
                             rc = i;
                             found = true;
                         }
-                        else if (NULL != strstr(iter.rec.buf.data(), "^error"))
+                        else if (NULL != strstr(bufstr, "^error"))
                         {
-                            // convert error record to GDB console output record
-                            String errmsg = GDB_ExtractValue("msg", iter.rec);
-                            errmsg = "&\"GDB MI Error: " + errmsg + "\"\n";
-                            LogLine(errmsg.data(), errmsg.size());
-                            iter.parsed = true;
-                            return -1;
-                        }
+                            extern void dbg();
+                            dbg();
+                            if (NULL != strstr(bufstr, "optimized out"))
+                            {
+                                // @GDB: match up results for optimized out variables
+                                // 1. -data-evaluate-expression argv --> ^done,value="<optimized out>"
+                                // 2. -data-evaluate-expression argv[0] --> ^error,msg="value has been optimized out"
 
-                        last = c;
+                                const static Record OPTIMIZED_OUT_FIX = {
+                                    {
+                                        { Atom_Array, {0, 0}, {1,1} }, // root atom
+                                        { Atom_String, /*value*/{6, 5}, /*<optimized out>*/{13, 15} }
+                                    },
+                                    "^done,value=\"<optimized out>\""
+                                };
+                                prog.num_recs++;
+                                RecordHolder &last = prog.read_recs[ prog.num_recs - 1 ];
+                                last.rec = OPTIMIZED_OUT_FIX;
+                                last.parsed = false;
+                            }
+                            else
+                            {
+                                // convert error record to GDB console output record
+                                String errmsg = GDB_ExtractValue("msg", iter.rec);
+                                errmsg = "&\"GDB MI Error: " + errmsg + "\"\n";
+                                LogLine(errmsg.data(), errmsg.size());
+                                iter.parsed = true;
+                                return -1;
+                            }
+                        }
                     }
                 }
             }
@@ -857,7 +875,7 @@ static void GDB_ProcessBlock(char *block, size_t blocksize)
                 Record &rec = out->rec;
                 rec.atoms = ctx.atoms;
                 rec.buf.resize(eol - start);
-                memcpy(rec.buf.data(), start, eol - start);
+                memcpy(const_cast<char*>(rec.buf.data()), start, eol - start);
             }
         }
 

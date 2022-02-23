@@ -122,7 +122,7 @@ ProgramContext prog;
 GDB gdb;
 GuiContext gui;
 
-inline void dbg() {}
+void dbg() {}
 
 void *RedirectStdin(void *)
 {
@@ -547,7 +547,6 @@ void LogLine(const char *raw, size_t rawsize)
     //printf("%.*s\n", int(rawsize), raw);
 
     // shift lines up, add this line to the collection
-    prog.log[NUM_LOG_ROWS - 1][NUM_LOG_COLS] = '\n'; // clear prev null terminator
     memmove(&prog.log[0][0], &prog.log[1][0], 
             sizeof(prog.log) - sizeof(prog.log[0]));
 
@@ -664,7 +663,6 @@ void Draw(GLFWwindow *window)
     bool async_stopped = false;
     size_t last_num_recs = prog.num_recs;
     prog.num_recs = 0;
-    size_t paranoid_line = 0;
 
     for (size_t i = 0; i < last_num_recs; i++)
     {
@@ -679,7 +677,7 @@ void Draw(GLFWwindow *window)
             if (comma == NULL) 
                 comma = &parse_rec.buf[ parse_rec.buf.size() ];
 
-            char *start = parse_rec.buf.data() + 1;
+            const char *start = parse_rec.buf.data() + 1;
             String prefix_word(start, comma - start);
 
             if (prefix == PREFIX_ASYNC0)
@@ -756,7 +754,6 @@ void Draw(GLFWwindow *window)
                 prog.running = false;
                 async_stopped = true;
                 String reason = GDB_ExtractValue("reason", parse_rec);
-                paranoid_line = (size_t)GDB_ExtractInt("frame.line", parse_rec);
 
                 if ( (NULL != strstr(reason.c_str(), "exited")) )
                 {
@@ -949,7 +946,9 @@ void Draw(GLFWwindow *window)
                                     ImGuiWindowFlags_NoCollapse | 
                                     ImGuiWindowFlags_NoBringToFrontOnFocus;
 
-    // code window, see current instruction and set breakpoints
+    // 
+    // source code window
+    //
     {
         ImGui::SetNextWindowBgAlpha(1.0);   // @Imgui: bug where GetStyleColor doesn't respect window opacity
         ImGui::SetNextWindowPos( { 0, 0 } );
@@ -1375,12 +1374,10 @@ void Draw(GLFWwindow *window)
         ImGuiDisabled(prog.running, clicked = ImGui::Button("|>") || vs_continue);
         if (clicked)
         {
-            // TODO: remote doesn't support exec run
-
             // jump to program counter line
             gui.source_highlighted_line = BAD_INDEX;
 
-            // !!!
+            // TODO: query support for -exec-run
             if (!prog.started)
             {
                 GDB_SendBlocking("-exec-run --start", "stopped", false);

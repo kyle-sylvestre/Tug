@@ -199,7 +199,7 @@ struct Record
     Vector<RecordAtom> atoms;
 
     // line buffer, RecordAtom name/value strings point to data inside this
-    Vector<char> buf;
+    String buf;
 };
 
 struct RecordHolder
