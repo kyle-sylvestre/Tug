@@ -780,6 +780,7 @@ void Draw(GLFWwindow *window)
         const RecordAtom *callstack = GDB_ExtractAtom("stack", rec);
         if (callstack)
         {
+            size_t last_num_frames = prog.frames.size();
             prog.frames.clear();
             for (const RecordAtom &level : GDB_IterChild(rec, *callstack))
             {
@@ -794,8 +795,11 @@ void Draw(GLFWwindow *window)
                 prog.frames.emplace_back(add);
             }
 
-            //Assert(prog.frames.size() > 0 && prog.frames[0].line == paranoid_line);
-
+            if (last_num_frames != prog.frames.size())
+            {
+                // pushed/popped a callstack frame, jump to program counter line
+                gui.source_highlighted_line = BAD_INDEX;
+            }
 
             // make a unique signature from the function name and types
             // if the signature has changed, need to delete/recreate varobj's
