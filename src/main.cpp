@@ -125,6 +125,7 @@ GuiContext gui;
 
 bool ImGui_IsKeyClicked(ImGuiKey key)
 {
+    // @Imgui: I couldn't find the equivalent of this function in the api
     ImGuiKeyData keydata = ImGui::GetIO().KeysData[key];
     return (keydata.DownDurationPrev >= 0.0f && keydata.DownDuration < 0.0f);
 }
@@ -654,8 +655,22 @@ void QueryWatchlist()
     Record rec;
     for (VarObj &iter : prog.watch_vars)
     {
+        String expr;
+        const char *src = iter.name.c_str();
+        const char *comma = strchr(src, ',');
+
+        if (comma != NULL)
+        {
+            // translate visual studio syntax to GDB
+            // array, 10 -> *array@10
+            expr = StringPrintf("*(%.*s)@%s", (int)(comma - src), src, comma + 1);
+        }
+        else
+        {
+            expr = iter.name;
+        }
         String cmd = StringPrintf("-data-evaluate-expression --frame %zu --thread 1 \"%s\"", 
-                                  prog.frame_idx, iter.name.c_str());
+                                  prog.frame_idx, expr.c_str());
         GDB_SendBlocking(cmd.c_str(), rec);
         String value = GDB_ExtractValue("value", rec);
         if (value == "") value = "???";
