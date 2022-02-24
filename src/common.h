@@ -4,7 +4,6 @@
 #include <string>
 #include <vector>
 #include <fstream>
-#include <map>
 
 // cstd
 #include <assert.h>
@@ -22,6 +21,7 @@
 #include <fcntl.h>
 #include <semaphore.h>
 #include <sys/time.h>
+#include <sys/stat.h>
 
 #include "utility.h"
 

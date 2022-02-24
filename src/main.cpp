@@ -6,6 +6,7 @@
 
 // third party
 #include <imgui/imgui.h>
+#include <imgui/imgui_internal.h>
 #include <imgui/imgui_impl_glfw.h>
 #include <imgui/imgui_impl_opengl2.h>
 #include <GLFW/glfw3.h>
@@ -122,6 +123,12 @@ ProgramContext prog;
 GDB gdb;
 GuiContext gui;
 
+bool ImGui_IsKeyClicked(ImGuiKey key)
+{
+    ImGuiKeyData keydata = ImGui::GetIO().KeysData[key];
+    return (keydata.DownDurationPrev >= 0.0f && keydata.DownDuration < 0.0f);
+}
+
 void dbg() {}
 
 void *RedirectStdin(void *)
@@ -225,7 +232,7 @@ int Tug_Shutdown()
     return 0;
 }
 
-bool Tug_Init(GLFWwindow *window)
+bool Tug_Init(GLFWwindow *window, int argc, char **argv)
 {
     int rc = 0;
 
@@ -344,7 +351,7 @@ bool Tug_Init(GLFWwindow *window)
         size_t startoff = 0;
         size_t spaceoff = 0;
         size_t bufoff = 0;
-        Vector<char *> argv;
+        Vector<char *> gdb_argv;
         bool inside_string = false;
         bool is_whitespace = true;
 
@@ -366,7 +373,7 @@ bool Tug_Init(GLFWwindow *window)
                 size_t arglen = spaceoff - startoff;
                 if (arglen != 0 && !is_whitespace)
                 {
-                    argv.push_back((char *)bufoff);
+                    gdb_argv.push_back((char *)bufoff);
                     buf.insert(buf.size(), &args[ startoff ], arglen);
                     buf.push_back('\0');
                     bufoff += (arglen + 1);
@@ -377,11 +384,11 @@ bool Tug_Init(GLFWwindow *window)
         }
         
         // convert base offsets to char pointers
-        for (size_t i = 0; i < argv.size(); i++)
+        for (size_t i = 0; i < gdb_argv.size(); i++)
         {
-            argv[i] = (char *)((size_t)argv[i] + buf.data());
+            gdb_argv[i] = (char *)((size_t)gdb_argv[i] + buf.data());
         }
-        argv.push_back(NULL);
+        gdb_argv.push_back(NULL);
 
         posix_spawn_file_actions_t actions = {};
         posix_spawn_file_actions_adddup2(&actions, gdb.fd_out_read,  0);    // stdin
@@ -424,7 +431,7 @@ bool Tug_Init(GLFWwindow *window)
         pclose(fsh);
 
         rc = posix_spawnp((pid_t *) &gdb.spawned_pid, prog.config.gdb_path.value.c_str(),
-                          &actions, &attrs, argv.data(), envptr.data());
+                          &actions, &attrs, gdb_argv.data(), envptr.data());
         if (rc != 0) 
         {
             errno = rc;
@@ -456,20 +463,33 @@ bool Tug_Init(GLFWwindow *window)
     //GDB_SendBlocking("-environment-cd \"/mnt/c/Users/Kyle/Downloads/Chrome Downloads/ARM/AARCH32\"");
     //GDB_SendBlocking("-file-exec-and-symbols advent.out");
 
+    if (argc > 1)
+    {
+        struct stat sb;
+        if (stat(argv[1], &sb) == 0 && sb.st_mode & S_IXUSR)
+        {
+            // override debug application
+            prog.config.debug_exe_path.value = argv[1]; 
+        }
+        else
+        {
+            String err = StringPrintf("couldn't open file: %s", argv[1]);
+            LogLine(err.data(), err.size());
+        }
+    }
+
     if (prog.config.debug_exe_path.value != "")
     {
-        char tmp[1024];
-        tsnprintf(tmp, "-file-exec-and-symbols \"%s\"", 
-                  prog.config.debug_exe_path.value.c_str());
-        GDB_SendBlocking(tmp);
+        String str = StringPrintf("-file-exec-and-symbols \"%s\"", 
+                                  prog.config.debug_exe_path.value.c_str());
+        GDB_SendBlocking(str.c_str());
     }
 
     if (prog.config.debug_exe_args.value != "")
     {
-        char tmp[1024];
-        tsnprintf(tmp, "-exec-arguments %s",
-                  prog.config.debug_exe_args.value.c_str());
-        GDB_SendBlocking(tmp);
+        String str = StringPrintf("-exec-arguments %s",
+                                  prog.config.debug_exe_args.value.c_str());
+        GDB_SendBlocking(str.c_str());
     }
 
     // preload all the referenced files
@@ -1154,7 +1174,7 @@ void Draw(GLFWwindow *window)
                 // stop radio button style
                 ImGui::PopStyleColor(4);
 
-                // automatically scroll to the next executed line if it is 
+                // automatically scroll to the next executed line if it is far enough away
                 int linediff = abs((long long)gui.source_highlighted_line - (long long)frame.line);
                 bool highlight_search_found = false;
                 if (i == gui.source_found_line_idx)
@@ -1191,6 +1211,7 @@ void Draw(GLFWwindow *window)
                     }
                     else
                     {
+                        // @Imgui: ImGui::Text isn't selectable with a caret cursor, lame
                         ImGui::Text("%s", line.c_str());
                     }
                 }
@@ -1958,7 +1979,7 @@ static void glfw_error_callback(int error, const char* description)
     Assert(false);
 }
 
-int main(int, char**)
+int main(int argc, char **argv)
 {
     // Setup window
     glfwSetErrorCallback(glfw_error_callback);
@@ -1971,7 +1992,7 @@ int main(int, char**)
 
     glfwMakeContextCurrent(window);
     glfwSwapInterval(1); // Enable vsync
-    if (!Tug_Init(window))
+    if (!Tug_Init(window, argc, argv))
         return 1;
 
     // Setup Dear ImGui context
@@ -2028,48 +2049,103 @@ int main(int, char**)
         ImGui::NewFrame();
 
 
+        static bool debug_window_toggled;
+        if (ImGui_IsKeyClicked(ImGuiKey_F1))
+            debug_window_toggled = !debug_window_toggled;
+
+        if (debug_window_toggled)
         {
+            char tmp[256];
+            ImDrawList *drawlist = ImGui::GetForegroundDrawList();
+            snprintf(tmp, sizeof(tmp), "Mouse Position: (%.1f,%.1f)", io.MousePos.x, io.MousePos.y);
+            ImVec2 BR = ImGui::CalcTextSize(tmp);
+            ImVec2 TL = { 0, 0 };
 
-            if (GLFW_PRESS == glfwGetKey(window, GLFW_KEY_F1))
+            drawlist->AddRectFilled(TL, BR, 0xFFFFFFFF);
+            drawlist->AddText(TL, 0xFF000000, tmp);
+
+            snprintf(tmp, sizeof(tmp), "Application average %.3f ms/frame (%.1f FPS)",
+                     1000.0f / ImGui::GetIO().Framerate, 
+                     ImGui::GetIO().Framerate);
+
+            TL.y = BR.y;
+            BR = ImGui::CalcTextSize(tmp);
+            BR.x += TL.x;
+            BR.y += TL.y;
+            drawlist->AddRectFilled(TL, BR, 0xFFFFFFFF);
+            drawlist->AddText(TL, 0xFF000000, tmp);
+
+            static bool pinned_point_toggled;
+            static ImVec2 pinned_point;
+            static ImVec2 pinned_window;
+
+            ImVec2 mousepos = ImGui::GetMousePos();
+            if (ImGui::IsMouseClicked(ImGuiMouseButton_Right))
             {
-                char tmp[256];
-                ImDrawList *drawlist = ImGui::GetForegroundDrawList();
-                tsnprintf(tmp, "Mouse Position: (%.1f,%.1f)", io.MousePos.x, io.MousePos.y);
-                ImVec2 textsize = ImGui::CalcTextSize(tmp);
-                ImVec2 TL = { 0, 0 };
+                pinned_point_toggled = !pinned_point_toggled;
+                if (pinned_point_toggled)
+                {
+                    // get relative window position
+                    ImGuiContext *ctx = ImGui::GetCurrentContext();
 
-                drawlist->AddRectFilled(TL, textsize, 0xFFFFFFFF);
-                drawlist->AddText(TL, 0xFF000000, tmp);
-
-                tsnprintf(tmp, "Application average %.3f ms/frame (%.1f FPS)",
-                          1000.0f / ImGui::GetIO().Framerate, 
-                          ImGui::GetIO().Framerate);
-
-                TL.y += textsize.y;
-                textsize = ImGui::CalcTextSize(tmp);
-                drawlist->AddRectFilled(TL, textsize, 0xFFFFFFFF);
-                drawlist->AddText(TL, 0xFF000000, tmp);
+                    // windows are stored back to front
+                    for (ImGuiWindow *iter : ctx->Windows)
+                    {
+                        const ImVec2 WINDOW_BR = ImVec2(iter->Pos.x + iter->Size.x,
+                                                        iter->Pos.y + iter->Size.y);
+                        if ((!iter->Hidden && !iter->Collapsed) &&
+                            (iter->Pos.x <= mousepos.x && iter->Pos.y <= mousepos.y) &&
+                            (WINDOW_BR.x >= mousepos.x && WINDOW_BR.y >= mousepos.y) )
+                        {
+                            pinned_window = iter->Pos;
+                        }
+                    }
+                    pinned_point = mousepos;
+                }
             }
 
-            //
-            // global styles
-            //
+            if (pinned_point_toggled)
+            {
+                // draw a rect in the selected window
+                const ImVec2 PIN_BR = ImVec2(mousepos.x - pinned_window.x,
+                                             mousepos.y - pinned_window.y);
+                const ImVec2 PIN_TL = ImVec2(pinned_point.x - pinned_window.x,
+                                             pinned_point.y - pinned_window.y);
 
-            // lessen the intensity of selectable hover color
-            ImVec4 active_col = ImGui::GetStyleColorVec4(ImGuiCol_HeaderActive);
-            active_col.x *= (1.0/2.0);
-            active_col.y *= (1.0/2.0);
-            active_col.z *= (1.0/2.0);
+                uint32_t col = IM_COL32(0, 255, 0, 32);
+                drawlist->AddRectFilled(pinned_point, mousepos, col);
 
-            ImColor IM_COL_BACKGROUND = IM_COL32(22,22,22,255);
-            ImGui::PushStyleColor(ImGuiCol_WindowBg, IM_COL_BACKGROUND.Value);
-            ImGui::PushStyleColor(ImGuiCol_HeaderHovered, active_col);
-            ImGui::PushStyleColor(ImGuiCol_HeaderActive, active_col);
+                snprintf(tmp, sizeof(tmp), "window rect:\n  pos: (%d, %d)\n  size: (%d, %d)",
+                         (int)PIN_TL.x, (int)PIN_TL.y,
+                         (int)(PIN_BR.x - PIN_TL.x), (int)(PIN_BR.y - PIN_TL.y));
+                BR = ImGui::CalcTextSize(tmp);
+                TL = ImVec2(pinned_point.x, pinned_point.y - BR.y);
+                BR.x += TL.x;
+                BR.y += TL.y;
 
-            Draw(window);
-
-            ImGui::PopStyleColor(3);
+                drawlist->AddRectFilled(TL, BR, IM_COL32_WHITE);
+                drawlist->AddText(TL, IM_COL32_BLACK, tmp);
+            }
         }
+
+        //
+        // global styles
+        //
+
+        // lessen the intensity of selectable hover color
+        ImVec4 active_col = ImGui::GetStyleColorVec4(ImGuiCol_HeaderActive);
+        active_col.x *= (1.0/2.0);
+        active_col.y *= (1.0/2.0);
+        active_col.z *= (1.0/2.0);
+
+        ImColor IM_COL_BACKGROUND = IM_COL32(22,22,22,255);
+        ImGui::PushStyleColor(ImGuiCol_WindowBg, IM_COL_BACKGROUND.Value);
+        ImGui::PushStyleColor(ImGuiCol_HeaderHovered, active_col);
+        ImGui::PushStyleColor(ImGuiCol_HeaderActive, active_col);
+
+        Draw(window);
+
+        ImGui::PopStyleColor(3);
         
         // Rendering
         ImGui::Render();
