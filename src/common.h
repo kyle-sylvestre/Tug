@@ -49,6 +49,7 @@ typedef intptr_t ssize_t;
 #define Fatal(msg) Verify(0 && msg)
 #define ArrayCount(arr) (sizeof(arr) / sizeof(arr[0]))
 #define tsnprintf(buf, fmt, ...) snprintf(buf, sizeof(buf), fmt, ##__VA_ARGS__)
+#define DefaultInvalid default: Assert(false);
 
 // c standard wrappers
 #define Assert(cond)\
@@ -116,9 +117,26 @@ struct Frame
 
 struct Breakpoint
 {
+    String addr;
     size_t number;      // ordinal assigned by GDB
     size_t line;        // file line number
     size_t file_idx;    // index in prog.files
+};
+
+struct DisassemblyLine
+{
+    String addr;
+    String func;
+    String offset_from_func;
+    String inst;
+    String opcodes;
+};
+
+struct DisassemblySourceLine
+{
+    String addr;
+    size_t num_instructions;
+    size_t line_number;
 };
 
 struct VarObj
@@ -265,6 +283,24 @@ struct GDB
     Vector<char> blocks;
     Span block_spans[MAX_STORED_BLOCKS];      // block ending in (gdb) endsig
     size_t num_blocks;
+
+    // capabilities of the spawned GDB process using -list-features 
+    bool has_frozen_varobj;
+    bool has_pending_breakpoints;
+    bool has_python_scripting_support;
+    bool has_thread_info;
+    bool has_data_rw_bytes;                 // -data-read-memory bytes and -data-write-memory-bytes
+    bool has_async_breakpoint_notification; // bkpt changes make async record
+    bool has_ada_task_info;
+    bool has_language_option;
+    bool has_gdb_mi_command;
+    bool has_undefined_command_error_code;
+    bool has_exec_run_start;
+    bool has_data_disassemble_option_a;     // -data-disassemble -a function
+
+    // capabilities of the target using -list-target-features
+    bool supports_async_execution;          // GDB will accept further commands while the target is running.
+    bool supports_reverse_execution;        // target is capable of reverse execution
 };
 
 enum ConfigType
@@ -360,7 +396,7 @@ struct AtomIter
     const RecordAtom *begin() { return iter_begin; }
     const RecordAtom *end() { return iter_end; }
 };
-AtomIter GDB_IterChild(const Record &rec, const RecordAtom &array);
+AtomIter GDB_IterChild(const Record &rec, const RecordAtom *array);
 
 // extract values from parsed records
 String GDB_ExtractValue(const char *name, const RecordAtom &root, const Record &rec);

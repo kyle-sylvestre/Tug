@@ -8,17 +8,17 @@
 
 #include "common.h"
 
-AtomIter GDB_IterChild(const Record &rec, const RecordAtom &parent)
+AtomIter GDB_IterChild(const Record &rec, const RecordAtom *parent)
 {
     // allow for fudge factor while iterating child atoms
     // need to fail gracefully for bad/missing msgs
     AtomIter result = {};
 
-    if ( (size_t(&parent - rec.atoms.data()) < rec.atoms.size()) &&
-         (parent.type == Atom_Array || parent.type == Atom_Struct) &&
-         (parent.value.index + parent.value.length <= rec.atoms.size()) )
+    if ( (size_t(parent - rec.atoms.data()) < rec.atoms.size()) &&
+         (parent->type == Atom_Array || parent->type == Atom_Struct) &&
+         (parent->value.index + parent->value.length <= rec.atoms.size()) )
     {
-        const Span &span = parent.value;
+        const Span &span = parent->value;
         result.iter_begin = &rec.atoms[ span.index ];
         result.iter_end = result.iter_begin + span.length;
     }
@@ -246,7 +246,7 @@ void GDB_PrintRecordAtom(const Record &rec, const RecordAtom &iter,
     {
         case Atom_String:  // key value pair
         {
-            printf("%.*s=[%.*s]\n",
+            printf("%.*s=\"%.*s\"\n",
                    int(iter.name.length), &rec.buf[ iter.name.index ],
                    int(iter.value.length), &rec.buf[ iter.value.index ]);
         } break;
@@ -257,7 +257,7 @@ void GDB_PrintRecordAtom(const Record &rec, const RecordAtom &iter,
             printf("%.*s\n", int(iter.name.length), 
                    &rec.buf[ iter.name.index ]);
 
-            for (const RecordAtom &child : GDB_IterChild(rec, iter))
+            for (const RecordAtom &child : GDB_IterChild(rec, &iter))
             {
                 GDB_PrintRecordAtom(rec, child, tab_level + 1);
             }
@@ -289,7 +289,7 @@ const RecordAtom *GDB_ExtractAtom(const char *name, size_t namelen,
     }
     size_t tempsize = strlen(temp);
 
-    for (const RecordAtom &child : GDB_IterChild(rec, iter))
+    for (const RecordAtom &child : GDB_IterChild(rec, &iter))
     {
         if (index < child.value.length && child.type == Atom_Array)
         {
@@ -720,9 +720,7 @@ int GDB_SendBlocking(const char *cmd, const char *header, bool remove_after)
                 if (errno == ETIMEDOUT)
                 {
                     // TODO: retry counts
-                    char buf[512];
-                    size_t bufsize = tsnprintf(buf, "Command Timeout: %s", cmd);
-                    LogLine(buf, bufsize);
+                    PrintErrorf("Command Timeout: %s", cmd);
                 }
                 else
                 {
@@ -751,8 +749,6 @@ int GDB_SendBlocking(const char *cmd, const char *header, bool remove_after)
                         }
                         else if (NULL != strstr(bufstr, "^error"))
                         {
-                            extern void dbg();
-                            dbg();
                             if (NULL != strstr(bufstr, "optimized out"))
                             {
                                 // @GDB: match up results for optimized out variables
@@ -794,18 +790,18 @@ int GDB_SendBlocking(const char *cmd, const char *header, bool remove_after)
 int GDB_SendBlocking(const char *cmd, Record &rec, const char *end_pattern)
 {
     // errno or result record index
-    int rc_or_index = GDB_SendBlocking(cmd, end_pattern, false);
-    if (rc_or_index < 0)
+    int error_or_index = GDB_SendBlocking(cmd, end_pattern, false);
+    if (error_or_index < 0)
     {
         rec = {};
     }
     else
     {
-        rec = prog.read_recs[rc_or_index].rec;
-        prog.read_recs[rc_or_index].parsed = true;
+        rec = prog.read_recs[error_or_index].rec;
+        prog.read_recs[error_or_index].parsed = true;
     }
 
-    return rc_or_index;
+    return error_or_index;
 }
 
 static void GDB_ProcessBlock(char *block, size_t blocksize)
@@ -876,6 +872,9 @@ static void GDB_ProcessBlock(char *block, size_t blocksize)
                 rec.atoms = ctx.atoms;
                 rec.buf.resize(eol - start);
                 memcpy(const_cast<char*>(rec.buf.data()), start, eol - start);
+
+                // @Debug
+                GDB_PrintRecordAtom(rec, rec.atoms[0], 0);
             }
         }
 
