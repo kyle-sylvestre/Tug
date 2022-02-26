@@ -91,19 +91,22 @@ do {\
 
 #define TUG_CONFIG_FILENAME "tug.ini"
 
-// arm32
-const char *const REG_ARM32[] = {
+const char *const DEFAULT_REG_ARM32[] = {
     "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8",
     "r9", "r10", "r11", /*"fp",*/ "r12", "sp", "lr", "pc", "cpsr",
 };
 
-
-// amd64
-const char *const REG_AMD64[] = {
+const char *const DEFAULT_REG_AMD64[] = {
     "rax", "rbx", "rcx", "rdx", 
     "rbp", "rsp", "rip", "rsi", 
     "rdi", "r8", "r9", "r10", "r11", 
     "r12", "r13", "r14", "r15"
+};
+
+const char *const DEFAULT_REG_X86[] = {
+    "eax", "ebx", "ecx", "edx", 
+    "ebp", "esp", "eip", "esi", 
+    "edi",
 };
 
 // TODO: threads

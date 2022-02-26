@@ -950,6 +950,8 @@ void Draw(GLFWwindow *window)
         if (callstack)
         {
             size_t last_num_frames = prog.frames.size();
+            String arch = "";
+            static bool set_default_registers = true;
             prog.frames.clear();
             for (const RecordAtom &level : GDB_IterChild(rec, callstack))
             {
@@ -957,11 +959,53 @@ void Draw(GLFWwindow *window)
                 add.line = (size_t)GDB_ExtractInt("line", level, rec);
                 add.addr = GDB_ExtractValue("addr", level, rec);
                 add.func = GDB_ExtractValue("func", level, rec);
+                arch = GDB_ExtractValue("arch", level, rec);
 
                 String fullpath = GDB_ExtractValue("fullname", level, rec);
                 add.file_idx = CreateOrGetFile(fullpath);
 
                 prog.frames.emplace_back(add);
+            }
+
+            if (set_default_registers && arch != "")
+            {
+                set_default_registers = false;
+
+                // set the default registers for a given architecture once
+                // TODO: @GDB: is there a command to query this without having to
+                // get the stack frames
+                const char * const* registers = NULL;
+                size_t num_registers = 0;
+                if (arch == "i386:x86-64")
+                {
+                    registers = DEFAULT_REG_AMD64;
+                    num_registers = ArrayCount(DEFAULT_REG_AMD64);
+                }
+                else if (arch == "i386")
+                {
+                    registers = DEFAULT_REG_X86;
+                    num_registers = ArrayCount(DEFAULT_REG_X86);
+                }
+
+                // TODO: get the MI string value for arch for different architectures
+
+                for (size_t i = 0; i < num_registers; i++)
+                {
+                    // add register varobj, copied from var creation in async_stopped if statement
+                    // the only difference is GLOBAL_NAME_PREFIX and '@' used to signify a varobj
+                    // that lasts the duration of the program
+
+                    tsnprintf(tmpbuf, "-var-create " GLOBAL_NAME_PREFIX "%s @ $%s", 
+                              registers[i], registers[i]);
+                    GDB_SendBlocking(tmpbuf, rec);
+                    VarObj add = {};
+                    add.name = registers[i];
+                    add.changed = false;
+                    add.value = GDB_ExtractValue("value", rec);
+                    if (add.value == "") add.value = "???";
+
+                    prog.global_vars.emplace_back(add);
+                }
             }
 
             if (last_num_frames != prog.frames.size())
