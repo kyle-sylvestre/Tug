@@ -55,7 +55,7 @@ typedef intptr_t ssize_t;
 #define Assert(cond)\
 if ( !(cond) )\
 {\
-    char __gdb_buf[128]; tsnprintf(__gdb_buf, "gdb --pid %d", int(getpid())); (void)system(__gdb_buf); exit(0); \
+    char __gdb_buf[128]; tsnprintf(__gdb_buf, "gdb --pid %d &", (int)getpid()); (void)system(__gdb_buf); exit(1);\
 }
 #define Malloc malloc
 #define Calloc malloc
@@ -257,6 +257,8 @@ struct RecordHolder
 #define MAX_STORED_BLOCKS 128
 
 const size_t BAD_INDEX = ~0;
+
+#define FILE_IDX_INVALID 0
 
 
 struct GDB

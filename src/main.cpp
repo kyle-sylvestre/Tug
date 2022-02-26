@@ -100,8 +100,8 @@ struct GuiContext
     {
         GlfwInput &this_key = Key(glfw_key);
         GlfwInput &last_key = LastKey(glfw_key);
-        bool result = last_key.action == GLFW_RELEASE && 
-                      this_key.action == GLFW_PRESS;
+        bool result = last_key.action == GLFW_PRESS && 
+                      this_key.action == GLFW_RELEASE;
 
         if (glfw_mods != 0)
         {
@@ -113,8 +113,8 @@ struct GuiContext
     {
         GlfwInput &this_button = this_mousestate.buttons[glfw_mouse_button];
         GlfwInput &last_button = last_mousestate.buttons[glfw_mouse_button];
-        bool result = this_button.action == GLFW_RELEASE && 
-                      last_button.action == GLFW_PRESS;
+        bool result = last_button.action == GLFW_PRESS && 
+                      this_button.action == GLFW_RELEASE;
 
         if (glfw_mods != 0)
         {
@@ -486,7 +486,7 @@ bool Tug_Init(GLFWwindow *window, int argc, char **argv)
     gdb.has_gdb_mi_command =                (NULL != strstr(src, "info-gdb-mi-command"));
     gdb.has_undefined_command_error_code =  (NULL != strstr(src, "undefined-command-error-code"));
     gdb.has_exec_run_start =                (NULL != strstr(src, "exec-run-start-option"));
-    gdb.has_data_disassemble_option_a =     (NULL != strstr(src, "-data-disassemble-a-option"));
+    gdb.has_data_disassemble_option_a =     (NULL != strstr(src, "data-disassemble-a-option"));
 
 
     // TODO: "Whenever a target can change, due to commands such as -target-select, 
@@ -525,6 +525,9 @@ bool Tug_Init(GLFWwindow *window, int argc, char **argv)
                                   prog.config.debug_exe_args.value.c_str());
         GDB_Send(str.c_str());
     }
+
+    // set FILE_IDX_INVALID
+    prog.files.push_back({});
 
     // preload all the referenced files
     //GDB_SendBlocking("-file-list-exec-source-files", tmp, "files");
@@ -714,38 +717,83 @@ void QueryWatchlist()
 
 void GetFunctionDisassembly(const Frame &frame)
 {
-    // get disassembly for the given function
     char tmpbuf[4096];
     Record rec = {};
     gui.line_disasm.clear();
     gui.line_disasm_source.clear();
 
-    // @GDB: not guaranteed to have -a option
-    //tsnprintf(tmpbuf, "-data-disassemble -a %s 5", // -5 = source and disasm with opcodes
-    //          func.c_str());
+    if (frame.file_idx == FILE_IDX_INVALID)
+    {
+        if (!gdb.has_data_disassemble_option_a)
+            return; // operation not supported, bail early
+
+        // some frames don't have an associated file ex: _start function after returning from main
+        tsnprintf(tmpbuf, "-data-disassemble -a %s 0", // -0 = disasm only
+                  frame.func.c_str());
+    }
+    else
+    {
+        // -n -1 = disassemble all lines in the function its contained in
+        // ending 5 = source and disasm with opcodes
+        tsnprintf(tmpbuf, "-data-disassemble -f \"%s\" -l %zu -n -1 5",
+                  prog.files[ frame.file_idx ].fullpath.c_str(), frame.line);
+    } 
     
-    // -n -1 = disassemble all lines in the function its contained in
-    // ending 5 = source and disasm with opcodes
-    tsnprintf(tmpbuf, "-data-disassemble -f \"%s\" -l %zu -n -1 5",
-              prog.files[ frame.file_idx ].fullpath.c_str(), frame.line);
 
     GDB_SendBlocking(tmpbuf, rec);
 
     const RecordAtom *instrs = GDB_ExtractAtom("asm_insns", rec);
-    for (const RecordAtom &src_and_asm_line : GDB_IterChild(rec, instrs))
+    if (frame.file_idx != FILE_IDX_INVALID)
     {
-        // array of src_and_asm_line
-        //     line="32"
-        //     file="debug.c"
-        //     fullname="/mnt/c/Users/Kyle/Documents/Visual Studio 2017/Projects/Tug/debug.c"
-        //     line_asm_insn
-        const RecordAtom *atom = GDB_ExtractAtom("line_asm_insn", src_and_asm_line, rec);
-        bool is_first_inst = true;
-        DisassemblySourceLine line_src = {};
-        line_src.line_number = (size_t)GDB_ExtractInt("line", src_and_asm_line, rec);
-        line_src.num_instructions = 0;
+        for (const RecordAtom &src_and_asm_line : GDB_IterChild(rec, instrs))
+        {
+            // array of src_and_asm_line
+            //     line="32"
+            //     file="debug.c"
+            //     fullname="/mnt/c/Users/Kyle/Documents/Visual Studio 2017/Projects/Tug/debug.c"
+            //     line_asm_insn
+            bool is_first_inst = true;
+            DisassemblySourceLine line_src = {};
+            const RecordAtom *atom = GDB_ExtractAtom("line_asm_insn", src_and_asm_line, rec);
+            line_src.line_number = (size_t)GDB_ExtractInt("line", src_and_asm_line, rec);
+            line_src.num_instructions = 0;
 
-        for (const RecordAtom &line_asm_inst : GDB_IterChild(rec, atom))
+            for (const RecordAtom &line_asm_inst : GDB_IterChild(rec, atom))
+            {
+                // array of unnamed struct 
+                //     address="0x0000555555555248"
+                //     func-name="main"
+                //     offset="176"
+                //     opcodes="74 05"
+                //     line_asm_inst="je     0x55555555524f <main+183>"
+
+                DisassemblyLine add = {};
+                add.addr = GDB_ExtractValue("address", line_asm_inst, rec);
+                add.func = GDB_ExtractValue("func-name", line_asm_inst, rec);
+                add.offset_from_func = GDB_ExtractValue("offset", line_asm_inst, rec);
+                add.inst = GDB_ExtractValue("inst", line_asm_inst, rec);
+                add.opcodes = GDB_ExtractValue("opcodes", line_asm_inst, rec);
+
+                gui.line_disasm.emplace_back(add);
+                line_src.num_instructions++;
+
+                if (is_first_inst)
+                {
+                    line_src.addr = add.addr;
+                    is_first_inst = false;
+                }
+
+                // tsnprintf(tmpbuf, "%s <.%s+%s> %s %s", addr.c_str(), funcname.c_str(),
+                //           offset.c_str(), opcodes.c_str(), inst_text.c_str());
+            }
+
+            gui.line_disasm_source.emplace_back(line_src);
+        }
+    }
+    else
+    {
+        // getting function disassembly for a fileless frame
+        for (const RecordAtom &line_asm_inst : GDB_IterChild(rec, instrs))
         {
             // array of unnamed struct 
             //     address="0x0000555555555248"
@@ -754,7 +802,6 @@ void GetFunctionDisassembly(const Frame &frame)
             //     opcodes="74 05"
             //     line_asm_inst="je     0x55555555524f <main+183>"
 
-            // opcodes if with_opcodes true
             DisassemblyLine add = {};
             add.addr = GDB_ExtractValue("address", line_asm_inst, rec);
             add.func = GDB_ExtractValue("func-name", line_asm_inst, rec);
@@ -763,19 +810,7 @@ void GetFunctionDisassembly(const Frame &frame)
             add.opcodes = GDB_ExtractValue("opcodes", line_asm_inst, rec);
 
             gui.line_disasm.emplace_back(add);
-            line_src.num_instructions++;
-
-            if (is_first_inst)
-            {
-                line_src.addr = add.addr;
-                is_first_inst = false;
-            }
-
-            // tsnprintf(tmpbuf, "%s <.%s+%s> %s %s", addr.c_str(), funcname.c_str(),
-            //           offset.c_str(), opcodes.c_str(), inst_text.c_str());
         }
-
-        gui.line_disasm_source.emplace_back(line_src);
     }
 }
  
@@ -882,7 +917,6 @@ void Draw(GLFWwindow *window)
                         if (gui.line_display != LineDisplay_Source)
                             GetFunctionDisassembly(prog.frames[ prog.frame_idx ]);
 
-                        // re-evaluate watchlist variables for the selected frame
                         QueryWatchlist();
                     }
                 }
@@ -906,7 +940,6 @@ void Draw(GLFWwindow *window)
 
     if (async_stopped)
     {
-        // re-evaluate the watchlist variables
         QueryWatchlist();
         bool remake_varobjs = false;
 
@@ -1656,9 +1689,12 @@ void Draw(GLFWwindow *window)
             // jump to program counter line
             gui.source_highlighted_line = BAD_INDEX;
 
-            if (!prog.started && gdb.has_exec_run_start)
+            if (!prog.started)
             {
-                GDB_SendBlocking("-exec-run --start", "stopped", false);
+                if (gdb.has_exec_run_start)
+                {
+                    GDB_SendBlocking("-exec-run --start", "stopped", false);
+                }
                 prog.started = true;
             }
             else
@@ -1845,9 +1881,7 @@ void Draw(GLFWwindow *window)
             ImGui::EndTable();
         }
 
-
-        int csflags = flags & ~ImGuiTableFlags_BordersInnerH;
-        if (ImGui::BeginTable("Callstack", 1, csflags, {300, 200}) )
+        if (ImGui::BeginChild("Callstack", {300, 200}, true) )
         {
             //ImGui::TableSetupColumn("Function");
             //ImGui::TableSetupColumn("Value");
@@ -1856,14 +1890,18 @@ void Draw(GLFWwindow *window)
             for (size_t i = 0; i < prog.frames.size(); i++)
             {
                 const Frame &iter = prog.frames[i];
-                ImGui::TableNextRow();
 
                 String file = (iter.file_idx < prog.files.size())
                     ? prog.files[ iter.file_idx ].fullpath
                     : "???";
 
-                ImGui::TableNextColumn();
-                tsnprintf(tmpbuf, "%zu : %s##%zu", iter.line, file.c_str(), i);
+                // @Windows
+                // get the filename from the full path
+                const char *last_fwd_slash = strrchr(file.c_str(), '/');
+                const char *filename = (last_fwd_slash != NULL) ? last_fwd_slash + 1 : file.c_str();
+
+                tsnprintf(tmpbuf, "%4zu %s##%zu", iter.line, filename, i);
+
                 if ( ImGui::Selectable(tmpbuf, i == prog.frame_idx) )
                 {
                     prog.frame_idx = i;
@@ -1888,7 +1926,6 @@ void Draw(GLFWwindow *window)
 
                     }
 
-                    // re-evaluate the watchlist variables
                     QueryWatchlist();
 
                     if (gui.line_display != LineDisplay_Source)
@@ -1896,7 +1933,7 @@ void Draw(GLFWwindow *window)
                 }
             }
 
-            ImGui::EndTable();
+            ImGui::EndChild();
         }
 
         if (ImGui::BeginTable("Registers", 2, flags, {300, 200}))
@@ -2333,6 +2370,9 @@ int main(int argc, char **argv)
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
 
+
+        if (gui.IsKeyClicked(GLFW_KEY_F12))
+            Assert(false);
 
         static bool debug_window_toggled;
         if (gui.IsKeyClicked(GLFW_KEY_F1))
