@@ -1001,11 +1001,31 @@ void RecurseExpressionTreeNodes(const VarObj &var, size_t atom_idx, size_t &uid)
                 ImGui::TableNextColumn();
                 if (parent.type == Atom_Array)
                 {
-                    // does run length: {0 <repeats 1024 times>}
                     // truncates above 200 elements like this:
                     // 198, 199, 200...
+                    dbg();
+                    size_t base = child.value.index;
+                    size_t stri = child.value.length;
+                    if (stri > 7 && src.buf[ base + stri - 1 ] == '>') // 7= offset from end to first digit
+                    {
+                        // run length format: {0 <repeats 1024 times>}
+                        size_t repeat_times = 0;
+                        size_t pow = 1;
 
-                    ImGui::Text("[%zu]", array_index++);
+                        for (size_t dgt = stri - 8; dgt < child.value.length && (src.buf[base + dgt] >= '0' && src.buf[base + dgt] <= '9'); dgt--)
+                        {
+                            repeat_times += pow * (src.buf[base + dgt] - '0');
+                            pow *= 10;
+                        }
+
+                        ImGui::Text("[%zu .. %zu]", array_index, (array_index + repeat_times - 1));
+                        array_index += repeat_times;
+                    }
+                    else
+                    {
+                        ImGui::Text("[%zu]", array_index++);
+                    }
+
                 }
                 else if (parent.type == Atom_Struct)
                 {
@@ -2035,7 +2055,6 @@ void Draw(GLFWwindow *window)
                 const VarObj &iter = frame_vars[i];
                 if (iter.value[0] == '{')
                 {
-                    dbg();
                     RecurseExpressionTreeNodes(iter, 0, uid);
                 }
                 else
