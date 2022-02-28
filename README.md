@@ -6,6 +6,10 @@ GDB frontend made with Dear Imgui
 <img width="838" alt="preview" src="https://user-images.githubusercontent.com/25188464/155052886-23e46ed7-94f8-460e-8116-17953d54efee.png">
 
 # Debug Tutorial
+Option 1:
+1. pass executable to tug.elf as a command line argument (this overrides the debug_exe_path)
+
+Option 2:
 1. open tug.ini
 2. enter path to gdb after gdb_path=
 3. enter path to debugged executable after debug_exe_path=
@@ -35,5 +39,8 @@ GDB frontend made with Dear Imgui
   
   "</\\" = step out
   
--gdb command line input
+# GDB Console Command Line
+-repeat last command on hitting enter on an empty line (GDB emulation)
+
+-cycle command history by pressing up/down arrow while clicked on the box
 
