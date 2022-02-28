@@ -89,6 +89,13 @@ do {\
 #define LOCAL_NAME_PREFIX "LC__"
 #define WATCH_NAME_PREFIX "WT__"
 
+// values with child elements from -data-evaluate-expression
+// struct: value={ a = "foo", b = "bar", c = "baz" }
+// union: value={ a = "foo", b = "bar", c = "baz" }
+// array: value={1, 2, 3}
+#define AGGREGATE_CHAR_START '{'
+#define AGGREGATE_CHAR_END '}'
+
 #define TUG_CONFIG_FILENAME "tug.ini"
 
 const char *const DEFAULT_REG_ARM32[] = {
@@ -142,43 +149,10 @@ struct DisassemblySourceLine
     size_t line_number;
 };
 
-struct VarObj
-{
-    String name;
-    String value;
-    bool changed;
-};
-
-struct FileContext
+struct File
 {
     Vector<String> lines;
     String fullpath;
-
-    static bool Create(const char *fullpath, FileContext &result)
-    {
-        result = {};
-        result.fullpath = fullpath;
-        result.lines.push_back("");    // lines[0] empty for syncing index with line number
-        bool found = false;
-
-        if (0 == access( fullpath, F_OK ))
-        {
-            found = true;
-            std::ifstream file(fullpath, std::ios::in);
-
-            String tmp;
-            int line = 1;
-            char linebuf[10];
-
-            while (std::getline(file, tmp))
-            {
-                tsnprintf(linebuf, "%-4d ", line++);
-                result.lines.emplace_back(linebuf + tmp);
-            }
-        }
-
-        return found;
-    }
 };
 
 #define INVALID_BLOCK_STRING_IDX 0
@@ -198,8 +172,6 @@ struct Span
     size_t index;
     size_t length;
 };
-
-const Span INVALID_ATOM_SPAN = {};
 
 struct RecordAtom
 {
@@ -228,6 +200,18 @@ struct RecordHolder
     bool parsed;
     Record rec;
 };
+
+struct VarObj
+{
+    String name;
+    String value;
+    bool changed;
+
+    // structs, unions, arrays
+    Record expr;
+    Vector<bool> expr_changed;
+};
+
 
 
 // GDB MI sends output as human readable lines, starting with a symbol
@@ -325,7 +309,7 @@ struct ConfigPair
                ConfigType ptype = ConfigType_Text) : key(pkey), value(""), type(ptype) {}
 };
 
-struct ProgramContext
+struct Program
 {
     char log[NUM_LOG_ROWS][NUM_LOG_COLS + 1 /* NT */]; 
     char input_cmd[NUM_USER_CMDS][MAX_USER_CMDSIZE + 1 /* NT */];
@@ -344,7 +328,7 @@ struct ProgramContext
     Vector<RecordHolder> read_recs;
     size_t num_recs;
 
-    Vector<FileContext> files;
+    Vector<File> files;
 
     Vector<Frame> frames;
     size_t frame_idx = BAD_INDEX;
@@ -363,7 +347,7 @@ struct ProgramContext
 
 };
 
-const size_t NUM_CONFIG = sizeof(ProgramContext::Config) / sizeof(ConfigPair);
+const size_t NUM_CONFIG = sizeof(Program::Config) / sizeof(ConfigPair);
 
 
 
@@ -371,7 +355,7 @@ const size_t NUM_CONFIG = sizeof(ProgramContext::Config) / sizeof(ConfigPair);
 // 
 // main.cpp
 //
-extern ProgramContext prog;
+extern Program prog;
 void LogLine(const char *raw, size_t rawsize);
 
 //
@@ -389,7 +373,7 @@ struct ParseRecordContext
     bool error;
 
     size_t i;
-    char *buf;      // record line data
+    const char *buf;      // record line data
     size_t bufsize;
 };
 
@@ -434,3 +418,7 @@ int GDB_SendBlocking(const char *cmd, Record &rec, const char *header = "^done")
 bool GDB_ParseRecord(char *buf, size_t bufsize, ParseRecordContext &ctx);
 
 void GDB_GrabBlockData();
+
+RecordAtom GDB_RecurseEvaluation(ParseRecordContext &ctx);
+
+void GDB_PrintRecordAtom(const Record &rec, const RecordAtom &iter, int tab_level);

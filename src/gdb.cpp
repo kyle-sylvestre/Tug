@@ -236,8 +236,153 @@ RecordAtom GDB_RecurseRecord(ParseRecordContext &ctx)
     return result;
 }
 
-void GDB_PrintRecordAtom(const Record &rec, const RecordAtom &iter, 
-                         int tab_level)
+RecordAtom GDB_RecurseEvaluation(ParseRecordContext &ctx)
+{
+    // parse the result of a -data-evaluate-expression
+    // close to a GDB record, but not quite the same differences being: 
+    // -not packed, there are spaces in the buffer
+    // -array has {} syntax instead of []
+    // -for arrays, if there are more than 200 elements it ends in "...}"
+    // -run length for arrays ex: {0 <repeats 1024 times>}
+
+#if 0
+    static const auto RecurseError = [&](const char *message, char error_char)
+    {
+        fprintf(stderr, "parse evaluation error: %s\n", message);
+        fprintf(stderr, "   before error: %.*s\n", int(ctx.i), ctx.buf);
+        fprintf(stderr, "   error char: %c\n", error_char);
+        fprintf(stderr, "   after error: %.*s\n", int(ctx.bufsize - (ctx.i + 1)), ctx.buf + ctx.i + 1);
+
+        timeval te;
+        gettimeofday(&te, NULL); // get current time
+        long long msec = te.tv_sec*1000LL + te.tv_usec/1000; 
+
+        char filename[128]; 
+        tsnprintf(filename, "badeval_%lld.txt", msec);
+
+        FILE *f = fopen(filename, "wb");
+        fprintf(f, "error message: %s\n", message);
+        fprintf(f, "error index: %zu\n", ctx.i);
+        fprintf(f, "%.*s", (int)ctx.bufsize, ctx.buf);
+        fclose(f);
+        
+        // force to end then bail out of here
+        Assert(false);
+        ctx.error = true;
+        ctx.i = ctx.bufsize;
+    };
+#endif
+
+    RecordAtom result = {};
+    size_t string_start_idx = 0;
+    size_t aggregate_start_idx = 0;
+    bool inside_string_literal = false;
+
+    for (; ctx.i < ctx.bufsize; ctx.i++)
+    {
+        char c = ctx.buf[ ctx.i ];
+        char p = (ctx.i > 1) ? ctx.buf[ ctx.i - 1 ] : '\0';
+        char pp = (ctx.i > 2) ? ctx.buf[ ctx.i - 2 ] : '\0';
+        char n = (ctx.i + 1 < ctx.bufsize) ? ctx.buf[ ctx.i + 1 ] : '\0';
+        if (pp != '\\' && p == '\\' && c == '\"')
+            inside_string_literal = !inside_string_literal;
+
+        if (inside_string_literal)
+            continue;
+
+        switch (result.type)
+        {
+            case Atom_None:
+            {
+                if (c == ' ' || c == ',')
+                {
+                    continue;
+                }
+                else if (c == '{')
+                {
+                    // store the start of the aggregates
+                    aggregate_start_idx = ctx.atom_idx;
+                    result.type = Atom_Struct;
+                }
+                else
+                {
+                    string_start_idx = ctx.i;
+                    if ((n == ',' || n == '}') && ctx.i > 0) 
+                        ctx.i--; // single digit elements like {0, 1, 2}
+
+                    if (result.name.length == 0)
+                    {
+                        result.type = Atom_Name;
+                    }
+                    else
+                    {
+                        result.type = Atom_String;
+                    }
+                }
+            } break;
+
+            case Atom_Name:
+            {
+                if (c == '=')
+                {
+                    // name = value, -1 to step back to space index
+                    Assert(ctx.i - 1 >= string_start_idx);
+                    result.name.index = string_start_idx;
+                    result.name.length = (ctx.i - 1) - string_start_idx;
+                    result.type = Atom_None;
+                }
+                else if (n == ',' || n == '}')
+                {
+                    // not a Atom_Name, actually an Atom_String
+                    Assert(ctx.i >= string_start_idx);
+                    result.type = Atom_String;
+                    result.value.index = string_start_idx;
+                    result.value.length = (ctx.i + 1) - string_start_idx;
+                    return result;
+                }
+            } break;
+
+            case Atom_String:
+            {
+                if (n == ',' || n == '}')
+                {
+                    Assert(ctx.i >= string_start_idx);
+                    result.value.index = string_start_idx;
+                    result.value.length = (ctx.i + 1) - string_start_idx;
+                    return result;
+                }
+            } break;
+
+            case Atom_Array:
+            case Atom_Struct:
+            {
+                if (c == '}')
+                {
+                    // end of aggregate, pop from unordered and store in gdb 
+                    RecordAtom pop = GDB_PopUnordered(ctx, aggregate_start_idx);
+                    result.value.index = pop.value.index;
+                    result.value.length = pop.value.length;
+                    return result;
+                }
+                else
+                {
+                    // start of new elem, recurse and add
+                    RecordAtom elem = GDB_RecurseEvaluation(ctx);
+                    if (elem.name.length == 0)
+                        result.type = Atom_Array;
+                    GDB_PushUnordered(ctx, elem);
+                }
+            } break;
+            
+            default:
+                break;
+        }
+    }
+
+    return result;
+}
+
+void GDB_PrintRecordAtom(const Record &rec, const RecordAtom &iter, int tab_level)
 {
     for (int i = 0; i < tab_level; i++)
         printf("  ");

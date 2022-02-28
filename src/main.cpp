@@ -80,7 +80,7 @@ enum LineDisplay
     //LineDisplay_Source_And_Disassembly_With_Opcodes,
 };
 
-struct GuiContext
+struct GUI
 {
     GlfwKeyboardState this_keystate;
     GlfwKeyboardState last_keystate;
@@ -132,9 +132,9 @@ struct GuiContext
     }
 };
 
-ProgramContext prog;
+Program prog;
 GDB gdb;
-GuiContext gui;
+GUI gui;
 
 void dbg() {}
 
@@ -535,7 +535,7 @@ bool Tug_Init(GLFWwindow *window, int argc, char **argv)
     //for (const RecordAtom &file : GDB_IterChild(tmp, files))
     //{
     //    String fullpath = GDB_ExtractValue("fullname", file, tmp);
-    //    FileContext::Create(fullpath.c_str(), file_ctx);
+    //    File::Create(fullpath.c_str(), file_ctx);
     //    prog.files.emplace_back(file_ctx);
     //}
 
@@ -659,6 +659,159 @@ void LogLine(const char *raw, size_t rawsize)
     dest[NUM_LOG_COLS] = '\0';
 }
 
+VarObj CreateVarObj(String name, String value = "")
+{
+    VarObj result = {};
+    result.name = name;
+    result.value = value;
+    if (result.value == "") 
+    {
+        result.value = "???";
+    }
+
+    result.changed = true;
+    if (result.value[0] == '{')
+    {
+        value = name + " = " + value;
+        struct ParseRecordContext ctx = {};
+        ctx.atoms.resize(1024); // @Hack
+        ctx.i = 0;
+        ctx.buf = value.c_str();
+        ctx.bufsize = value.size();
+
+        RecordAtom root = GDB_RecurseEvaluation(ctx);
+
+        if (!ctx.error)
+        {
+            // put the root in place since it doesn't get popped to the 
+            // ordered section of the array
+            ctx.num_end_atoms++;
+
+            // atoms are in order at the end of the array,
+            // subtract the difference from base ordered
+            Assert(ctx.num_end_atoms <= ctx.atoms.size());
+            size_t ordered_offset = ctx.atoms.size() - ctx.num_end_atoms;
+            RecordAtom *ordered_base = &ctx.atoms[ ordered_offset ];
+            ordered_base[0] = root;
+
+            for (size_t i = 0; i < ctx.num_end_atoms; i++)
+            {
+                RecordAtom *atom = &ordered_base[i];
+                if ( (atom->type == Atom_Array || atom->type == Atom_Struct) &&
+                     (atom->value.length != 0))
+                {
+                    // adjust aggregate offset
+                    Assert(atom->value.index > ordered_offset);
+                    atom->value.index -= ordered_offset;
+                }
+            }
+
+            auto begin = ctx.atoms.begin();
+            ctx.atoms.erase(begin, begin + ctx.atoms.size() - ctx.num_end_atoms);
+        }
+
+        result.expr.atoms = ctx.atoms;
+        result.expr.buf = value;
+        result.expr_changed.resize( ctx.atoms.size() );
+
+        //GDB_PrintRecordAtom(result.expr, result.expr.atoms[0], 0);
+    }
+
+    return result;
+}
+
+bool RecurseCheckChanged(VarObj &this_var, const VarObj &last_var, size_t atom_idx)
+{
+    bool changed = false;
+    Assert((atom_idx < this_var.expr.atoms.size()) && 
+           (atom_idx < last_var.expr.atoms.size()));
+    RecordAtom &parent = this_var.expr.atoms[atom_idx];
+    Assert(parent.type == Atom_Struct || parent.type == Atom_Array);
+
+    size_t i = parent.value.index;
+    size_t end = i + parent.value.length;
+
+    for (; i < end; i++)
+    {
+        const RecordAtom &this_child = this_var.expr.atoms[i];
+        if (i >= last_var.expr.atoms.size())
+        {
+            // array changing from run length to actual value
+            // TODO: get the actual changed value
+            this_var.expr_changed[i] = true;
+            changed |= this_var.expr_changed[i];
+        }
+        else
+        {
+            const RecordAtom &last_child = last_var.expr.atoms[i];
+            if (this_child.type == Atom_Struct || last_child.type == Atom_Array)
+            {
+                changed |= RecurseCheckChanged(this_var, last_var, i);
+            }
+            else if (this_child.type == Atom_String)
+            {
+                const char *this_buf = this_var.expr.buf.c_str();
+                const char *last_buf = last_var.expr.buf.c_str();
+
+                Assert(this_child.value.index + this_child.value.length <=
+                       this_var.expr.buf.size());
+                Assert(last_child.value.index + last_child.value.length <=
+                       last_var.expr.buf.size());
+
+                this_var.expr_changed[i] 
+                    = (this_child.value.length != last_child.value.length) ||
+                    (0 != memcmp(this_buf + this_child.value.index,
+                                 last_buf + last_child.value.index,
+                                 this_child.value.length) );
+
+                changed |= this_var.expr_changed[i];
+            }
+        }
+    }
+
+    this_var.expr_changed[atom_idx] = changed;
+    return changed;
+}
+
+void CheckIfChanged(VarObj &this_var, const VarObj &last_var)
+{
+    if (last_var.value[0] == '{')
+    {
+        // aggregate, go through each child and check if it changed
+        RecurseCheckChanged(this_var, last_var, 0 /* root index */);
+    }
+    else
+    {
+        this_var.changed = (this_var.value != last_var.value);
+    }
+}
+
+bool CreateFile(const char *fullpath, File &result)
+{
+    result = {};
+    result.fullpath = fullpath;
+    result.lines.push_back("");    // lines[0] empty for syncing index with line number
+    bool found = false;
+
+    if (0 == access( fullpath, F_OK ))
+    {
+        found = true;
+        std::ifstream file(fullpath, std::ios::in);
+
+        String tmp;
+        int line = 1;
+        char linebuf[10];
+
+        while (std::getline(file, tmp))
+        {
+            tsnprintf(linebuf, "%-4d ", line++);
+            result.lines.emplace_back(linebuf + tmp);
+        }
+    }
+
+    return found;
+}
+
 size_t CreateOrGetFile(const String &fullpath)
 {
     size_t result = BAD_INDEX;
@@ -678,8 +831,7 @@ size_t CreateOrGetFile(const String &fullpath)
     {
         result = prog.files.size();
         prog.files.resize( prog.files.size() + 1);
-        FileContext::Create(fullpath.c_str(), 
-                            prog.files[ result ]);
+        CreateFile(fullpath.c_str(), prog.files[ result ]);
     }
 
     return result;
@@ -698,20 +850,22 @@ void QueryWatchlist()
         if (comma != NULL)
         {
             // translate visual studio syntax to GDB
-            // array, 10 -> *array@10
+            // arrayname, 10 -> *arrayname@10
             expr = StringPrintf("*(%.*s)@%s", (int)(comma - src), src, comma + 1);
         }
         else
         {
             expr = iter.name;
         }
+
         String cmd = StringPrintf("-data-evaluate-expression --frame %zu --thread 1 \"%s\"", 
                                   prog.frame_idx, expr.c_str());
+
         GDB_SendBlocking(cmd.c_str(), rec);
-        String value = GDB_ExtractValue("value", rec);
-        if (value == "") value = "???";
-        iter.changed = (iter.value != value);
-        iter.value = value;
+        VarObj incoming = CreateVarObj("incoming", GDB_ExtractValue("value", rec));
+        CheckIfChanged(incoming, iter);
+        iter.value = incoming.value;
+        iter.expr_changed = incoming.expr_changed;
     }
 }
 
@@ -722,19 +876,24 @@ void GetFunctionDisassembly(const Frame &frame)
     gui.line_disasm.clear();
     gui.line_disasm_source.clear();
 
+    // functions with this name don't support function disassembly from address or file/line combos
+    // found this type of function in file: /lib64/ld-linux-x86-64.so.2
+    if (frame.func == "??")
+        return;
+
     if (frame.file_idx == FILE_IDX_INVALID)
     {
         if (!gdb.has_data_disassemble_option_a)
             return; // operation not supported, bail early
 
         // some frames don't have an associated file ex: _start function after returning from main
-        tsnprintf(tmpbuf, "-data-disassemble -a %s 0", // -0 = disasm only
+        tsnprintf(tmpbuf, "-data-disassemble -a %s 0", // 0 = disasm only
                   frame.func.c_str());
     }
     else
     {
         // -n -1 = disassemble all lines in the function its contained in
-        // ending 5 = source and disasm with opcodes
+        // 5 = source and disasm with opcodes
         tsnprintf(tmpbuf, "-data-disassemble -f \"%s\" -l %zu -n -1 5",
                   prog.files[ frame.file_idx ].fullpath.c_str(), frame.line);
     } 
@@ -782,9 +941,6 @@ void GetFunctionDisassembly(const Frame &frame)
                     line_src.addr = add.addr;
                     is_first_inst = false;
                 }
-
-                // tsnprintf(tmpbuf, "%s <.%s+%s> %s %s", addr.c_str(), funcname.c_str(),
-                //           offset.c_str(), opcodes.c_str(), inst_text.c_str());
             }
 
             gui.line_disasm_source.emplace_back(line_src);
@@ -800,7 +956,7 @@ void GetFunctionDisassembly(const Frame &frame)
             //     func-name="main"
             //     offset="176"
             //     opcodes="74 05"
-            //     line_asm_inst="je     0x55555555524f <main+183>"
+            //     inst="je     0x55555555524f <main+183>"
 
             DisassemblyLine add = {};
             add.addr = GDB_ExtractValue("address", line_asm_inst, rec);
@@ -811,6 +967,62 @@ void GetFunctionDisassembly(const Frame &frame)
 
             gui.line_disasm.emplace_back(add);
         }
+    }
+}
+
+// draw an aggregate data type in the form of a two column table
+void RecurseExpressionTreeNodes(const VarObj &var, size_t atom_idx, size_t &uid)
+{
+    char tmpbuf[4096];
+    const Record &src = var.expr;
+    const RecordAtom &parent = src.atoms[atom_idx];
+    Assert(parent.type == Atom_Struct || parent.type == Atom_Array);
+    tsnprintf(tmpbuf, "%.*s##%zu", (int)parent.name.length, 
+              &src.buf[ parent.name.index ], uid++);
+
+    ImGui::TableNextRow();
+    ImGui::TableNextColumn();
+    if (ImGui::TreeNode(tmpbuf))
+    {
+        ImGui::TableNextColumn();
+        size_t i = parent.value.index;
+        size_t end = i + parent.value.length;
+        size_t array_index = 0;
+        for (; i < end; i++)
+        {
+            const RecordAtom &child = src.atoms[i];
+            if (child.type == Atom_Struct || child.type == Atom_Array)
+            {
+                RecurseExpressionTreeNodes(var, i, uid);
+            }
+            else
+            {
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn();
+                if (parent.type == Atom_Array)
+                {
+                    // does run length: {0 <repeats 1024 times>}
+                    // truncates above 200 elements like this:
+                    // 198, 199, 200...
+
+                    ImGui::Text("[%zu]", array_index++);
+                }
+                else if (parent.type == Atom_Struct)
+                {
+                    ImGui::Text("%.*s", (int)child.name.length,
+                                &src.buf[ child.name.index ]);
+                }
+
+                ImColor color = (var.expr_changed[i])
+                    ? IM_COL32_LIGHT_RED
+                    : IM_COL32_WHITE;
+                ImGui::TableNextColumn();
+                ImGui::TextColored(color, "%.*s", (int)child.value.length, 
+                                   &src.buf[ child.value.index ]);
+            }
+        }
+
+        ImGui::TreePop();
     }
 }
  
@@ -905,10 +1117,8 @@ void Draw(GLFWwindow *window)
 
                             for (const RecordAtom &atom : GDB_IterChild(rec, variables))
                             {
-                                VarObj add = {}; 
-                                add.name = GDB_ExtractValue("name", atom, rec);
-                                add.value = GDB_ExtractValue("value", atom, rec);
-                                add.changed = false;
+                                VarObj add = CreateVarObj(GDB_ExtractValue("name", atom, rec),
+                                                          GDB_ExtractValue("value", atom, rec));
                                 prog.other_frame_vars.emplace_back(add);
                             }
 
@@ -932,7 +1142,7 @@ void Draw(GLFWwindow *window)
                 {
                     prog.started = false;
                     prog.frames.clear();
-                    // TODO: delete local vars
+                    prog.local_vars.clear();
                 }
             }
         }
@@ -941,7 +1151,6 @@ void Draw(GLFWwindow *window)
     if (async_stopped)
     {
         QueryWatchlist();
-        bool remake_varobjs = false;
 
         // TODO: remote ARM32 debugging is this up after jsr macro
         /* !!! */ //GDB_SendBlocking("-stack-list-frames 0 0", rec, "stack");
@@ -949,10 +1158,12 @@ void Draw(GLFWwindow *window)
         const RecordAtom *callstack = GDB_ExtractAtom("stack", rec);
         if (callstack)
         {
-            size_t last_num_frames = prog.frames.size();
             String arch = "";
             static bool set_default_registers = true;
             prog.frames.clear();
+            static String last_stack_sig;
+            String this_stack_sig;
+
             for (const RecordAtom &level : GDB_IterChild(rec, callstack))
             {
                 Frame add = {};
@@ -960,6 +1171,7 @@ void Draw(GLFWwindow *window)
                 add.addr = GDB_ExtractValue("addr", level, rec);
                 add.func = GDB_ExtractValue("func", level, rec);
                 arch = GDB_ExtractValue("arch", level, rec);
+                this_stack_sig += add.func;
 
                 String fullpath = GDB_ExtractValue("fullname", level, rec);
                 add.file_idx = CreateOrGetFile(fullpath);
@@ -967,13 +1179,22 @@ void Draw(GLFWwindow *window)
                 prog.frames.emplace_back(add);
             }
 
+            if (last_stack_sig != this_stack_sig)
+            {
+                prog.local_vars.clear();
+                gui.source_highlighted_line = BAD_INDEX;
+                last_stack_sig = this_stack_sig;
+                if (gui.line_display != LineDisplay_Source && prog.frames.size() > 0)
+                    GetFunctionDisassembly(prog.frames[0]);
+            }
+
             if (set_default_registers && arch != "")
             {
                 set_default_registers = false;
 
-                // set the default registers for a given architecture once
+                // set the default registers for a given architecture
                 // TODO: @GDB: is there a command to query this without having to
-                // get the stack frames
+                // get stack frames
                 const char * const* registers = NULL;
                 size_t num_registers = 0;
                 if (arch == "i386:x86-64")
@@ -987,8 +1208,6 @@ void Draw(GLFWwindow *window)
                     num_registers = ArrayCount(DEFAULT_REG_X86);
                 }
 
-                // TODO: get the MI string value for arch for different architectures
-
                 for (size_t i = 0; i < num_registers; i++)
                 {
                     // add register varobj, copied from var creation in async_stopped if statement
@@ -998,162 +1217,68 @@ void Draw(GLFWwindow *window)
                     tsnprintf(tmpbuf, "-var-create " GLOBAL_NAME_PREFIX "%s @ $%s", 
                               registers[i], registers[i]);
                     GDB_SendBlocking(tmpbuf, rec);
-                    VarObj add = {};
-                    add.name = registers[i];
-                    add.changed = false;
-                    add.value = GDB_ExtractValue("value", rec);
-                    if (add.value == "") add.value = "???";
-
+                    VarObj add = CreateVarObj(registers[i], GDB_ExtractValue("value", rec));
                     prog.global_vars.emplace_back(add);
                 }
             }
-
-            if (last_num_frames != prog.frames.size())
-            {
-                // pushed/popped a callstack frame, jump to program counter line
-                gui.source_highlighted_line = BAD_INDEX;
-            }
-
-            // make a unique signature from the function name and types
-            // if the signature has changed, need to delete/recreate varobj's
-            static String last_funcsig;
-            String this_funcsig = (prog.frames.size() == 0) ? "" : prog.frames[0].func;
-            GDB_SendBlocking("-stack-list-arguments --simple-values 0 0", rec);
-            const RecordAtom *args = GDB_ExtractAtom("stack-args[0].args", rec);
-
-            for (const RecordAtom &arg : GDB_IterChild(rec, args))
-            {
-                this_funcsig += GDB_ExtractValue("type", arg, rec);
-            }
-            this_funcsig += std::to_string( prog.frames.size() ).c_str();
-
-            if (last_funcsig != this_funcsig)
-            {
-                // new stack frame, clear previous frame locals
-                last_funcsig = this_funcsig;
-                for (VarObj &iter : prog.local_vars)
-                {
-                    tsnprintf(tmpbuf, "-var-delete " LOCAL_NAME_PREFIX "%s", 
-                              iter.name.c_str());
-                    GDB_SendBlocking(tmpbuf);
-                }
-                prog.local_vars.clear();
-
-                if (gui.line_display != LineDisplay_Source && prog.frames.size() > 0)
-                    GetFunctionDisassembly(prog.frames[0]);
-            }
         }
 
-        // get local variables for this stack frame that are visible at
-        // the current scope level in the function. Unfortunately we
-        // can't make VarObj's for locals once at the start because we 
-        // will potentially miss variables within deeper scopes
+        // get local variables for this stack frame
+        // TODO: not actually GDB variable objects, problems with aggregates displaying updates
 
-        GDB_SendBlocking("-stack-list-variables 0", rec, "variables");
+        GDB_SendBlocking("-stack-list-variables --all-values", rec, "variables");
+        for (VarObj &local : prog.local_vars) local.changed = false;
+        
         const RecordAtom *vars = GDB_ExtractAtom("variables", rec);
-        if (vars)
+        for (const RecordAtom &child : GDB_IterChild(rec, vars))
         {
-            Vector<String> stack_vars;
-            for (const RecordAtom &child : GDB_IterChild(rec, vars))
-            {
-                String name = GDB_ExtractValue("name", child, rec); 
-                stack_vars.push_back(name);
-            }
+            VarObj incoming = CreateVarObj(GDB_ExtractValue("name", child, rec),
+                                           GDB_ExtractValue("value", child, rec));
 
-            const char NAME_EXISTS_SUFFIX = '!';
-            for (String &iter : stack_vars)
-            {
-                // check if VarObj already exists
-                size_t index = BAD_INDEX;
-                for (size_t i = 0; i < prog.local_vars.size(); i++)
-                {
-                    if (iter == prog.local_vars[i].name)
-                    {
-                        prog.local_vars[i].name.push_back(NAME_EXISTS_SUFFIX);
-                        index = i; 
-                        break;
-                    }
-                }
-
-                // not found, create a varobj for this variable
-                if (index == BAD_INDEX)
-                {
-                    tsnprintf(tmpbuf, "-var-create " LOCAL_NAME_PREFIX "%s * %s",
-                              iter.c_str(), iter.c_str());
-                    GDB_SendBlocking(tmpbuf, rec);
-                    String value = GDB_ExtractValue("value", rec);
-                    if (value == "") value = "???";
-
-                    VarObj insert = { iter, value, true };
-                    insert.name.push_back(NAME_EXISTS_SUFFIX);
-                    prog.local_vars.emplace_back(insert);
-                }
-            }
-
+            bool found = false;
             for (size_t i = prog.local_vars.size(); i > 0; i--)
             {
-                String &name = prog.local_vars[i - 1].name;
-                if (name.size() > 0 && 
-                    name[ name.size() - 1 ] == NAME_EXISTS_SUFFIX)
+                VarObj &local = prog.local_vars[i - 1];
+                if (local.name == incoming.name)
                 {
-                    name.pop_back();
-                }
-                else
-                {
-                    // var not found in the stack-list-variables, delete it  
-                    tsnprintf(tmpbuf, "-var-delete " LOCAL_NAME_PREFIX "%s", 
-                              name.c_str());
-                    GDB_SendBlocking(tmpbuf);
-                    prog.local_vars.erase( prog.local_vars.begin() + i - 1,
-                                           prog.local_vars.begin() + i);
+                    CheckIfChanged(incoming, local);
+                    local.value = incoming.value;
+                    local.expr = incoming.expr;
+                    local.expr_changed = incoming.expr_changed;
+                    found = true;
+                    break;
                 }
             }
+
+            if (!found)
+                prog.local_vars.emplace_back(incoming);
         }
 
-        // update local values
+        // update global values, just registers right now
         GDB_SendBlocking("-var-update --all-values *", rec, "changelist");
         const RecordAtom *changelist = GDB_ExtractAtom("changelist", rec);
-        if (changelist)
+        for (VarObj &global : prog.global_vars) global.changed = false;
+
+        for (const RecordAtom &iter : GDB_IterChild(rec, changelist))
         {
-            // clear all the old varobj changed flags
-            // newly created local variables will be display changed
-            if (!remake_varobjs) for (auto &iter : prog.local_vars) iter.changed = false;
-            for (auto &iter : prog.global_vars) iter.changed = false;
+            VarObj incoming = CreateVarObj(GDB_ExtractValue("name", iter, rec),
+                                           GDB_ExtractValue("value", iter, rec));
 
-            for (const RecordAtom &iter : GDB_IterChild(rec, changelist))
+            const char *srcname = incoming.name.c_str();
+            const char *namestart = NULL;
+            if ( (namestart = strstr(srcname, GLOBAL_NAME_PREFIX)) )
             {
-                String name = GDB_ExtractValue("name", iter, rec);
-                String value = GDB_ExtractValue("value", iter, rec);
-                if (value == "") value = "???";
-
-                const char *srcname = name.c_str();
-                const char *namestart = NULL;
-                if ( (namestart = strstr(srcname, GLOBAL_NAME_PREFIX)) )
+                // check for global variable change 
+                namestart += strlen(GLOBAL_NAME_PREFIX);
+                for (VarObj &global : prog.global_vars)
                 {
-                    // check for global variable change 
-                    namestart += strlen(GLOBAL_NAME_PREFIX);
-                    for (VarObj &global : prog.global_vars)
+                    if (global.name == namestart)
                     {
-                        if (global.name == namestart)
-                        {
-                            global.changed = (global.value != value);
-                            global.value = value;
-                            break;
-                        }
-                    }
-                }
-                else if ( (namestart = strstr(srcname, LOCAL_NAME_PREFIX)) )
-                {
-                    // check for local variable change 
-                    namestart += strlen(LOCAL_NAME_PREFIX);
-                    for (VarObj &local : prog.local_vars)
-                    {
-                        if (local.name == namestart)
-                        {
-                            local.changed = (local.value != value);
-                            local.value = value;
-                            break;
-                        }
+                        CheckIfChanged(incoming, global);
+                        global.value = incoming.value;
+                        global.changed = incoming.changed;
+                        global.expr_changed = incoming.expr_changed;
+                        break;
                     }
                 }
             }
@@ -1245,7 +1370,7 @@ void Draw(GLFWwindow *window)
             {
                 size_t dir = 1;
                 size_t &this_frame_idx = prog.frames[ prog.frame_idx ].file_idx; 
-                FileContext &this_file = prog.files[ this_frame_idx ];
+                File &this_file = prog.files[ this_frame_idx ];
                 bool found = false;
 
                 if ( gui.IsKeyClicked(GLFW_KEY_N) &&
@@ -1295,7 +1420,10 @@ void Draw(GLFWwindow *window)
             prog.frames[ prog.frame_idx ].file_idx < prog.files.size())
         {
             Frame &frame = prog.frames[ prog.frame_idx ];
-            FileContext &file = prog.files[ frame.file_idx ];
+            File &file = prog.files[ frame.file_idx ];
+
+            // @Optimization: only draw the visible lines then SetCursorPosY to 
+            // be lineheight * height per line to set the total scroll
 
             // display file lines, skip over designated blank zero index to sync
             // up line indices with line numbers
@@ -1473,7 +1601,8 @@ void Draw(GLFWwindow *window)
                                         if (gui.IsMouseClicked(GLFW_MOUSE_BUTTON_RIGHT))
                                         {
                                             String hover_string(line.data() + word_idx, char_idx - word_idx);
-                                            prog.watch_vars.push_back({hover_string, "???", false});
+                                            VarObj add = CreateVarObj(hover_string);
+                                            prog.watch_vars.push_back(add);
                                             QueryWatchlist();
                                         }
 
@@ -1807,7 +1936,7 @@ void Draw(GLFWwindow *window)
             ImGui::Text("%s", &prog.log[i][0]);
         }
 
-#define CMDSIZE sizeof(ProgramContext::input_cmd[0])
+#define CMDSIZE sizeof(Program::input_cmd[0])
         static char input_command[CMDSIZE] = 
             "target remote localhost:12345";
 
@@ -1899,20 +2028,29 @@ void Draw(GLFWwindow *window)
             ImGui::TableSetupColumn("Value");
             ImGui::TableHeadersRow();
 
+            size_t uid = 0;
             Vector<VarObj> &frame_vars = (prog.frame_idx == 0) ? prog.local_vars : prog.other_frame_vars;
             for (size_t i = 0; i < frame_vars.size(); i++)
             {
                 const VarObj &iter = frame_vars[i];
-                ImGui::TableNextRow();
+                if (iter.value[0] == '{')
+                {
+                    dbg();
+                    RecurseExpressionTreeNodes(iter, 0, uid);
+                }
+                else
+                {
+                    ImGui::TableNextRow();
 
-                ImGui::TableNextColumn();
-                ImGui::Text("%s", iter.name.c_str());
+                    ImGui::TableNextColumn();
+                    ImGui::Text("%s", iter.name.c_str());
 
-                ImGui::TableNextColumn();
-                ImColor color = (iter.changed) 
-                    ? IM_COL32_LIGHT_RED
-                    : IM_COL32_WHITE;
-                ImGui::TextColored(color, "%s", iter.value.c_str());
+                    ImGui::TableNextColumn();
+                    ImColor color = (iter.changed)
+                        ? IM_COL32_LIGHT_RED
+                        : IM_COL32_WHITE;
+                    ImGui::TextColored(color, "%s", iter.value.c_str());
+                }
             }
 
             // empty columns to pad width
@@ -1961,10 +2099,8 @@ void Draw(GLFWwindow *window)
 
                         for (const RecordAtom &atom : GDB_IterChild(rec, variables))
                         {
-                            VarObj add = {}; 
-                            add.name = GDB_ExtractValue("name", atom, rec);
-                            add.value = GDB_ExtractValue("value", atom, rec);
-                            add.changed = false;
+                            VarObj add = CreateVarObj(GDB_ExtractValue("name", atom, rec),
+                                                      GDB_ExtractValue("value", atom, rec));
                             prog.other_frame_vars.emplace_back(add);
                         }
 
@@ -1995,7 +2131,7 @@ void Draw(GLFWwindow *window)
                 ImGui::Text("%s", iter.name.c_str());
 
                 ImGui::TableNextColumn();
-                ImColor color = (iter.changed) 
+                ImColor color = (iter.changed)
                     ? IM_COL32_LIGHT_RED
                     : IM_COL32_WHITE;
                 ImGui::TextColored(color, "%s", iter.value.c_str());
@@ -2031,7 +2167,7 @@ void Draw(GLFWwindow *window)
                 ImGui::SetNextItemWidth(-FLT_MIN);
 
                 // is column clicked?
-                static char editwatch[256];
+                static char editwatch[4096];
                 bool column_clicked = false;
                 if (i == edit_var_name_idx)
                 {
@@ -2108,7 +2244,7 @@ void Draw(GLFWwindow *window)
 
 
                 ImGui::TableNextColumn();
-                ImColor color = (iter.changed) 
+                ImColor color = (iter.changed)
                     ? IM_COL32_LIGHT_RED
                     : IM_COL32_WHITE;
                 ImGui::TextColored(color, "%s", iter.value.c_str());
@@ -2126,7 +2262,8 @@ void Draw(GLFWwindow *window)
                                  ImGuiInputTextFlags_EnterReturnsTrue,
                                  NULL, NULL))
             {
-                prog.watch_vars.push_back( {watch, "???", false} );
+                VarObj add = CreateVarObj(watch);
+                prog.watch_vars.push_back(add);
                 QueryWatchlist();
                 memset(watch, 0, sizeof(watch));
             }
@@ -2285,12 +2422,8 @@ void Draw(GLFWwindow *window)
                             tsnprintf(tmpbuf, "-var-create " GLOBAL_NAME_PREFIX "%s @ $%s",
                                       reg.text.c_str(), reg.text.c_str());
                             GDB_SendBlocking(tmpbuf, rec);
-                            VarObj add = {};
-                            add.name = reg.text;
-                            add.changed = false;
-                            add.value = GDB_ExtractValue("value", rec);
-                            if (add.value == "") add.value = "???";
 
+                            VarObj add = CreateVarObj(reg.text, GDB_ExtractValue("value", rec));
                             prog.global_vars.emplace_back(add);
                         }
                         else
