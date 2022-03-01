@@ -12,6 +12,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <stdint.h>
+#include <inttypes.h>
 
 // linoox
 #include <errno.h>
@@ -46,20 +47,20 @@ typedef intptr_t ssize_t;
 #endif
 
 #define PrintTrace() 
-#define Fatal(msg) Verify(0 && msg)
 #define ArrayCount(arr) (sizeof(arr) / sizeof(arr[0]))
 #define tsnprintf(buf, fmt, ...) snprintf(buf, sizeof(buf), fmt, ##__VA_ARGS__)
 #define DefaultInvalid default: Assert(false);
 
 // c standard wrappers
+#if !defined(NDEBUG)
 #define Assert(cond)\
 if ( !(cond) )\
 {\
-    char __gdb_buf[128]; tsnprintf(__gdb_buf, "gdb --pid %d &", (int)getpid()); (void)system(__gdb_buf); exit(1);\
+    char __gdb_buf[128]; tsnprintf(__gdb_buf, "gdb --pid %d", (int)getpid()); int __unused = system(__gdb_buf); __unused = __unused; exit(1);\
 }
-#define Malloc malloc
-#define Calloc malloc
-#define Free free
+#else
+#define Assert(cond) (void)0;
+#endif
 
 // log errno and strerror, along with user error message
 #define PrintErrorLibC(msg) PrintErrorf("%s, errno(%d): %s", msg, errno, strerror(errno))
@@ -87,7 +88,6 @@ do {\
 // prefix for preventing name clashes
 #define GLOBAL_NAME_PREFIX "GB__"
 #define LOCAL_NAME_PREFIX "LC__"
-#define WATCH_NAME_PREFIX "WT__"
 
 // values with child elements from -data-evaluate-expression
 // struct: value={ a = "foo", b = "bar", c = "baz" }
@@ -98,7 +98,7 @@ do {\
 
 #define TUG_CONFIG_FILENAME "tug.ini"
 
-const char *const DEFAULT_REG_ARM32[] = {
+const char *const DEFAULT_REG_ARM[] = {
     "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8",
     "r9", "r10", "r11", /*"fp",*/ "r12", "sp", "lr", "pc", "cpsr",
 };
@@ -120,14 +120,14 @@ const char *const DEFAULT_REG_X86[] = {
 struct Frame
 {
     String func;
-    String addr;        // current PC/IP
+    uint64_t addr;      // current PC/IP
     size_t file_idx;    // in prog.files
     size_t line;        // next line to be executed
 };
 
 struct Breakpoint
 {
-    String addr;
+    uint64_t addr;
     size_t number;      // ordinal assigned by GDB
     size_t line;        // file line number
     size_t file_idx;    // index in prog.files
@@ -135,16 +135,13 @@ struct Breakpoint
 
 struct DisassemblyLine
 {
-    String addr;
-    String func;
-    String offset_from_func;
-    String inst;
-    String opcodes;
+    uint64_t addr;
+    String text;
 };
 
 struct DisassemblySourceLine
 {
-    String addr;
+    uint64_t addr;
     size_t num_instructions;
     size_t line_number;
 };
@@ -269,8 +266,8 @@ struct GDB
 
     // raw data, guarded by modify_storage_lock
     // a block is one or more Records
-    Vector<char> blocks;
-    Span block_spans[MAX_STORED_BLOCKS];      // block ending in (gdb) endsig
+    char block_data[1024 * 1024];
+    Span block_spans[MAX_STORED_BLOCKS];    // pipe read span into block_data
     size_t num_blocks;
 
     // capabilities of the spawned GDB process using -list-features 

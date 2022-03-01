@@ -857,7 +857,7 @@ int GDB_SendBlocking(const char *cmd, const char *header, bool remove_after)
         {
             timespec wait_for;
             clock_gettime(CLOCK_REALTIME, &wait_for);
-            wait_for.tv_sec += 1;
+            wait_for.tv_sec += 10;
 
             rc = sem_timedwait(gdb.recv_block, &wait_for);
             if (rc < 0)
@@ -1019,7 +1019,7 @@ static void GDB_ProcessBlock(char *block, size_t blocksize)
                 memcpy(const_cast<char*>(rec.buf.data()), start, eol - start);
 
                 // @Debug
-                GDB_PrintRecordAtom(rec, rec.atoms[0], 0);
+                //GDB_PrintRecordAtom(rec, rec.atoms[0], 0);
             }
         }
 
@@ -1033,15 +1033,12 @@ void GDB_GrabBlockData()
 {
     pthread_mutex_lock(&gdb.modify_block);
 
-    size_t total_bytes = 0;
     for (size_t i = 0; i < gdb.num_blocks; i++)
     {
         Span &iter = gdb.block_spans[i];
-        GDB_ProcessBlock(gdb.blocks.data() + iter.index, iter.length);
-        total_bytes = iter.index + iter.length;
+        GDB_ProcessBlock(gdb.block_data + iter.index, iter.length);
         iter = {};
     }
-    memset(gdb.blocks.data(), 0, total_bytes);
     gdb.num_blocks = 0;
 
     pthread_mutex_unlock(&gdb.modify_block);

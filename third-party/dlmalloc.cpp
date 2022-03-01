@@ -523,7 +523,7 @@ MAX_RELEASE_CHECK_RATE   default: 4095 unless not HAVE_MMAP
 
 
 /* Configuration */
-#define USE_LOCKS 1
+/* !!! NOT THREAD SAFE, need #define USE_LOCKS 1 for that !!! */
 #define USE_DL_PREFIX 1
 
 #ifndef _WIN32 // FAT PENGUIN

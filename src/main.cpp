@@ -19,7 +19,7 @@
 
 // verify a printf-family variadic arguments, MSVC doesn't have attribute printf like GCC
 // pass this as a parameter to printf like function macro
-#define VARGS_CHECK(fmt, ...) (0 && snprintf(NULL, 0, fmt, ##__VA_ARGS__))
+#define VARGS_CHECK(fmt, ...) snprintf(NULL, 0, fmt, ##__VA_ARGS__)
 #define StringPrintf(fmt, ...) _StringPrintf(VARGS_CHECK(fmt, ##__VA_ARGS__), fmt, ##__VA_ARGS__)
 String _StringPrintf(int /* vargs_check */, const char *fmt, ...)
 {
@@ -138,6 +138,35 @@ GUI gui;
 
 void dbg() {}
 
+uint64_t ParseHex(const String &str)
+{
+    uint64_t result = 0;
+    uint64_t pow = 1;
+    for (size_t i = str.size() - 1; i < str.size(); i--)
+    {
+        uint64_t num = 0;
+        char c = str[i];
+        if (c == 'x' || c == 'X') 
+            break;
+
+        if (c >= 'a' && c <= 'f')
+        {
+            num = 10 + (c - 'a');
+        }
+        else if (c >= 'A' && c <= 'F')
+        {
+            num = 10 + (c - 'A');
+        }
+        else if (c >= '0' && c <= '9')
+        {
+            num = c - '0';
+        }
+        result += (num * pow);
+        pow *= 16;
+    }
+    return result;
+}
+
 void *RedirectStdin(void *)
 {
     // forward user input to GDB
@@ -151,81 +180,96 @@ void *RedirectStdin(void *)
     return NULL;
 }
 
+ssize_t read_block_maxsize = 0;
 void *ReadInterpreterBlocks(void *)
 {
     // read data from GDB pipe
-    char tmp[1024 * 1024 + 1] = {};
     size_t insert_idx = 0;
-    gdb.blocks.resize(16 * 1024);
+    size_t read_base_idx = 0;
+    bool set_read_start_idx = true;
 
     while (true)
     {
-        ssize_t num_read = read(gdb.fd_in_read, tmp + insert_idx,
-                                sizeof(tmp) - insert_idx - 1 /*NT*/);
-        if (num_read <= 0)
-            break;
+        if (set_read_start_idx)
+            read_base_idx = insert_idx;
 
-        tmp[insert_idx + num_read] = '\0';
-        //printf("%.*s\n\n", int(num_read), tmp + insert_idx);
+        if (ArrayCount(gdb.block_data) - insert_idx < 64 * 1024)
+        {
+            // wrap around to beginning, moving a partially made record if available
+            // TODO: is there a function call to see if there is more read data
+            memmove(gdb.block_data, gdb.block_data + read_base_idx, 
+                    insert_idx - read_base_idx);
+            insert_idx = (insert_idx - read_base_idx);
+            read_base_idx = 0;
+        }
+
+        ssize_t num_read = read(gdb.fd_in_read, gdb.block_data + insert_idx,
+                                ArrayCount(gdb.block_data) - insert_idx);
+        if (num_read < 0)
+        {
+            fprintf(stderr, "gdb read: %s\n", strerror(errno));
+            break;
+        }
+
+        static int iteration = 0;
+        //printf("~%d~\n%d - num read: %zu \n~%d~\n", iteration,
+        //       (int)gdb.block_data[ insert_idx + num_read - 1 ], 
+        //       (size_t)num_read, iteration);
+        //printf("~%d~\n%.*s\n~%d~\n", iteration, (int)num_read, 
+        //       gdb.block_data + insert_idx, iteration);
+        iteration++;
         insert_idx += num_read;
 
-        const char *sig = strstr(tmp, RECORD_ENDSIG);
-        if (sig) 
+        if (gdb.block_data[ insert_idx - 1 ] != '\n')
         {
-            //printf("--- GDB %d ---\n", gdb.num_blocks++);
-            pthread_mutex_lock(&gdb.modify_block);
-            do 
-            {
-                if (gdb.num_blocks + 1 > ArrayCount(gdb.block_spans))
-                    return NULL; // exhausted block space memory
-
-                // set to the last inserted to get bufsize
-                Span span;
-                if (gdb.num_blocks == 0) span = {};
-                else span = gdb.block_spans[gdb.num_blocks - 1];
-
-                span.index += span.length; 
-                span.length = (sig - tmp);
-                size_t total_bytes = span.index + span.length;
-                if (gdb.blocks.size() < total_bytes) 
-                    gdb.blocks.resize(total_bytes);
-
-                memcpy(gdb.blocks.data() + span.index, tmp, span.length);
-                gdb.block_spans[ gdb.num_blocks ] = span;
-                gdb.num_blocks++;
-
-                // advance record blocks, skip over trailing whitespace
-                const char *next = sig + RECORD_ENDSIG_SIZE;
-                while ( size_t(next - tmp) < insert_idx && 
-                        (*next == ' ' || *next == '\n') )
-                {
-                    next++;
-                }
-
-                size_t fullsize = next - tmp;
-                memset(tmp, 0, fullsize);
-                memmove(tmp, next, insert_idx - fullsize);
-                insert_idx -= fullsize;
-                tmp[insert_idx] = '\0';
-
-            } while ( (sig = strstr(tmp, RECORD_ENDSIG)) );
-
-            // post a change if the binary semaphore is zero
-            static int semvalue; 
-            sem_getvalue(gdb.recv_block, &semvalue);
-            if (semvalue == 0) 
-                sem_post(gdb.recv_block);
-
-            pthread_mutex_unlock(&gdb.modify_block);
+            // GDB blocks I've seen have a max of 64k, this record is
+            // split across multiple pipe reads
+            set_read_start_idx = false;
+            continue;
         }
+        else
+        {
+            set_read_start_idx = true;
+        }
+
+
+        if (gdb.num_blocks + 1 > ArrayCount(gdb.block_spans))
+        {
+            fprintf(stderr, "exhausted available block spans\n");
+            break;
+        }
+
+        if (read_block_maxsize < num_read)
+            read_block_maxsize = num_read;
+
+        pthread_mutex_lock(&gdb.modify_block);
+
+        // set to the last inserted to get bufsize
+        Span span;
+        if (gdb.num_blocks == 0) span = {};
+        else span = gdb.block_spans[gdb.num_blocks - 1];
+
+        span.index = read_base_idx; 
+        span.length = num_read;
+        gdb.block_spans[ gdb.num_blocks ] = span;
+        gdb.num_blocks++;
+
+        // post a change if the binary semaphore is zero
+        int semvalue; 
+        sem_getvalue(gdb.recv_block, &semvalue);
+        if (semvalue == 0) 
+            sem_post(gdb.recv_block);
+
+        pthread_mutex_unlock(&gdb.modify_block);
     }
 
-    Print("closing GDB interpreter read loop...\n");
+    fprintf(stderr, "closing GDB interpreter read loop...\n");
     return NULL;
 }
 
 int Tug_Shutdown()
 {
+    printf("read_block_maxsize: %zu\n", (size_t)read_block_maxsize);
     pthread_kill(gdb.thread_read_interp, SIGINT);
     pthread_join(gdb.thread_read_interp, NULL);
     kill(gdb.spawned_pid, SIGINT);
@@ -672,6 +716,7 @@ VarObj CreateVarObj(String name, String value = "")
     result.changed = true;
     if (result.value[0] == '{')
     {
+        dbg();
         value = name + " = " + value;
         struct ParseRecordContext ctx = {};
         ctx.atoms.resize(1024); // @Hack
@@ -778,6 +823,7 @@ void CheckIfChanged(VarObj &this_var, const VarObj &last_var)
     if (last_var.value[0] == '{')
     {
         // aggregate, go through each child and check if it changed
+        dbg();
         RecurseCheckChanged(this_var, last_var, 0 /* root index */);
     }
     else
@@ -865,6 +911,7 @@ void QueryWatchlist()
         VarObj incoming = CreateVarObj("incoming", GDB_ExtractValue("value", rec));
         CheckIfChanged(incoming, iter);
         iter.value = incoming.value;
+        iter.expr = incoming.expr;
         iter.expr_changed = incoming.expr_changed;
     }
 }
@@ -927,12 +974,19 @@ void GetFunctionDisassembly(const Frame &frame)
                 //     line_asm_inst="je     0x55555555524f <main+183>"
 
                 DisassemblyLine add = {};
-                add.addr = GDB_ExtractValue("address", line_asm_inst, rec);
-                add.func = GDB_ExtractValue("func-name", line_asm_inst, rec);
-                add.offset_from_func = GDB_ExtractValue("offset", line_asm_inst, rec);
-                add.inst = GDB_ExtractValue("inst", line_asm_inst, rec);
-                add.opcodes = GDB_ExtractValue("opcodes", line_asm_inst, rec);
+                String string_addr = GDB_ExtractValue("address", line_asm_inst, rec);
+                String func = GDB_ExtractValue("func-name", line_asm_inst, rec);
+                String offset_from_func = GDB_ExtractValue("offset", line_asm_inst, rec);
+                String inst = GDB_ExtractValue("inst", line_asm_inst, rec);
+                String opcodes = GDB_ExtractValue("opcodes", line_asm_inst, rec);
 
+
+                tsnprintf(tmpbuf, "%s <%s+%s> %s", 
+                          string_addr.c_str(), func.c_str(),
+                          offset_from_func.c_str(), inst.c_str());
+
+                add.addr = ParseHex(string_addr);
+                add.text = tmpbuf;
                 gui.line_disasm.emplace_back(add);
                 line_src.num_instructions++;
 
@@ -959,12 +1013,18 @@ void GetFunctionDisassembly(const Frame &frame)
             //     inst="je     0x55555555524f <main+183>"
 
             DisassemblyLine add = {};
-            add.addr = GDB_ExtractValue("address", line_asm_inst, rec);
-            add.func = GDB_ExtractValue("func-name", line_asm_inst, rec);
-            add.offset_from_func = GDB_ExtractValue("offset", line_asm_inst, rec);
-            add.inst = GDB_ExtractValue("inst", line_asm_inst, rec);
-            add.opcodes = GDB_ExtractValue("opcodes", line_asm_inst, rec);
+            String string_addr = GDB_ExtractValue("address", line_asm_inst, rec);
+            String func = GDB_ExtractValue("func-name", line_asm_inst, rec);
+            String offset_from_func = GDB_ExtractValue("offset", line_asm_inst, rec);
+            String inst = GDB_ExtractValue("inst", line_asm_inst, rec);
+            String opcodes = GDB_ExtractValue("opcodes", line_asm_inst, rec);
 
+            tsnprintf(tmpbuf, "%s <%s+%s> %s", 
+                      string_addr.c_str(), func.c_str(),
+                      offset_from_func.c_str(), inst.c_str());
+
+            add.addr = ParseHex(string_addr);
+            add.text = tmpbuf;
             gui.line_disasm.emplace_back(add);
         }
     }
@@ -1089,7 +1149,7 @@ void Draw(GLFWwindow *window)
                     Breakpoint res = {};
                     res.number = GDB_ExtractInt("bkpt.number", parse_rec);
                     res.line = GDB_ExtractInt("bkpt.line", parse_rec);
-                    res.addr = GDB_ExtractValue("bkpt.addr", parse_rec);
+                    res.addr = ParseHex( GDB_ExtractValue("bkpt.addr", parse_rec) );
 
                     String fullpath = GDB_ExtractValue("bkpt.fullname", parse_rec);
                     res.file_idx = CreateOrGetFile(fullpath);
@@ -1188,7 +1248,7 @@ void Draw(GLFWwindow *window)
             {
                 Frame add = {};
                 add.line = (size_t)GDB_ExtractInt("line", level, rec);
-                add.addr = GDB_ExtractValue("addr", level, rec);
+                add.addr = ParseHex( GDB_ExtractValue("addr", level, rec) );
                 add.func = GDB_ExtractValue("func", level, rec);
                 arch = GDB_ExtractValue("arch", level, rec);
                 this_stack_sig += add.func;
@@ -1227,6 +1287,11 @@ void Draw(GLFWwindow *window)
                     registers = DEFAULT_REG_X86;
                     num_registers = ArrayCount(DEFAULT_REG_X86);
                 }
+                else if (arch.size() >= 3 && 0 == memcmp(arch.data(), "arm", 3))
+                {
+                    registers = DEFAULT_REG_ARM;
+                    num_registers = ArrayCount(DEFAULT_REG_ARM);
+                }
 
                 for (size_t i = 0; i < num_registers; i++)
                 {
@@ -1261,10 +1326,12 @@ void Draw(GLFWwindow *window)
                 VarObj &local = prog.local_vars[i - 1];
                 if (local.name == incoming.name)
                 {
+                    // @Hack: clean this up
                     CheckIfChanged(incoming, local);
                     local.value = incoming.value;
                     local.expr = incoming.expr;
                     local.expr_changed = incoming.expr_changed;
+                    local.changed = incoming.changed;
                     found = true;
                     break;
                 }
@@ -1512,7 +1579,7 @@ void Draw(GLFWwindow *window)
                             Breakpoint res = {};
                             res.number = GDB_ExtractInt("bkpt.number", rec);
                             res.line = GDB_ExtractInt("bkpt.line", rec);
-                            res.addr = GDB_ExtractValue("bkpt.addr", rec);
+                            res.addr = ParseHex( GDB_ExtractValue("bkpt.addr", rec) );
 
                             String fullpath = GDB_ExtractValue("bkpt.fullname", rec);
                             res.file_idx = CreateOrGetFile(fullpath);
@@ -1748,7 +1815,8 @@ void Draw(GLFWwindow *window)
                     bool is_set = false;
                     for (Breakpoint &bkpt : prog.breakpoints)
                     {
-                        if (bkpt.addr == line.addr && bkpt.file_idx == frame.file_idx)
+                        if (bkpt.addr == line.addr && 
+                            bkpt.file_idx == frame.file_idx)
                             is_set = true;
                     }
 
@@ -1799,13 +1867,13 @@ void Draw(GLFWwindow *window)
                         else
                         {
                             // insert breakpoint
-                            tsnprintf(tmpbuf, "-break-insert *%s", line.addr.c_str());
+                            tsnprintf(tmpbuf, "-break-insert *0x%" PRIx64, line.addr);
                             GDB_SendBlocking(tmpbuf, rec);
 
                             Breakpoint res = {};
                             res.number = GDB_ExtractInt("bkpt.number", rec);
                             res.line = GDB_ExtractInt("bkpt.line", rec);
-                            res.addr = GDB_ExtractValue("bkpt.addr", rec);
+                            res.addr = ParseHex( GDB_ExtractValue("bkpt.addr", rec) );
 
                             String fullpath = GDB_ExtractValue("bkpt.fullname", rec);
                             res.file_idx = CreateOrGetFile(fullpath);
@@ -1818,17 +1886,14 @@ void Draw(GLFWwindow *window)
                     ImGui::PopStyleColor(4);
 
                     ImGui::SameLine();
-                    tsnprintf(tmpbuf, "%s <%s+%s> %s", line.addr.c_str(), line.func.c_str(),
-                              line.offset_from_func.c_str(), line.inst.c_str());
-
                     if (line.addr == frame.addr)
                     {
-                        ImGui::Selectable(tmpbuf, true);
+                        ImGui::Selectable(line.text.c_str(), true);
                     }
                     else
                     {
                         // @Imgui: ImGui::Text isn't selectable with a caret cursor, lame
-                        ImGui::Text("%s", tmpbuf);
+                        ImGui::Text("%s", line.text.c_str());
                     }
 
 
@@ -2428,9 +2493,9 @@ void Draw(GLFWwindow *window)
                 ImGui::SetNextWindowSize({ 400, 400 });
                 ImGui::Begin("Modify Registers##window", &show_add_register_window);
 
-                for (const RegisterName &reg : all_registers)
+                for (RegisterName &reg : all_registers)
                 {
-                    if ( ImGui::Checkbox(reg.text.c_str(), (bool *)&reg.registered) )
+                    if ( ImGui::Checkbox(reg.text.c_str(), &reg.registered) )
                     {
                         if (reg.registered)
                         {
