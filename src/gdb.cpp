@@ -290,6 +290,32 @@ RecordAtom GDB_RecurseEvaluation(ParseRecordContext &ctx)
         if (inside_string_literal)
             continue;
 
+#if 1
+        if (ctx.i + 10 < ctx.bufsize &&
+            ctx.buf[ ctx.i + 10 ] == ' ' &&
+            ctx.buf[ ctx.i + 2 ] == '<')
+        {
+            // TODO: make run length atom that precedes an atom array/value with
+            // a <repeats XXX times> string appended to it
+            
+            size_t num_repeat = 0;
+            size_t dig_idx = ctx.i + 10 + 1
+            for (;
+                 dig_idx < ctx.bufsize && ctx.buf[ dig_idx ] >= '0' && ctx.buf[ dig_idx ] <= '9';
+                 dig_idx++)
+            {
+                num_repeat *= 10;
+                num_repeat += (ctx.buf[ dig_idx ] - '0');
+            }
+
+            RecordAtom rle = {};
+            rle.value.index = EXPR_RLE_INDEX;
+            rle.value.length = num_repeat;
+            Assert(ctx.buf[ dig_idx ] == ' ');
+            ctx.i = dig_idx + 5;
+        }
+#endif
+
         switch (result.type)
         {
             case Atom_None:

@@ -91,7 +91,7 @@ struct GUI
     Vector<DisassemblyLine> line_disasm;
     Vector<DisassemblySourceLine> line_disasm_source;
 
-    size_t source_highlighted_line = BAD_INDEX;
+    bool jump_to_exec_line;
     bool source_search_bar_open = false;
     char source_search_keyword[256];
     size_t source_found_line_idx;
@@ -215,8 +215,8 @@ void *ReadInterpreterBlocks(void *)
         //printf("~%d~\n%d - num read: %zu \n~%d~\n", iteration,
         //       (int)gdb.block_data[ insert_idx + num_read - 1 ], 
         //       (size_t)num_read, iteration);
-        //printf("~%d~\n%.*s\n~%d~\n", iteration, (int)num_read, 
-        //       gdb.block_data + insert_idx, iteration);
+        printf("~%d~\n%.*s\n~%d~\n", iteration, (int)num_read, 
+               gdb.block_data + insert_idx, iteration);
         iteration++;
         insert_idx += num_read;
 
@@ -282,6 +282,58 @@ int Tug_Shutdown()
     close(gdb.fd_out_write);
     return 0;
 }
+
+bool CreateFile(const char *fullpath, File &result)
+{
+    result = {};
+    result.fullpath = fullpath;
+    result.lines.push_back("");    // lines[0] empty for syncing index with line number
+    bool found = false;
+
+    if (0 == access( fullpath, F_OK ))
+    {
+        found = true;
+        std::ifstream file(fullpath, std::ios::in);
+
+        String tmp;
+        int line = 1;
+        char linebuf[10];
+
+        while (std::getline(file, tmp))
+        {
+            tsnprintf(linebuf, "%-4d ", line++);
+            result.lines.emplace_back(linebuf + tmp);
+        }
+    }
+
+    return found;
+}
+
+size_t CreateOrGetFile(const String &fullpath)
+{
+    size_t result = BAD_INDEX;
+
+    // search for the stored file context
+    for (size_t i = 0; i < prog.files.size(); i++)
+    {
+        if (prog.files[i].fullpath == fullpath)
+        {
+            result = i;
+            break;
+        }
+    }
+
+    // file context not found, create it 
+    if (result == BAD_INDEX)
+    {
+        result = prog.files.size();
+        prog.files.resize( prog.files.size() + 1);
+        CreateFile(fullpath.c_str(), prog.files[ result ]);
+    }
+
+    return result;
+}
+
 
 bool Tug_Init(GLFWwindow *window, int argc, char **argv)
 {
@@ -571,7 +623,8 @@ bool Tug_Init(GLFWwindow *window, int argc, char **argv)
     }
 
     // set FILE_IDX_INVALID
-    prog.files.push_back({});
+    //
+    CreateOrGetFile( String("") );
 
     // preload all the referenced files
     //GDB_SendBlocking("-file-list-exec-source-files", tmp, "files");
@@ -716,10 +769,9 @@ VarObj CreateVarObj(String name, String value = "")
     result.changed = true;
     if (result.value[0] == '{')
     {
-        dbg();
         value = name + " = " + value;
         struct ParseRecordContext ctx = {};
-        ctx.atoms.resize(1024); // @Hack
+        ctx.atoms.resize(value.size() / 2.0); // rough estimate of the max nodes
         ctx.i = 0;
         ctx.buf = value.c_str();
         ctx.bufsize = value.size();
@@ -759,7 +811,7 @@ VarObj CreateVarObj(String name, String value = "")
         result.expr.buf = value;
         result.expr_changed.resize( ctx.atoms.size() );
 
-        //GDB_PrintRecordAtom(result.expr, result.expr.atoms[0], 0);
+        GDB_PrintRecordAtom(result.expr, result.expr.atoms[0], 0);
     }
 
     return result;
@@ -830,57 +882,6 @@ void CheckIfChanged(VarObj &this_var, const VarObj &last_var)
     {
         this_var.changed = (this_var.value != last_var.value);
     }
-}
-
-bool CreateFile(const char *fullpath, File &result)
-{
-    result = {};
-    result.fullpath = fullpath;
-    result.lines.push_back("");    // lines[0] empty for syncing index with line number
-    bool found = false;
-
-    if (0 == access( fullpath, F_OK ))
-    {
-        found = true;
-        std::ifstream file(fullpath, std::ios::in);
-
-        String tmp;
-        int line = 1;
-        char linebuf[10];
-
-        while (std::getline(file, tmp))
-        {
-            tsnprintf(linebuf, "%-4d ", line++);
-            result.lines.emplace_back(linebuf + tmp);
-        }
-    }
-
-    return found;
-}
-
-size_t CreateOrGetFile(const String &fullpath)
-{
-    size_t result = BAD_INDEX;
-
-    // search for the stored file context
-    for (size_t i = 0; i < prog.files.size(); i++)
-    {
-        if (prog.files[i].fullpath == fullpath)
-        {
-            result = i;
-            break;
-        }
-    }
-
-    // file context not found, create it 
-    if (result == BAD_INDEX)
-    {
-        result = prog.files.size();
-        prog.files.resize( prog.files.size() + 1);
-        CreateFile(fullpath.c_str(), prog.files[ result ]);
-    }
-
-    return result;
 }
 
 void QueryWatchlist()
@@ -1030,20 +1031,43 @@ void GetFunctionDisassembly(const Frame &frame)
     }
 }
 
+void RecurseSetNodeState(const Record &rec, size_t atom_idx, int state, String name)
+{
+    const RecordAtom &parent = rec.atoms[atom_idx];
+    ImGuiID parent_id = ImGui::GetID(name.c_str()); 
+    ImGui::GetStateStorage()->SetInt(parent_id, state);
+
+    for (size_t i = 0; i < parent.value.length; i++)
+    {
+        size_t childoffset = parent.value.index + i;
+        const RecordAtom &child = rec.atoms[childoffset];
+        String childname = name + String(rec.buf.c_str() + child.name.index,
+                                         child.name.length);
+        if (child.type == Atom_Array || child.type == Atom_String)
+        {
+            RecurseSetNodeState(rec, childoffset, state, childname);
+        }
+    } 
+}
+
 // draw an aggregate data type in the form of a two column table
-void RecurseExpressionTreeNodes(const VarObj &var, size_t atom_idx, size_t &uid)
+void RecurseExpressionTreeNodes(const VarObj &var, size_t atom_idx)
 {
     char tmpbuf[4096];
     const Record &src = var.expr;
     const RecordAtom &parent = src.atoms[atom_idx];
     Assert(parent.type == Atom_Struct || parent.type == Atom_Array);
     tsnprintf(tmpbuf, "%.*s##%zu", (int)parent.name.length, 
-              &src.buf[ parent.name.index ], uid++);
+              &src.buf[ parent.name.index ], atom_idx);
 
+    bool close_after = false;
     ImGui::TableNextRow();
     ImGui::TableNextColumn();
     if (ImGui::TreeNode(tmpbuf))
     {
+        if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
+            close_after = true;
+
         ImGui::TableNextColumn();
         size_t i = parent.value.index;
         size_t end = i + parent.value.length;
@@ -1053,7 +1077,7 @@ void RecurseExpressionTreeNodes(const VarObj &var, size_t atom_idx, size_t &uid)
             const RecordAtom &child = src.atoms[i];
             if (child.type == Atom_Struct || child.type == Atom_Array)
             {
-                RecurseExpressionTreeNodes(var, i, uid);
+                RecurseExpressionTreeNodes(var, i);
             }
             else
             {
@@ -1103,6 +1127,19 @@ void RecurseExpressionTreeNodes(const VarObj &var, size_t atom_idx, size_t &uid)
         }
 
         ImGui::TreePop();
+    }
+    else if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
+    {
+        String name = String(src.buf.c_str() + parent.name.index, 
+                             parent.name.length);
+        // TODO fix empty names RecurseSetNodeState(src, atom_idx, 1, name);
+    }
+
+    if (close_after)
+    {
+        String name = String(src.buf.c_str() + parent.name.index,
+                             parent.name.length);
+        // TODO fix empty names RecurseSetNodeState(src, atom_idx, 0, name);
     }
 }
  
@@ -1184,7 +1221,7 @@ void Draw(GLFWwindow *window)
                         // this code is copied from the Callstack window section
 
                         prog.frame_idx = (size_t)index;
-                        gui.source_highlighted_line = BAD_INDEX; // force a re-center
+                        gui.jump_to_exec_line = true;
                         if (prog.frame_idx != 0)
                         {
                             // do a one-shot query of a non-current frame
@@ -1230,6 +1267,7 @@ void Draw(GLFWwindow *window)
 
     if (async_stopped)
     {
+        gui.jump_to_exec_line = true;
         QueryWatchlist();
 
         // TODO: remote ARM32 debugging is this up after jsr macro
@@ -1262,7 +1300,6 @@ void Draw(GLFWwindow *window)
             if (last_stack_sig != this_stack_sig)
             {
                 prog.local_vars.clear();
-                gui.source_highlighted_line = BAD_INDEX;
                 last_stack_sig = this_stack_sig;
                 if (gui.line_display != LineDisplay_Source && prog.frames.size() > 0)
                     GetFunctionDisassembly(prog.frames[0]);
@@ -1509,6 +1546,16 @@ void Draw(GLFWwindow *window)
             Frame &frame = prog.frames[ prog.frame_idx ];
             File &file = prog.files[ frame.file_idx ];
 
+            // draw radio button and line offscreen to get the line size
+            // TODO: how to do this without drawing offscreen
+            float sourcestart = ImGui::GetCursorPosY();
+            ImGui::SetCursorPosY(-100);
+            float ystartoffscreen = ImGui::GetCursorPosY();
+            ImGui::RadioButton("##MeasureRadioHeight", false); ImGui::SameLine(); ImGui::Text("MeasureText");
+            float lineheight = ImGui::GetCursorPosY() - ystartoffscreen;
+            size_t perscreen = ceilf(ImGui::GetWindowHeight() / lineheight) + 1;
+            ImGui::SetCursorPosY(sourcestart);
+
             // @Optimization: only draw the visible lines then SetCursorPosY to 
             // be lineheight * height per line to set the total scroll
 
@@ -1516,7 +1563,32 @@ void Draw(GLFWwindow *window)
             // up line indices with line numbers
             if (gui.line_display == LineDisplay_Source)
             {
-                for (size_t i = 1; i < file.lines.size(); i++)
+                // automatically scroll to the next executed line if it is far enough away
+                // and we've just stopped execution
+                if (gui.jump_to_exec_line)
+                {
+                    gui.jump_to_exec_line = false;
+                    size_t linenum = 1 + (ImGui::GetScrollY() / lineheight);
+                    if ( !(frame.line >= linenum + 10 && 
+                           frame.line <= linenum + perscreen - 10) )
+                    {
+                        float scroll = lineheight * ((frame.line - 1) - (lineheight / 2));
+                        if (scroll < 0.0f) scroll = 0.0f;
+                        ImGui::SetScrollY(scroll);
+                    }
+                }
+
+                // index zero is always skipped, only used to sync up line number and index
+                size_t start_idx = 1 + (ImGui::GetScrollY() / lineheight);
+                size_t end_idx = GetMin(start_idx + perscreen, file.lines.size());
+                if (file.lines.size() > perscreen)
+                {
+                    // set scrollbar height, -1 because index zero is never drawn
+                    ImGui::SetCursorPosY((file.lines.size() - 1) * lineheight); 
+                }
+                ImGui::SetCursorPosY((start_idx - 1) * lineheight + sourcestart);
+
+                for (size_t i = start_idx; i < end_idx; i++)
                 {
                     String &line = file.lines[i];
 
@@ -1591,29 +1663,6 @@ void Draw(GLFWwindow *window)
                     // stop radio button style
                     ImGui::PopStyleColor(4);
 
-                    // automatically scroll to the next executed line if it is far enough away
-                    size_t shl = gui.source_highlighted_line;
-                    size_t linediff = (shl > frame.line) ? shl - frame.line : frame.line - shl;
-                    bool highlight_search_found = false;
-                    if (i == gui.source_found_line_idx)
-                    {
-                        if (gui.source_search_bar_open)
-                        {
-                            highlight_search_found = true;
-                        }
-                        else
-                        {
-                            // we closed the window and no longer in child window
-                            gui.source_found_line_idx = 0;
-                        }
-                        ImGui::SetScrollHereY();
-                    }
-                    else if (linediff > 10 && i == frame.line)
-                    {
-                        gui.source_highlighted_line = frame.line;
-                        ImGui::SetScrollHereY();
-                    }
-
                     ImGui::SameLine();
                     ImVec2 textstart = ImGui::GetCursorPos();
                     if (i == frame.line)
@@ -1622,12 +1671,12 @@ void Draw(GLFWwindow *window)
                     }
                     else
                     {
-                        if (highlight_search_found)
-                        {
-                            ImColor IM_COL_YELLOW = IM_COL32(255, 255, 0, 255);
-                            ImGui::TextColored(IM_COL_YELLOW, "%s", line.c_str());
-                        }
-                        else
+                        //if (highlight_search_found)
+                        //{
+                        //    ImColor IM_COL_YELLOW = IM_COL32(255, 255, 0, 255);
+                        //    ImGui::TextColored(IM_COL_YELLOW, "%s", line.c_str());
+                        //}
+                        //else
                         {
                             // @Imgui: ImGui::Text isn't selectable with a caret cursor, lame
                             ImGui::Text("%s", line.c_str());
@@ -1782,10 +1831,48 @@ void Draw(GLFWwindow *window)
             }
             else 
             {
+
+                // automatically scroll to the next executed line if it is far enough away
+                // and we've just stopped execution
+                if (gui.jump_to_exec_line)
+                {
+                    size_t current_index = (ImGui::GetScrollY() / lineheight);
+                    gui.jump_to_exec_line = false;
+                    size_t jump_index = 0;
+                    for (size_t i = 0; i < gui.line_disasm.size(); i++)
+                    {
+                        if (gui.line_disasm[i].addr == frame.addr)
+                        {
+                            jump_index = i; 
+                            break;
+                        }
+                    }
+
+                    if ( !(jump_index >= current_index + 10 && 
+                           jump_index <= current_index + perscreen - 10) )
+                    {
+                        float scroll = lineheight * ((frame.line - 1) - (lineheight / 2));
+                        if (scroll < 0.0f) scroll = 0.0f;
+                        ImGui::SetScrollY(scroll);
+                    }
+                    float scroll = lineheight * (jump_index - (lineheight / 2));
+                    if (scroll < 0.0f) scroll = 0.0f;
+                    ImGui::SetScrollY(scroll);
+                }
+
+                size_t start_idx = (ImGui::GetScrollY() / lineheight);
+                size_t end_idx = GetMin(start_idx + perscreen, gui.line_disasm.size());
+                if (gui.line_disasm.size() > perscreen)
+                {
+                    ImGui::SetCursorPosY(gui.line_disasm.size() * lineheight); 
+                }
+
+                ImGui::SetCursorPosY(start_idx * lineheight + sourcestart);
+
                 // display source window using retrieved disassembly
                 size_t src_idx = 0;
                 size_t inst_left = 0;
-                for (size_t i = 0; i < gui.line_disasm.size(); i++)
+                for (size_t i = start_idx; i < end_idx; i++)
                 {
                     const DisassemblyLine &line = gui.line_disasm[i];    
 
@@ -1899,14 +1986,15 @@ void Draw(GLFWwindow *window)
 
                     if (line.addr == frame.addr)
                     {
-                        size_t s = gui.source_highlighted_line;
-                        size_t linediff = (s > i) ? s - i : i - s;
-                        if (linediff > 10)
-                        {
-                            // @Hack: line number is now line_disasm index
-                            gui.source_highlighted_line = i;
-                            ImGui::SetScrollHereY();
-                        }
+                        //@@@
+                        //size_t s = gui.source_highlighted_line;
+                        //size_t linediff = (s > i) ? s - i : i - s;
+                        //if (linediff > 10)
+                        //{
+                        //    // @Hack: line number is now line_disasm index
+                        //    gui.source_highlighted_line = i;
+                        //    ImGui::SetScrollHereY();
+                        //}
                     }
                 }
             }
@@ -1935,7 +2023,7 @@ void Draw(GLFWwindow *window)
         if (clicked)
         {
             // jump to program counter line
-            gui.source_highlighted_line = BAD_INDEX;
+            gui.jump_to_exec_line = true;
         }
 
         // start
@@ -1944,9 +2032,6 @@ void Draw(GLFWwindow *window)
         ImGuiDisabled(prog.running, clicked = ImGui::Button("|>") || vs_continue);
         if (clicked)
         {
-            // jump to program counter line
-            gui.source_highlighted_line = BAD_INDEX;
-
             if (!prog.started)
             {
                 if (gdb.has_exec_run_start)
@@ -2120,7 +2205,7 @@ void Draw(GLFWwindow *window)
                 const VarObj &iter = frame_vars[i];
                 if (iter.value[0] == '{')
                 {
-                    RecurseExpressionTreeNodes(iter, 0, uid);
+                    RecurseExpressionTreeNodes(iter, 0);
                 }
                 else
                 {
@@ -2171,7 +2256,7 @@ void Draw(GLFWwindow *window)
                 if ( ImGui::Selectable(tmpbuf, i == prog.frame_idx) )
                 {
                     prog.frame_idx = i;
-                    gui.source_highlighted_line = BAD_INDEX; // force a re-center
+                    gui.jump_to_exec_line = true;
                     if (prog.frame_idx != 0)
                     {
                         // do a one-shot query of a non-current frame

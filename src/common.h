@@ -50,6 +50,9 @@ typedef intptr_t ssize_t;
 #define ArrayCount(arr) (sizeof(arr) / sizeof(arr[0]))
 #define tsnprintf(buf, fmt, ...) snprintf(buf, sizeof(buf), fmt, ##__VA_ARGS__)
 #define DefaultInvalid default: Assert(false);
+#define GetMax(a, b) (a > b) ? a : b
+#define GetMin(a, b) (a < b) ? a : b
+#define GetAbs(a, b) (a > b) ? a - b : b - a
 
 // c standard wrappers
 #if !defined(NDEBUG)
@@ -95,6 +98,7 @@ do {\
 // array: value={1, 2, 3}
 #define AGGREGATE_CHAR_START '{'
 #define AGGREGATE_CHAR_END '}'
+#define EXPR_RLE_INDEX (size_t)0x800000000
 
 #define TUG_CONFIG_FILENAME "tug.ini"
 
