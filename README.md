@@ -44,3 +44,6 @@ Option 2:
 
 -cycle command history by pressing up/down arrow while clicked on the box
 
+# Resources
+-GDB Machine Interpreter: https://sourceware.org/gdb/download/onlinedocs/gdb/GDB_002fMI.html#GDB_002fMI
+
