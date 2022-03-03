@@ -1271,7 +1271,7 @@ void Draw(GLFWwindow *window)
 
         // TODO: remote ARM32 debugging is this up after jsr macro
         /* !!! */ //GDB_SendBlocking("-stack-list-frames 0 0", rec, "stack");
-        /* !!! */ GDB_SendBlocking("-stack-list-frames", rec, "stack");
+        /* !!! */ GDB_SendBlocking("-stack-list-frames", rec);
         const RecordAtom *callstack = GDB_ExtractAtom("stack", rec);
         if (callstack)
         {
@@ -1347,7 +1347,7 @@ void Draw(GLFWwindow *window)
         // get local variables for this stack frame
         // TODO: not actually GDB variable objects, problems with aggregates displaying updates
 
-        GDB_SendBlocking("-stack-list-variables --all-values", rec, "variables");
+        GDB_SendBlocking("-stack-list-variables --all-values", rec);
         for (VarObj &local : prog.local_vars) local.changed = false;
         
         const RecordAtom *vars = GDB_ExtractAtom("variables", rec);
@@ -1378,7 +1378,7 @@ void Draw(GLFWwindow *window)
         }
 
         // update global values, just registers right now
-        GDB_SendBlocking("-var-update --all-values *", rec, "changelist");
+        GDB_SendBlocking("-var-update --all-values *", rec);
         const RecordAtom *changelist = GDB_ExtractAtom("changelist", rec);
         for (VarObj &global : prog.global_vars) global.changed = false;
 
@@ -2035,13 +2035,15 @@ void Draw(GLFWwindow *window)
             {
                 if (gdb.has_exec_run_start)
                 {
-                    GDB_SendBlocking("-exec-run --start", "stopped", false);
+                    if (0 <= GDB_SendBlocking("-exec-run --start"))
+                    {
+                        prog.started = true;
+                    }
                 }
-                prog.started = true;
             }
             else
             {
-                GDB_SendBlocking("-exec-continue", "running");
+                GDB_SendBlocking("-exec-continue");
                 prog.running = true;
                 if (prog.frames.size() > 0)
                     prog.frames[0].line = 0; // clear the highlighted line
@@ -2060,7 +2062,7 @@ void Draw(GLFWwindow *window)
         ImGuiDisabled(prog.running, clicked = ImGui::Button("-->"));
         if (clicked)
         {
-            GDB_SendBlocking("-exec-step", "stopped", false);
+            GDB_SendBlocking("-exec-step", false);
         }
 
         // step over
@@ -2068,7 +2070,7 @@ void Draw(GLFWwindow *window)
         ImGuiDisabled(prog.running, clicked = ImGui::Button("/\\>"));
         if (clicked)
         {
-            GDB_SendBlocking("-exec-next", "stopped", false);
+            GDB_SendBlocking("-exec-next", false);
         }
 
         // step out
@@ -2080,11 +2082,11 @@ void Draw(GLFWwindow *window)
             {
                 // GDB error in top frame: "finish" not meaningful in the outermost frame.
                 // emulate visual studios by just running the program  
-                GDB_SendBlocking("-exec-continue", "running");
+                GDB_SendBlocking("-exec-continue");
             }
             else
             {
-                GDB_SendBlocking("-exec-finish", "stopped", false);
+                GDB_SendBlocking("-exec-finish", false);
             }
         }
 

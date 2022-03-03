@@ -246,9 +246,6 @@ RecordAtomSequence GDB_RecurseEvaluation(ParseRecordContext &ctx)
     // -for arrays, if there are more than 200 elements it ends in "...}"
     // -run length for arrays ex: {0 <repeats 1024 times>}
 
-            extern void dbg();
-            dbg();
-
     const auto EvaluateRunLength = [&](size_t &rle_last_idx, 
                                        size_t &rle_num_repeat) -> bool
     {
@@ -900,10 +897,14 @@ ssize_t GDB_Send(const char *cmd)
     return written;
 }
 
-int GDB_SendBlocking(const char *cmd, const char *header, bool remove_after)
+int GDB_SendBlocking(const char *cmd, bool remove_after)
 {
+    uint32_t this_record_id = gdb.record_id++;
+    char fullrecord[8 * 1024];
+    tsnprintf(fullrecord, "%u%s", this_record_id, cmd);
+
     int rc;
-    ssize_t num_sent = GDB_Send(cmd);
+    ssize_t num_sent = GDB_Send(fullrecord);
 
     if (num_sent >= 0)
     {
@@ -912,7 +913,7 @@ int GDB_SendBlocking(const char *cmd, const char *header, bool remove_after)
         {
             timespec wait_for;
             clock_gettime(CLOCK_REALTIME, &wait_for);
-            wait_for.tv_sec += 10;
+            wait_for.tv_sec += 1;
 
             rc = sem_timedwait(gdb.recv_block, &wait_for);
             if (rc < 0)
@@ -939,15 +940,9 @@ int GDB_SendBlocking(const char *cmd, const char *header, bool remove_after)
                     RecordHolder &iter = prog.read_recs[i];
                     const char *bufstr = iter.rec.buf.c_str();
 
-                    if (!iter.parsed && iter.rec.buf.size() > 0)
+                    if (!iter.parsed && iter.rec.id == this_record_id)
                     {
-                        if (NULL != strstr(bufstr, header))
-                        {
-                            iter.parsed = remove_after;
-                            rc = i;
-                            found = true;
-                        }
-                        else if (NULL != strstr(bufstr, "^error"))
+                        if (NULL != strstr(bufstr, "^error"))
                         {
                             if (NULL != strstr(bufstr, "optimized out"))
                             {
@@ -955,7 +950,8 @@ int GDB_SendBlocking(const char *cmd, const char *header, bool remove_after)
                                 // 1. -data-evaluate-expression argv --> ^done,value="<optimized out>"
                                 // 2. -data-evaluate-expression argv[0] --> ^error,msg="value has been optimized out"
 
-                                const static Record OPTIMIZED_OUT_FIX = {
+                                const Record OPTIMIZED_OUT_FIX = {
+                                    this_record_id,
                                     {
                                         { Atom_Array, {0, 0}, {1,1} }, // root atom
                                         { Atom_String, /*value*/{6, 5}, /*<optimized out>*/{13, 15} }
@@ -977,6 +973,12 @@ int GDB_SendBlocking(const char *cmd, const char *header, bool remove_after)
                                 return -1;
                             }
                         }
+                        else
+                        {
+                            iter.parsed = remove_after;
+                            rc = i;
+                            found = true;
+                        }
                     }
                 }
             }
@@ -987,10 +989,10 @@ int GDB_SendBlocking(const char *cmd, const char *header, bool remove_after)
     return rc;
 }
 
-int GDB_SendBlocking(const char *cmd, Record &rec, const char *end_pattern)
+int GDB_SendBlocking(const char *cmd, Record &rec)
 {
     // errno or result record index
-    int error_or_index = GDB_SendBlocking(cmd, end_pattern, false);
+    int error_or_index = GDB_SendBlocking(cmd, false);
     if (error_or_index < 0)
     {
         rec = {};
@@ -1012,6 +1014,24 @@ static void GDB_ProcessBlock(char *block, size_t blocksize)
     size_t block_idx = 0;
     while (block_idx < blocksize)
     {
+
+        // parse the optional id preceding the record
+        uint32_t this_record_id = 0;
+        while (block_idx < blocksize)
+        {
+            char c = block[ block_idx ];
+            if (c >= '0' && c <= '9')
+            {
+                this_record_id *= 10;
+                this_record_id += (c - '0');
+                block_idx++;
+            }
+            else
+            {
+                break;
+            }
+        }
+
         char *start = block + block_idx;
         char *eol = strchr(start, '\n');
         if (eol)
@@ -1071,6 +1091,7 @@ static void GDB_ProcessBlock(char *block, size_t blocksize)
                 Record &rec = out->rec;
                 rec.atoms = ctx.atoms;
                 rec.buf.resize(eol - start);
+                rec.id = this_record_id;
                 memcpy(const_cast<char*>(rec.buf.data()), start, eol - start);
 
                 // @Debug

@@ -192,6 +192,10 @@ struct RecordAtom
 
 struct Record
 {
+    // ordinal that gets send preceding MI-Commands that gets sent
+    // back in the response record
+    uint32_t id;
+    
     // data describing the line elements
     Vector<RecordAtom> atoms;
 
@@ -276,6 +280,9 @@ struct GDB
     // commands sent to GDB
     int fd_out_read;
     int fd_out_write;
+
+    // ordinal ID that gets incremented on every record
+    uint32_t record_id = 1;
 
     // raw data, guarded by modify_storage_lock
     // a block is one or more Records
@@ -419,10 +426,10 @@ inline String GetAtomString(Span s, const Record &rec)
 ssize_t GDB_Send(const char *cmd);
 
 // send a message to GDB, wait for a result record
-int GDB_SendBlocking(const char *cmd, const char *header = "^done", bool remove_after = true);
+int GDB_SendBlocking(const char *cmd, bool remove_after = true);
 
 // send a message to GDB, wait for a result record, then retrieve it
-int GDB_SendBlocking(const char *cmd, Record &rec, const char *header = "^done");
+int GDB_SendBlocking(const char *cmd, Record &rec);
 
 // extract a MI record
 bool GDB_ParseRecord(char *buf, size_t bufsize, ParseRecordContext &ctx);
