@@ -98,7 +98,10 @@ do {\
 // array: value={1, 2, 3}
 #define AGGREGATE_CHAR_START '{'
 #define AGGREGATE_CHAR_END '}'
-#define EXPR_RLE_INDEX (size_t)0x800000000
+
+// maximum amount of variables displayed in an expression if there 
+// are no run length values
+#define AGGREGATE_MAX 200
 
 #define TUG_CONFIG_FILENAME "tug.ini"
 
@@ -213,6 +216,12 @@ struct VarObj
     Vector<bool> expr_changed;
 };
 
+// run length RecordAtom in expression value 
+struct RecordAtomSequence
+{
+    RecordAtom atom;
+    size_t length;
+};
 
 
 // GDB MI sends output as human readable lines, starting with a symbol
@@ -420,6 +429,6 @@ bool GDB_ParseRecord(char *buf, size_t bufsize, ParseRecordContext &ctx);
 
 void GDB_GrabBlockData();
 
-RecordAtom GDB_RecurseEvaluation(ParseRecordContext &ctx);
+RecordAtomSequence GDB_RecurseEvaluation(ParseRecordContext &ctx);
 
 void GDB_PrintRecordAtom(const Record &rec, const RecordAtom &iter, int tab_level);

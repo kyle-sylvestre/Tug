@@ -769,14 +769,24 @@ VarObj CreateVarObj(String name, String value = "")
     result.changed = true;
     if (result.value[0] == '{')
     {
+        static bool resize_once = true;
         value = name + " = " + value;
-        struct ParseRecordContext ctx = {};
-        ctx.atoms.resize(value.size() / 2.0); // rough estimate of the max nodes
+        static struct ParseRecordContext ctx = {};
+
+        if (resize_once)
+        {
+            resize_once = false;
+            ctx.atoms.resize( 16 * 1024 ); // @Hack
+        }
+
         ctx.i = 0;
+        ctx.atom_idx = 0;
+        ctx.num_end_atoms = 0;
+        ctx.error = false;
         ctx.buf = value.c_str();
         ctx.bufsize = value.size();
 
-        RecordAtom root = GDB_RecurseEvaluation(ctx);
+        RecordAtom root = GDB_RecurseEvaluation(ctx).atom;
 
         if (!ctx.error)
         {
@@ -803,15 +813,15 @@ VarObj CreateVarObj(String name, String value = "")
                 }
             }
 
-            auto begin = ctx.atoms.begin();
-            ctx.atoms.erase(begin, begin + ctx.atoms.size() - ctx.num_end_atoms);
+            result.expr.atoms.resize(ctx.num_end_atoms);
+            memcpy(&result.expr.atoms[0], 
+                   &ctx.atoms[ ctx.atoms.size() - ctx.num_end_atoms ],
+                   sizeof(RecordAtom) * ctx.num_end_atoms);
+            result.expr.buf = value;
+            result.expr_changed.resize( ctx.num_end_atoms );
+
+            //GDB_PrintRecordAtom(result.expr, result.expr.atoms[0], 0);
         }
-
-        result.expr.atoms = ctx.atoms;
-        result.expr.buf = value;
-        result.expr_changed.resize( ctx.atoms.size() );
-
-        GDB_PrintRecordAtom(result.expr, result.expr.atoms[0], 0);
     }
 
     return result;
@@ -823,7 +833,9 @@ bool RecurseCheckChanged(VarObj &this_var, const VarObj &last_var, size_t atom_i
     Assert((atom_idx < this_var.expr.atoms.size()) && 
            (atom_idx < last_var.expr.atoms.size()));
     RecordAtom &parent = this_var.expr.atoms[atom_idx];
-    Assert(parent.type == Atom_Struct || parent.type == Atom_Array);
+    //Assert(parent.type == Atom_Struct || parent.type == Atom_Array);
+    if (parent.type != Atom_Struct && parent.type != Atom_Array)
+        return true;
 
     size_t i = parent.value.index;
     size_t end = i + parent.value.length;
@@ -1051,14 +1063,22 @@ void RecurseSetNodeState(const Record &rec, size_t atom_idx, int state, String n
 }
 
 // draw an aggregate data type in the form of a two column table
-void RecurseExpressionTreeNodes(const VarObj &var, size_t atom_idx)
+void RecurseExpressionTreeNodes(const VarObj &var, size_t atom_idx, 
+                                size_t parent_array_index = 0)
 {
     char tmpbuf[4096];
     const Record &src = var.expr;
     const RecordAtom &parent = src.atoms[atom_idx];
     Assert(parent.type == Atom_Struct || parent.type == Atom_Array);
-    tsnprintf(tmpbuf, "%.*s##%zu", (int)parent.name.length, 
-              &src.buf[ parent.name.index ], atom_idx);
+    if (parent.name.length != 0)
+    {
+        tsnprintf(tmpbuf, "%.*s##%zu", (int)parent.name.length, 
+                  &src.buf[ parent.name.index ], atom_idx);
+    }
+    else
+    {
+        tsnprintf(tmpbuf, "[%zu]", parent_array_index);
+    }
 
     bool close_after = false;
     ImGui::TableNextRow();
@@ -1077,44 +1097,21 @@ void RecurseExpressionTreeNodes(const VarObj &var, size_t atom_idx)
             const RecordAtom &child = src.atoms[i];
             if (child.type == Atom_Struct || child.type == Atom_Array)
             {
-                RecurseExpressionTreeNodes(var, i);
+                RecurseExpressionTreeNodes(var, i, array_index);
             }
             else
             {
                 ImGui::TableNextRow();
                 ImGui::TableNextColumn();
-                if (parent.type == Atom_Array)
+                if (child.name.length > 0)
                 {
-                    // truncates above 200 elements like this:
-                    // 198, 199, 200...
-                    dbg();
-                    size_t base = child.value.index;
-                    size_t stri = child.value.length;
-                    if (stri > 7 && src.buf[ base + stri - 1 ] == '>') // 7= offset from end to first digit
-                    {
-                        // run length format: {0 <repeats 1024 times>}
-                        size_t repeat_times = 0;
-                        size_t pow = 1;
-
-                        for (size_t dgt = stri - 8; dgt < child.value.length && (src.buf[base + dgt] >= '0' && src.buf[base + dgt] <= '9'); dgt--)
-                        {
-                            repeat_times += pow * (src.buf[base + dgt] - '0');
-                            pow *= 10;
-                        }
-
-                        ImGui::Text("[%zu .. %zu]", array_index, (array_index + repeat_times - 1));
-                        array_index += repeat_times;
-                    }
-                    else
-                    {
-                        ImGui::Text("[%zu]", array_index++);
-                    }
-
-                }
-                else if (parent.type == Atom_Struct)
-                {
+                    Assert(child.name.length > 0);
                     ImGui::Text("%.*s", (int)child.name.length,
                                 &src.buf[ child.name.index ]);
+                }
+                else
+                {
+                    ImGui::Text("[%zu]", array_index);
                 }
 
                 ImColor color = (var.expr_changed[i])
@@ -1124,6 +1121,8 @@ void RecurseExpressionTreeNodes(const VarObj &var, size_t atom_idx)
                 ImGui::TextColored(color, "%.*s", (int)child.value.length, 
                                    &src.buf[ child.value.index ]);
             }
+
+            array_index++;
         }
 
         ImGui::TreePop();
@@ -2198,7 +2197,6 @@ void Draw(GLFWwindow *window)
             ImGui::TableSetupColumn("Value");
             ImGui::TableHeadersRow();
 
-            size_t uid = 0;
             Vector<VarObj> &frame_vars = (prog.frame_idx == 0) ? prog.local_vars : prog.other_frame_vars;
             for (size_t i = 0; i < frame_vars.size(); i++)
             {
