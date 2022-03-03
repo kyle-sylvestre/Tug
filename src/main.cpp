@@ -15,7 +15,10 @@
 #define WINDOW_WIDTH 1280
 #define WINDOW_HEIGHT 640
 #define SOURCE_WIDTH 800
-#define IM_COL32_LIGHT_RED IM_COL32(255, 128, 128, 255)
+
+
+// dynamic colors that change upon the brightness of the background
+ImVec4 IM_COL32_WIN_RED;
 
 // verify a printf-family variadic arguments, MSVC doesn't have attribute printf like GCC
 // pass this as a parameter to printf like function macro
@@ -1115,8 +1118,8 @@ void RecurseExpressionTreeNodes(const VarObj &var, size_t atom_idx,
                 }
 
                 ImColor color = (var.expr_changed[i])
-                    ? IM_COL32_LIGHT_RED
-                    : IM_COL32_WHITE;
+                    ? IM_COL32_WIN_RED
+                    : ImGui::GetStyleColorVec4(ImGuiCol_Text);
                 ImGui::TableNextColumn();
                 ImGui::TextColored(color, "%.*s", (int)child.value.length, 
                                    &src.buf[ child.value.index ]);
@@ -2216,8 +2219,8 @@ void Draw(GLFWwindow *window)
 
                     ImGui::TableNextColumn();
                     ImColor color = (iter.changed)
-                        ? IM_COL32_LIGHT_RED
-                        : IM_COL32_WHITE;
+                        ? IM_COL32_WIN_RED
+                        : ImGui::GetStyleColorVec4(ImGuiCol_Text);
                     ImGui::TextColored(color, "%s", iter.value.c_str());
                 }
             }
@@ -2301,8 +2304,8 @@ void Draw(GLFWwindow *window)
 
                 ImGui::TableNextColumn();
                 ImColor color = (iter.changed)
-                    ? IM_COL32_LIGHT_RED
-                    : IM_COL32_WHITE;
+                    ? IM_COL32_WIN_RED
+                    : ImGui::GetStyleColorVec4(ImGuiCol_Text);
                 ImGui::TextColored(color, "%s", iter.value.c_str());
             }
 
@@ -2414,8 +2417,8 @@ void Draw(GLFWwindow *window)
 
                 ImGui::TableNextColumn();
                 ImColor color = (iter.changed)
-                    ? IM_COL32_LIGHT_RED
-                    : IM_COL32_WHITE;
+                    ? IM_COL32_WIN_RED
+                    : ImGui::GetStyleColorVec4(ImGuiCol_Text);
                 ImGui::TextColored(color, "%s", iter.value.c_str());
             }
 
@@ -2456,7 +2459,7 @@ void Draw(GLFWwindow *window)
         // configuration row of widgets
         //
         {
-            // @HACK(ish): all of prog.config needs to be ConfigPair for this to work
+            // @Hack(ish): all of prog.config needs to be ConfigPair for this to work
             const size_t CONFIG_SIZE = 4096;
             static char config_input[NUM_CONFIG][CONFIG_SIZE];
             static bool show_config_window;
@@ -2576,7 +2579,7 @@ void Draw(GLFWwindow *window)
             if (show_add_register_window)
             {
                 ImGui::SetNextWindowSize({ 400, 400 });
-                ImGui::Begin("Modify Registers##window", &show_add_register_window);
+                ImGui::Begin("Modify Tracked Registers##window", &show_add_register_window);
 
                 for (RegisterName &reg : all_registers)
                 {
@@ -2673,6 +2676,7 @@ int main(int argc, char **argv)
     // Setup Dear ImGui style
     ImGui::StyleColorsDark();
     //ImGui::StyleColorsClassic();
+    //ImGui::StyleColorsLight();
 
     // Setup Platform/Renderer backends
     ImGui_ImplGlfw_InitForOpenGL(window, true);
@@ -2804,19 +2808,41 @@ int main(int argc, char **argv)
         //
 
         // lessen the intensity of selectable hover color
-        ImVec4 active_col = ImGui::GetStyleColorVec4(ImGuiCol_HeaderActive);
-        active_col.x *= (1.0/2.0);
-        active_col.y *= (1.0/2.0);
-        active_col.z *= (1.0/2.0);
+        //ImVec4 active_col = ImGui::GetStyleColorVec4(ImGuiCol_HeaderActive);
+        //active_col.x *= (1.0/2.0);
+        //active_col.y *= (1.0/2.0);
+        //active_col.z *= (1.0/2.0);
 
-        ImColor IM_COL_BACKGROUND = IM_COL32(22,22,22,255);
-        ImGui::PushStyleColor(ImGuiCol_WindowBg, IM_COL_BACKGROUND.Value);
-        ImGui::PushStyleColor(ImGuiCol_HeaderHovered, active_col);
-        ImGui::PushStyleColor(ImGuiCol_HeaderActive, active_col);
+        //ImGui::PushStyleColor(ImGuiCol_HeaderHovered, active_col);
+        //ImGui::PushStyleColor(ImGuiCol_HeaderActive, active_col);
+
+        // set global colors that change based 
+        // upon the luminance of the window background
+        static const auto GetLuminance01 = [](ImColor col) -> float
+        {
+            return (0.2126*col.Value.x) +
+                   (0.7152*col.Value.y) +
+                   (0.0722*col.Value.z);
+        };
+        float lum = GetLuminance01( ImGui::GetStyleColorVec4(ImGuiCol_WindowBg) );
+        IM_COL32_WIN_RED = ImColor(1.0f, 0.5f - 0.5f*lum, 0.5f - 0.5f*lum, 1.0f);
+
+        // defaults are too damn bright!
+        ImVec4 hdr = ImGui::GetStyleColorVec4(ImGuiCol_Header);
+        ImVec4 hdr_hovered = ImVec4(hdr.x, hdr.y, hdr.z, GetMin(1.0f, hdr.w + 0.2));
+        ImVec4 hdr_active = ImVec4(hdr.x, hdr.y, hdr.z, GetMin(1.0f, hdr.w + 0.4));
+        ImGui::PushStyleColor(ImGuiCol_HeaderHovered, hdr_hovered);
+        ImGui::PushStyleColor(ImGuiCol_HeaderActive, hdr_active);
+
+        ImVec4 btn = ImGui::GetStyleColorVec4(ImGuiCol_Button);
+        ImVec4 btn_hovered = ImVec4(btn.x, btn.y, btn.z, GetMin(1.0f, btn.w + 0.2));
+        ImVec4 btn_active = ImVec4(btn.x, btn.y, btn.z, GetMin(1.0f, btn.w + 0.4));
+        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, btn_hovered);
+        ImGui::PushStyleColor(ImGuiCol_ButtonActive, btn_active);
 
         Draw(window);
 
-        ImGui::PopStyleColor(3);
+        ImGui::PopStyleColor(4);
 
         // Rendering
         ImGui::Render();

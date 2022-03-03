@@ -281,7 +281,8 @@ struct GDB
     int fd_out_read;
     int fd_out_write;
 
-    // ordinal ID that gets incremented on every record
+    // ordinal ID that gets incremented on every 
+    // GDB_SendBlocking record sent
     uint32_t record_id = 1;
 
     // raw data, guarded by modify_storage_lock
