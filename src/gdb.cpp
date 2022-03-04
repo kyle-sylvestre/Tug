@@ -416,6 +416,7 @@ RecordAtomSequence GDB_RecurseEvaluation(ParseRecordContext &ctx)
                     size_t addcount = GetMin(elem.length, AGGREGATE_MAX - num_children);
                     for (size_t i = 0; i < addcount; i++)
                         GDB_PushUnordered(ctx, elem.atom);
+                    num_children += addcount;
                 }
                 else
                 {
@@ -434,34 +435,35 @@ RecordAtomSequence GDB_RecurseEvaluation(ParseRecordContext &ctx)
     return sequence;
 }
 
-void GDB_PrintRecordAtom(const Record &rec, const RecordAtom &iter, int tab_level)
+void GDB_PrintRecordAtom(const Record &rec, const RecordAtom &iter, 
+                         int tab_level, FILE *out)
 {
     for (int i = 0; i < tab_level; i++)
-        printf("  ");
+        fprintf(out, "  ");
 
     switch (iter.type)
     {
         case Atom_String:  // key value pair
         {
-            printf("%.*s=\"%.*s\"\n",
-                   int(iter.name.length), &rec.buf[ iter.name.index ],
-                   int(iter.value.length), &rec.buf[ iter.value.index ]);
+            fprintf(out, "%.*s=\"%.*s\"\n",
+                    int(iter.name.length), &rec.buf[ iter.name.index ],
+                    int(iter.value.length), &rec.buf[ iter.value.index ]);
         } break;
 
         case Atom_Struct:
         case Atom_Array:
         {
-            printf("%.*s\n", int(iter.name.length), 
-                   &rec.buf[ iter.name.index ]);
+            fprintf(out, "%.*s\n", int(iter.name.length), 
+                    &rec.buf[ iter.name.index ]);
 
             for (const RecordAtom &child : GDB_IterChild(rec, &iter))
             {
-                GDB_PrintRecordAtom(rec, child, tab_level + 1);
+                GDB_PrintRecordAtom(rec, child, tab_level + 1, out);
             }
 
         } break;
         default:
-            printf("---BAD ATOM TYPE---\n");
+            fprintf(out, "---BAD ATOM TYPE---\n");
     }
 }
 
@@ -877,7 +879,7 @@ ssize_t GDB_Send(const char *cmd)
     size_t cmdsize = strlen(cmd);
 
 #if defined(DEBUG)
-    LogLine(cmd, cmdsize);
+    WriteToConsoleBuffer(cmd, cmdsize);
 #endif
 
     ssize_t written = write(gdb.fd_out_write, cmd, cmdsize);
@@ -967,8 +969,8 @@ int GDB_SendBlocking(const char *cmd, bool remove_after)
                             {
                                 // convert error record to GDB console output record
                                 String errmsg = GDB_ExtractValue("msg", iter.rec);
-                                errmsg = "&\"GDB MI Error: " + errmsg + "\"\n";
-                                LogLine(errmsg.data(), errmsg.size());
+                                errmsg = "&\"GDB MI Error: " + errmsg + "\\n\"\n";
+                                WriteToConsoleBuffer(errmsg.data(), errmsg.size());
                                 iter.parsed = true;
                                 return -1;
                             }
@@ -1052,7 +1054,7 @@ static void GDB_ProcessBlock(char *block, size_t blocksize)
         }
 
         size_t linesize = eol - start;
-        LogLine(start, eol - start);
+        WriteToConsoleBuffer(start, eol - start);
 
         // get the record type
         char c = start[0];

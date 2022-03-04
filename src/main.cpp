@@ -604,7 +604,7 @@ bool Tug_Init(GLFWwindow *window, int argc, char **argv)
         else
         {
             String err = StringPrintf("couldn't open file: %s", argv[1]);
-            LogLine(err.data(), err.size());
+            WriteToConsoleBuffer(err.data(), err.size());
         }
     }
 
@@ -687,7 +687,7 @@ static void DrawHelpMarker(const char *desc)
     }
 }
 
-void LogLine(const char *buf, size_t bufsize)
+void WriteToConsoleBuffer(const char *buf, size_t bufsize)
 {
     if ( bufsize >= 5 && (0 == memcmp(buf, "(gdb)", 5)) )
         return;
@@ -703,22 +703,27 @@ void LogLine(const char *buf, size_t bufsize)
     // debug
     //printf("%.*s\n", int(bufsize), buf);
 
-    // shift lines up, add this line to the collection
-    memmove(&prog.log[0], &prog.log[1], 
-            sizeof(prog.log) - sizeof(prog.log[0]));
 
-    ConsoleLine &dest = prog.log[NUM_LOG_ROWS - 1];
+    ConsoleLine &dest = prog.log[0];
     dest.type = ConsoleLineType_None;
-    memset(dest.text, ' ', NUM_LOG_COLS);
-    size_t dest_idx = 0;
 
     const auto PushChar = [&](char c)
     {
-        if (dest_idx < NUM_LOG_COLS)
-            dest.text[dest_idx++] = c;
+        if (c == '\n')
+        {
+            // shift lines up
+            size_t nt_index = GetMin(prog.log_line_char_idx, NUM_LOG_COLS);
+            dest.text[nt_index] = '\0';
+            memmove(&prog.log[1], &prog.log[0], 
+                    sizeof(prog.log) - sizeof(prog.log[0]));
+            dest.type = ConsoleLineType_None;
+            prog.log_line_char_idx = 0;
+        }
+        else if (prog.log_line_char_idx < NUM_LOG_COLS)
+        {
+            dest.text[ prog.log_line_char_idx++ ] = c;
+        }
     };
-
-    dbg();
 
     if (bufsize > 2 && 
         (buf[0] == PREFIX_DEBUG_LOG ||
@@ -743,6 +748,9 @@ void LogLine(const char *buf, size_t bufsize)
             {
                 switch (n)
                 {
+                    case 'n':
+                        PushChar('\n');
+                        break;
                     case 't': 
                         for (size_t t = 0; t < 2; t++)
                             PushChar(' ');
@@ -766,10 +774,11 @@ void LogLine(const char *buf, size_t bufsize)
     else
     {
         // text that isn't a log record ex: shell ls
-        memcpy(dest.text, buf, GetMin(bufsize, NUM_LOG_COLS));
+        for (size_t i = 0; i < bufsize; i++)
+            PushChar(buf[i]);
     }
 
-    size_t nt_index = GetMin(bufsize - 1, NUM_LOG_COLS);
+    size_t nt_index = GetMin(prog.log_line_char_idx, NUM_LOG_COLS);
     dest.text[nt_index] = '\0';
     prog.log_scroll_to_bottom = true;
 }
@@ -779,12 +788,13 @@ VarObj CreateVarObj(String name, String value = "")
     VarObj result = {};
     result.name = name;
     result.value = value;
+    result.changed = true;
+    
     if (result.value == "") 
     {
         result.value = "???";
     }
 
-    result.changed = true;
     if (result.value[0] == '{')
     {
         static bool resize_once = true;
@@ -838,65 +848,65 @@ VarObj CreateVarObj(String name, String value = "")
             result.expr.buf = value;
             result.expr_changed.resize( ctx.num_end_atoms );
 
-            //GDB_PrintRecordAtom(result.expr, result.expr.atoms[0], 0);
+            //GDB_PrintRecordAtom(result.expr, result.expr.atoms[0], 0, out);
         }
     }
 
     return result;
 }
 
-bool RecurseCheckChanged(VarObj &this_var, const VarObj &last_var, size_t atom_idx)
+bool RecurseCheckChanged(VarObj &this_var, size_t this_parent_idx,
+                         const VarObj &last_var, size_t last_parent_idx)
 {
     bool changed = false;
-    Assert((atom_idx < this_var.expr.atoms.size()) && 
-           (atom_idx < last_var.expr.atoms.size()));
-    RecordAtom &parent = this_var.expr.atoms[atom_idx];
-    //Assert(parent.type == Atom_Struct || parent.type == Atom_Array);
-    if (parent.type != Atom_Struct && parent.type != Atom_Array)
+    RecordAtom &this_parent = this_var.expr.atoms[ this_parent_idx ];
+    const RecordAtom &last_parent = last_var.expr.atoms[ last_parent_idx ];
+    Assert((this_parent_idx < this_var.expr.atoms.size()) && 
+           (last_parent_idx < last_var.expr.atoms.size()));
+    if (this_parent.type != Atom_Struct && this_parent.type != Atom_Array)
         return true;
 
-    size_t i = parent.value.index;
-    size_t end = i + parent.value.length;
+    Assert(this_parent.value.length == last_parent.value.length);
+    size_t t_idx = this_parent.value.index;
+    size_t t_end = t_idx + this_parent.value.length;
+    size_t o_idx = last_parent.value.index;
+    size_t o_end = o_idx + last_parent.value.length;
 
-    for (; i < end; i++)
+    for (; t_idx < t_end && o_idx < o_end; t_idx++, o_idx++)
     {
-        const RecordAtom &this_child = this_var.expr.atoms[i];
-        if (i >= last_var.expr.atoms.size())
+        const RecordAtom &this_child = this_var.expr.atoms[t_idx];
+        const RecordAtom &last_child = last_var.expr.atoms[o_idx];
+        if (this_child.type == Atom_Struct || this_child.type == Atom_Array)
         {
-            // array changing from run length to actual value
-            // TODO: get the actual changed value
-            this_var.expr_changed[i] = true;
-            changed |= this_var.expr_changed[i];
+            changed |= RecurseCheckChanged(this_var, t_idx, 
+                                           last_var, o_idx);
+        }
+        else if (this_child.type == Atom_String)
+        {
+            const char *this_buf = this_var.expr.buf.c_str();
+            const char *last_buf = last_var.expr.buf.c_str();
+
+            Assert(this_child.value.index + this_child.value.length <=
+                   this_var.expr.buf.size());
+            Assert(last_child.value.index + last_child.value.length <=
+                   last_var.expr.buf.size());
+
+            const char *this_text = this_buf + this_child.value.index;
+            const char *last_text = last_buf + last_child.value.index;
+
+            this_var.expr_changed[t_idx] 
+                = (this_child.value.length != last_child.value.length) ||
+                  (0 != memcmp(this_text, last_text, this_child.value.length));
+
+            changed |= this_var.expr_changed[t_idx];
         }
         else
         {
-            const RecordAtom &last_child = last_var.expr.atoms[i];
-            if (this_child.type == Atom_Struct || last_child.type == Atom_Array)
-            {
-                changed |= RecurseCheckChanged(this_var, last_var, i);
-            }
-            else if (this_child.type == Atom_String)
-            {
-                const char *this_buf = this_var.expr.buf.c_str();
-                const char *last_buf = last_var.expr.buf.c_str();
-
-                Assert(this_child.value.index + this_child.value.length <=
-                       this_var.expr.buf.size());
-                Assert(last_child.value.index + last_child.value.length <=
-                       last_var.expr.buf.size());
-
-                this_var.expr_changed[i] 
-                    = (this_child.value.length != last_child.value.length) ||
-                    (0 != memcmp(this_buf + this_child.value.index,
-                                 last_buf + last_child.value.index,
-                                 this_child.value.length) );
-
-                changed |= this_var.expr_changed[i];
-            }
+            Assert(false);
         }
     }
 
-    this_var.expr_changed[atom_idx] = changed;
+    this_var.expr_changed[this_parent_idx] = changed;
     return changed;
 }
 
@@ -906,7 +916,7 @@ void CheckIfChanged(VarObj &this_var, const VarObj &last_var)
     {
         // aggregate, go through each child and check if it changed
         dbg();
-        RecurseCheckChanged(this_var, last_var, 0 /* root index */);
+        RecurseCheckChanged(this_var, 0, last_var, 0);
     }
     else
     {
@@ -1253,6 +1263,9 @@ void Draw(GLFWwindow *window)
                             {
                                 VarObj add = CreateVarObj(GDB_ExtractValue("name", atom, rec),
                                                           GDB_ExtractValue("value", atom, rec));
+                                add.changed = false;
+                                for (size_t b = 0; b < add.expr_changed.size(); b++)
+                                    add.expr_changed[b] = false;
                                 prog.other_frame_vars.emplace_back(add);
                             }
 
@@ -1260,8 +1273,6 @@ void Draw(GLFWwindow *window)
 
                         if (gui.line_display != LineDisplay_Source)
                             GetFunctionDisassembly(prog.frames[ prog.frame_idx ]);
-
-                        QueryWatchlist();
                     }
                 }
             }
@@ -2126,11 +2137,12 @@ void Draw(GLFWwindow *window)
         ImGui::BeginChild("GDB console", control_subwindow_size, false,
                           ImGuiWindowFlags_HorizontalScrollbar);
 
-        for (int i = 0; i < NUM_LOG_ROWS; i++)
+        for (int i = NUM_LOG_ROWS; i > 0; i--)
         {
-            const char *prefix = (prog.log[i].type == ConsoleLineType_UserInput)
+            ConsoleLine &line = prog.log[i - 1];
+            const char *prefix = (line.type == ConsoleLineType_UserInput)
                 ? "(gdb) " : "";
-            ImGui::Text("%s%s", prefix, prog.log[i].text);
+            ImGui::Text("%s%s", prefix, line.text);
         }
 
         if (prog.log_scroll_to_bottom) 
@@ -2296,6 +2308,7 @@ void Draw(GLFWwindow *window)
                     {
                         // do a one-shot query of a non-current frame
                         // prog.frames is stored from bottom to top so need to do size - 1
+
                         prog.other_frame_vars.clear();
                         tsnprintf(tmpbuf, "-stack-list-variables --frame %zu --thread 1 --all-values", i);
                         GDB_SendBlocking(tmpbuf, rec);
@@ -2305,12 +2318,13 @@ void Draw(GLFWwindow *window)
                         {
                             VarObj add = CreateVarObj(GDB_ExtractValue("name", atom, rec),
                                                       GDB_ExtractValue("value", atom, rec));
+                            add.changed = false;
+                            for (size_t b = 0; b < add.expr_changed.size(); b++)
+                                add.expr_changed[b] = false;
                             prog.other_frame_vars.emplace_back(add);
                         }
 
                     }
-
-                    QueryWatchlist();
 
                     if (gui.line_display != LineDisplay_Source)
                         GetFunctionDisassembly(prog.frames[ prog.frame_idx ]);

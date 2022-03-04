@@ -338,8 +338,11 @@ struct ConsoleLine
 
 struct Program
 {
+    // console messages ordered from newest to oldest
     ConsoleLine log[NUM_LOG_ROWS];
     bool log_scroll_to_bottom = true;
+    size_t log_line_char_idx;
+
     char input_cmd[NUM_USER_CMDS][MAX_USER_CMDSIZE + 1 /* NT */];
     int input_cmd_idx = -1;
     int num_input_cmds;
@@ -384,7 +387,7 @@ const size_t NUM_CONFIG = sizeof(Program::Config) / sizeof(ConfigPair);
 // main.cpp
 //
 extern Program prog;
-void LogLine(const char *raw, size_t rawsize);
+void WriteToConsoleBuffer(const char *raw, size_t rawsize);
 
 //
 // gdb.cpp
@@ -449,4 +452,4 @@ void GDB_GrabBlockData();
 
 RecordAtomSequence GDB_RecurseEvaluation(ParseRecordContext &ctx);
 
-void GDB_PrintRecordAtom(const Record &rec, const RecordAtom &iter, int tab_level);
+void GDB_PrintRecordAtom(const Record &rec, const RecordAtom &iter, int tab_level, FILE *out = stdout);
