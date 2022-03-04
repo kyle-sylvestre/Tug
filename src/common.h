@@ -81,8 +81,8 @@ do {\
 #define Printf(fmt, ...) printf(fmt, ##__VA_ARGS__);
 #define Print(msg) Printf("%s", msg);
 
-#define NUM_LOG_ROWS 10
-#define NUM_LOG_COLS 60
+#define NUM_LOG_ROWS 40
+#define NUM_LOG_COLS 128
 #define INVALID_LINE 0
 #define MAX_USER_CMDSIZE 128
 #define NUM_USER_CMDS 80
@@ -245,9 +245,6 @@ struct RecordAtomSequence
 //
 // after the commands, it ends with signature "(gdb)"
 
-#define RECORD_ENDSIG "(gdb)"
-#define RECORD_ENDSIG_SIZE ( sizeof(RECORD_ENDSIG) - 1 ) 
-
 #define PREFIX_ASYNC0 '='
 #define PREFIX_ASYNC1 '*'
 #define PREFIX_RESULT '^'
@@ -327,9 +324,22 @@ struct ConfigPair
                ConfigType ptype = ConfigType_Text) : key(pkey), value(""), type(ptype) {}
 };
 
+enum ConsoleLineType
+{
+    ConsoleLineType_None,
+    ConsoleLineType_UserInput,
+};
+
+struct ConsoleLine
+{
+    ConsoleLineType type;
+    char text[NUM_LOG_COLS + 1 /* NT */];
+};
+
 struct Program
 {
-    char log[NUM_LOG_ROWS][NUM_LOG_COLS + 1 /* NT */]; 
+    ConsoleLine log[NUM_LOG_ROWS];
+    bool log_scroll_to_bottom = true;
     char input_cmd[NUM_USER_CMDS][MAX_USER_CMDSIZE + 1 /* NT */];
     int input_cmd_idx = -1;
     int num_input_cmds;

@@ -93,6 +93,7 @@ struct GUI
     LineDisplay line_display = LineDisplay_Source;
     Vector<DisassemblyLine> line_disasm;
     Vector<DisassemblySourceLine> line_disasm_source;
+    bool show_machine_interpreter_commands;
 
     bool jump_to_exec_line;
     bool source_search_bar_open = false;
@@ -554,10 +555,6 @@ bool Tug_Init(GLFWwindow *window, int argc, char **argv)
         return false;
     }
 
-    // set initial state of log
-    for (int i = 0; i < NUM_LOG_ROWS; i++)
-        LogLine("", 0);
-
 #if 1
     //GDB_SendBlocking("-environment-cd /mnt/c/Users/Kyle/Documents/commercial-codebases/original/stevie");
     //GDB_SendBlocking("-file-exec-and-symbols stevie");
@@ -690,73 +687,91 @@ static void DrawHelpMarker(const char *desc)
     }
 }
 
-void LogLine(const char *raw, size_t rawsize)
+void LogLine(const char *buf, size_t bufsize)
 {
-    bool is_gdb_console = (rawsize > 0) && 
-                          (raw[0] == PREFIX_DEBUG_LOG || 
-                           raw[0] == PREFIX_CONSOLE_LOG ||
-                           raw[0] == PREFIX_TARGET_LOG);
+    if ( bufsize >= 5 && (0 == memcmp(buf, "(gdb)", 5)) )
+        return;
 
-    //if (!is_gdb_console)
-    //    return; //@Temp
+    bool is_mi_record = (bufsize > 0) && 
+                        (buf[0] == PREFIX_ASYNC0 || 
+                         buf[0] == PREFIX_ASYNC1 ||
+                         buf[0] == PREFIX_RESULT );
+
+    if (is_mi_record && !gui.show_machine_interpreter_commands)
+        return;
 
     // debug
-    //printf("%.*s\n", int(rawsize), raw);
+    //printf("%.*s\n", int(bufsize), buf);
 
     // shift lines up, add this line to the collection
-    memmove(&prog.log[0][0], &prog.log[1][0], 
+    memmove(&prog.log[0], &prog.log[1], 
             sizeof(prog.log) - sizeof(prog.log[0]));
 
-    char (&dest)[NUM_LOG_COLS + 1 /* NT */]  = prog.log[NUM_LOG_ROWS - 1];
-    memset(dest, ' ', NUM_LOG_COLS);
+    ConsoleLine &dest = prog.log[NUM_LOG_ROWS - 1];
+    dest.type = ConsoleLineType_None;
+    memset(dest.text, ' ', NUM_LOG_COLS);
     size_t dest_idx = 0;
 
     const auto PushChar = [&](char c)
     {
         if (dest_idx < NUM_LOG_COLS)
-            dest[dest_idx++] = c;
+            dest.text[dest_idx++] = c;
     };
 
-    size_t i = 0;
+    dbg();
 
-    if (is_gdb_console)
+    if (bufsize > 2 && 
+        (buf[0] == PREFIX_DEBUG_LOG ||
+         buf[0] == PREFIX_TARGET_LOG ||
+         buf[0] == PREFIX_CONSOLE_LOG ) &&
+        buf[1] == '\"')
     {
-        // console output is format ~"text text text"\n
+        if (buf[0] == PREFIX_DEBUG_LOG)
+            dest.type = ConsoleLineType_UserInput;
+
+        // console record, format ~"text text text"\n
         // skip over the beginning/ending characters
-        i += 2;
-        rawsize = (rawsize > 2) ? rawsize - 2 : 0;
-    }
+        size_t i = 2;
+        bufsize -= 2;
 
-    for (; i < rawsize; i++)
-    {
-        char c = raw[i];
-        char n = (i + 1 < rawsize) ? raw[i + 1] : '\0';
-
-        if (c == '\\' && is_gdb_console)
+        for (; i < bufsize; i++)
         {
-            switch (n)
+            char c = buf[i];
+            char n = (i + 1 < bufsize) ? buf[i + 1] : '\0';
+
+            if (c == '\\')
             {
-                case 't': 
-                    for (size_t t = 0; t < 2; t++)
-                        PushChar(' ');
-                    break;
-                case '\\':
-                case '\"':
-                    PushChar(n);
-                    break;
-                default:
-                    break;
-            }
+                switch (n)
+                {
+                    case 't': 
+                        for (size_t t = 0; t < 2; t++)
+                            PushChar(' ');
+                        break;
+                    case '\\':
+                    case '\"':
+                        PushChar(n);
+                        break;
+                    default:
+                        break;
+                }
 
-            i++; // skip over the evaluated literal char
-        }
-        else
-        {
-            PushChar(raw[i]);
+                i++; // skip over the evaluated literal char
+            }
+            else
+            {
+                PushChar(buf[i]);
+            }
         }
     }
+    else
+    {
+        // text that isn't a log record ex: shell ls
+        memcpy(dest.text, buf, GetMin(bufsize, NUM_LOG_COLS));
+    }
 
-    dest[NUM_LOG_COLS] = '\0';
+    size_t nt_index = GetMin(bufsize - 1, NUM_LOG_COLS);
+    dest.text[nt_index] = '\0';
+    prog.log_scroll_to_bottom = true;
 }
 
 VarObj CreateVarObj(String name, String value = "")
@@ -2012,9 +2027,10 @@ void Draw(GLFWwindow *window)
     //
     {
 
+        ImVec2 control_subwindow_size = ImVec2(400, 200);
         ImGui::SetNextWindowBgAlpha(1.0);   // @Imgui: bug where GetStyleColor doesn't respect window opacity
-        ImGui::SetNextWindowPos( { SOURCE_WIDTH, 0 } );
-        ImGui::SetNextWindowSize({ WINDOW_WIDTH - SOURCE_WIDTH, WINDOW_HEIGHT });
+        ImGui::SetNextWindowPos( ImVec2(SOURCE_WIDTH, 0) );
+        ImGui::SetNextWindowSize( ImVec2(WINDOW_WIDTH - SOURCE_WIDTH, WINDOW_HEIGHT) );
         ImGui::Begin("Control", NULL, window_flags);
 
 
@@ -2081,7 +2097,7 @@ void Draw(GLFWwindow *window)
         ImGuiDisabled(prog.running, clicked = ImGui::Button("</\\"));
         if (clicked)
         {
-            if (prog.frames.size() == 1)
+            if (prog.frame_idx == prog.frames.size() - 1)
             {
                 // GDB error in top frame: "finish" not meaningful in the outermost frame.
                 // emulate visual studios by just running the program  
@@ -2104,13 +2120,28 @@ void Draw(GLFWwindow *window)
         //R"(</\ = step out)";
         DrawHelpMarker(button_desc);
 
+        //
+        // console child window
+        //
+        ImGui::BeginChild("GDB console", control_subwindow_size, false,
+                          ImGuiWindowFlags_HorizontalScrollbar);
 
         for (int i = 0; i < NUM_LOG_ROWS; i++)
         {
-            ImGui::Text("%s", &prog.log[i][0]);
+            const char *prefix = (prog.log[i].type == ConsoleLineType_UserInput)
+                ? "(gdb) " : "";
+            ImGui::Text("%s%s", prefix, prog.log[i].text);
         }
 
-#define CMDSIZE sizeof(Program::input_cmd[0])
+        if (prog.log_scroll_to_bottom) 
+        {
+            ImGui::SetScrollHereY(1.0f);
+            prog.log_scroll_to_bottom = false;
+        }
+
+        ImGui::EndChild();
+
+        #define CMDSIZE sizeof(Program::input_cmd[0])
         static char input_command[CMDSIZE] = 
             "target remote localhost:12345";
 
@@ -2185,6 +2216,7 @@ void Draw(GLFWwindow *window)
             }
         }
 
+
         ImGuiTableFlags flags = ImGuiTableFlags_ScrollX |
                                 ImGuiTableFlags_ScrollY |
                                 ImGuiTableFlags_Borders;
@@ -2196,7 +2228,7 @@ void Draw(GLFWwindow *window)
         const int MIN_TABLE_WIDTH_CHARS = 22;
         table_pad[ MIN_TABLE_WIDTH_CHARS ] = '\0';
 
-        if (ImGui::BeginTable("Locals", 2, flags, {300, 200}))
+        if (ImGui::BeginTable("Locals", 2, flags, control_subwindow_size))
         {
             ImGui::TableSetupColumn("Name");
             ImGui::TableSetupColumn("Value");
@@ -2235,7 +2267,7 @@ void Draw(GLFWwindow *window)
             ImGui::EndTable();
         }
 
-        if (ImGui::BeginChild("Callstack", {300, 200}, true) )
+        if (ImGui::BeginChild("Callstack", control_subwindow_size, true) )
         {
             //ImGui::TableSetupColumn("Function");
             //ImGui::TableSetupColumn("Value");
@@ -2288,7 +2320,7 @@ void Draw(GLFWwindow *window)
             ImGui::EndChild();
         }
 
-        if (ImGui::BeginTable("Registers", 2, flags, {300, 200}))
+        if (ImGui::BeginTable("Registers", 2, flags, control_subwindow_size))
         {
             ImGui::TableSetupColumn("Register");
             ImGui::TableSetupColumn("Value");
@@ -2312,7 +2344,7 @@ void Draw(GLFWwindow *window)
             ImGui::EndTable();
         }
 
-        if (ImGui::BeginTable("Watch", 2, flags, {300, 200}))
+        if (ImGui::BeginTable("Watch", 2, flags, control_subwindow_size))
         {
 
             static size_t edit_var_name_idx = -1;
@@ -2635,6 +2667,8 @@ void Draw(GLFWwindow *window)
                 // query the disassembly for this function
                 GetFunctionDisassembly(prog.frames[ prog.frame_idx ]);
             }
+
+            ImGui::Checkbox("Show MI Records", &gui.show_machine_interpreter_commands);
         }
 
         ImGui::End();
@@ -2826,6 +2860,7 @@ int main(int argc, char **argv)
         };
         float lum = GetLuminance01( ImGui::GetStyleColorVec4(ImGuiCol_WindowBg) );
         IM_COL32_WIN_RED = ImColor(1.0f, 0.5f - 0.5f*lum, 0.5f - 0.5f*lum, 1.0f);
+        //IM_COL32_WIN_GDB_USER_INPUT = ImColor(1.0f, 0.8f, 0.5f - 0.5f*lum);
 
         // defaults are too damn bright!
         ImVec4 hdr = ImGui::GetStyleColorVec4(ImGuiCol_Header);
