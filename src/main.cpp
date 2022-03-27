@@ -859,12 +859,13 @@ bool RecurseCheckChanged(VarObj &this_var, size_t this_parent_idx,
                          const VarObj &last_var, size_t last_parent_idx)
 {
     bool changed = false;
-    RecordAtom &this_parent = this_var.expr.atoms[ this_parent_idx ];
-    const RecordAtom &last_parent = last_var.expr.atoms[ last_parent_idx ];
     Assert((this_parent_idx < this_var.expr.atoms.size()) && 
            (last_parent_idx < last_var.expr.atoms.size()));
-    if (this_parent.type != Atom_Struct && this_parent.type != Atom_Array)
-        return true;
+
+    RecordAtom &this_parent = this_var.expr.atoms[ this_parent_idx ];
+    const RecordAtom &last_parent = last_var.expr.atoms[ last_parent_idx ];
+    Assert( (this_parent.type == Atom_Struct || this_parent.type == Atom_Array) &&
+            (this_parent.type == last_parent.type) );
 
     Assert(this_parent.value.length == last_parent.value.length);
     size_t t_idx = this_parent.value.index;
@@ -912,15 +913,22 @@ bool RecurseCheckChanged(VarObj &this_var, size_t this_parent_idx,
 
 void CheckIfChanged(VarObj &this_var, const VarObj &last_var)
 {
-    if (last_var.value[0] == '{')
+    bool this_agg = this_var.value[0] == '{';
+    bool last_agg = last_var.value[0] == '{';
+    if (this_agg && last_agg)
     {
         // aggregate, go through each child and check if it changed
-        dbg();
         RecurseCheckChanged(this_var, 0, last_var, 0);
+    }
+    else if (!this_agg && !last_agg)
+    {
+        this_var.changed = (this_var.value != last_var.value);
     }
     else
     {
-        this_var.changed = (this_var.value != last_var.value);
+        this_var.changed = true;
+        for (size_t i = 0; i < this_var.expr_changed.size(); i++)
+            this_var.expr_changed[i] = true;
     }
 }
 
@@ -948,8 +956,9 @@ void QueryWatchlist()
         String cmd = StringPrintf("-data-evaluate-expression --frame %zu --thread 1 \"%s\"", 
                                   prog.frame_idx, expr.c_str());
 
+        dbg();
         GDB_SendBlocking(cmd.c_str(), rec);
-        VarObj incoming = CreateVarObj("incoming", GDB_ExtractValue("value", rec));
+        VarObj incoming = CreateVarObj("expression", GDB_ExtractValue("value", rec));
         CheckIfChanged(incoming, iter);
         iter.value = incoming.value;
         iter.expr = incoming.expr;
@@ -1098,6 +1107,7 @@ void RecurseExpressionTreeNodes(const VarObj &var, size_t atom_idx,
     const Record &src = var.expr;
     const RecordAtom &parent = src.atoms[atom_idx];
     Assert(parent.type == Atom_Struct || parent.type == Atom_Array);
+    Assert(parent.value.length > 0);
     if (parent.name.length != 0)
     {
         tsnprintf(tmpbuf, "%.*s##%zu", (int)parent.name.length, 
@@ -1111,12 +1121,63 @@ void RecurseExpressionTreeNodes(const VarObj &var, size_t atom_idx,
     bool close_after = false;
     ImGui::TableNextRow();
     ImGui::TableNextColumn();
-    if (ImGui::TreeNode(tmpbuf))
+    bool tree_node_clicked = ImGui::TreeNode(tmpbuf);
+
+    // recurse aggregates until first/last string positions
+    size_t string_start_idx = 0;
+    size_t string_end_idx = 0;
+    size_t iter_idx;
+
+    // get preview string start
+    iter_idx = atom_idx;
+    while (true)
+    {
+        const RecordAtom &iter = src.atoms[iter_idx];
+        if (iter.type == Atom_Struct || iter.type == Atom_Array)
+        {
+            iter_idx = iter.value.index;
+        }
+        else if (iter.type == Atom_String)
+        {
+            string_start_idx = (iter.name.index != 0)
+                ? iter.name.index : iter.value.index;
+            break;
+        }
+    }
+
+    // get preview string end
+    iter_idx = atom_idx;
+    while (true)
+    {
+        const RecordAtom &iter = src.atoms[iter_idx];
+        if (iter.type == Atom_Struct || iter.type == Atom_Array)
+        {
+            iter_idx = iter.value.index + iter.value.length - 1;
+        }
+        else if (iter.type == Atom_String)
+        {
+            string_end_idx = iter.value.index + iter.value.length;
+            break;
+        }
+    }
+
+    Assert(string_end_idx > string_start_idx && 
+           string_end_idx < src.buf.size());
+
+    // set the right column value text of the aggregate tree node
+    size_t preview_count = GetMin(string_end_idx - string_start_idx, 40);
+    ImGui::TableNextColumn();
+    ImColor preview_color = (var.expr_changed[atom_idx])
+        ? IM_COL32_WIN_RED
+        : ImGui::GetStyleColorVec4(ImGuiCol_Text);
+    ImGui::TextColored(preview_color, "%.*s", (int)preview_count,
+                       &src.buf[ string_start_idx ]);
+
+    if (tree_node_clicked)
     {
         if (ImGui::IsItemClicked(ImGuiMouseButton_Right))
             close_after = true;
 
-        ImGui::TableNextColumn();
         size_t i = parent.value.index;
         size_t end = i + parent.value.length;
         size_t array_index = 0;
@@ -1285,6 +1346,7 @@ void Draw(GLFWwindow *window)
 
                 if ( (NULL != strstr(reason.c_str(), "exited")) )
                 {
+                    async_stopped = false;
                     prog.started = false;
                     prog.frames.clear();
                     prog.local_vars.clear();
@@ -1374,7 +1436,8 @@ void Draw(GLFWwindow *window)
         }
 
         // get local variables for this stack frame
-        // TODO: not actually GDB variable objects, problems with aggregates displaying updates
+        // prog.local_vars not actually GDB variable objects,
+        // problems with aggregates displaying updates
 
         GDB_SendBlocking("-stack-list-variables --all-values", rec);
         for (VarObj &local : prog.local_vars) local.changed = false;
@@ -1620,10 +1683,10 @@ void Draw(GLFWwindow *window)
                 {
                     String &line = file.lines[i];
 
-                    bool is_set = false;
+                    bool is_breakpoint_set = false;
                     for (Breakpoint &iter : prog.breakpoints)
                         if (iter.line == i && iter.file_idx == frame.file_idx)
-                            is_set = true;
+                            is_breakpoint_set = true;
 
                     // start radio button style
                     ImColor window_bg_color = ImGui::GetStyleColorVec4(ImGuiCol_WindowBg);
@@ -1650,10 +1713,10 @@ void Draw(GLFWwindow *window)
                                           bkpt_active_color.Value);        
 
                     tsnprintf(tmpbuf, "##bkpt%d", (int)i); 
-                    if (ImGui::RadioButton(tmpbuf, is_set))
+                    if (ImGui::RadioButton(tmpbuf, is_breakpoint_set))
                     {
                         // dispatch command to set breakpoint
-                        if (is_set)
+                        if (is_breakpoint_set)
                         {
                             for (size_t b = 0; b < prog.breakpoints.size(); b++)
                             {
@@ -1845,17 +1908,17 @@ void Draw(GLFWwindow *window)
                 }
 
                 // scroll with up/down arrow key
-                float line_height = ImGui::GetScrollMaxY() / (float)file.lines.size();
-                float scroll_y = ImGui::GetScrollY();
+                //float line_height = ImGui::GetScrollMaxY() / (float)file.lines.size();
+                //float scroll_y = ImGui::GetScrollY();
 
-                if (glfwGetKey(window,GLFW_KEY_UP) == GLFW_PRESS)
-                {
-                    ImGui::SetScrollY(scroll_y - line_height);
-                }
-                else if (glfwGetKey(window,GLFW_KEY_DOWN) == GLFW_PRESS)
-                {
-                    ImGui::SetScrollY(scroll_y + line_height);
-                }
+                //if (glfwGetKey(window,GLFW_KEY_UP) == GLFW_PRESS)
+                //{
+                //    ImGui::SetScrollY(scroll_y - line_height);
+                //}
+                //else if (glfwGetKey(window,GLFW_KEY_DOWN) == GLFW_PRESS)
+                //{
+                //    ImGui::SetScrollY(scroll_y + line_height);
+                //}
             }
             else 
             {
@@ -1892,6 +1955,8 @@ void Draw(GLFWwindow *window)
                 size_t end_idx = GetMin(start_idx + perscreen, gui.line_disasm.size());
                 if (gui.line_disasm.size() > perscreen)
                 {
+                    // set the proper scroll size by setting the cursor position
+                    // to the last line
                     ImGui::SetCursorPosY(gui.line_disasm.size() * lineheight); 
                 }
 
@@ -1927,12 +1992,12 @@ void Draw(GLFWwindow *window)
                         inst_left--;
                     }
 
-                    bool is_set = false;
+                    bool is_breakpoint_set = false;
                     for (Breakpoint &bkpt : prog.breakpoints)
                     {
                         if (bkpt.addr == line.addr && 
                             bkpt.file_idx == frame.file_idx)
-                            is_set = true;
+                            is_breakpoint_set = true;
                     }
 
                     // start radio button style
@@ -1960,10 +2025,10 @@ void Draw(GLFWwindow *window)
                                           bkpt_active_color.Value);        
 
                     tsnprintf(tmpbuf, "##bkpt%d", (int)i); 
-                    if (ImGui::RadioButton(tmpbuf, is_set))
+                    if (ImGui::RadioButton(tmpbuf, is_breakpoint_set))
                     {
                         // dispatch command to set breakpoint
-                        if (is_set)
+                        if (is_breakpoint_set)
                         {
                             for (size_t b = 0; b < prog.breakpoints.size(); b++)
                             {
@@ -2394,6 +2459,7 @@ void Draw(GLFWwindow *window)
                                          ImGuiInputTextFlags_EnterReturnsTrue,
                                          NULL, NULL))
                     {
+                        iter = {};
                         iter.name = editwatch;
                         QueryWatchlist();
                         memset(editwatch, 0, sizeof(editwatch));
@@ -2429,11 +2495,13 @@ void Draw(GLFWwindow *window)
                             {
                                 deleted = true;
                             } 
+
                         }
 
                         if (!active || deleted || gui.IsKeyClicked(GLFW_KEY_ESCAPE))
                         {
                             edit_var_name_idx = -1;
+                            continue;
                         }
                     }
 
@@ -2466,6 +2534,12 @@ void Draw(GLFWwindow *window)
                     ? IM_COL32_WIN_RED
                     : ImGui::GetStyleColorVec4(ImGuiCol_Text);
                 ImGui::TextColored(color, "%s", iter.value.c_str());
+
+                if (iter.expr.atoms.size() > 0)
+                {
+                    RecurseExpressionTreeNodes(iter, 0);
+                }
+
             }
 
             max_name_length = this_max_name_length;

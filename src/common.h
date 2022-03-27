@@ -445,7 +445,7 @@ int GDB_SendBlocking(const char *cmd, bool remove_after = true);
 // send a message to GDB, wait for a result record, then retrieve it
 int GDB_SendBlocking(const char *cmd, Record &rec);
 
-// extract a MI record
+// extract a MI record from a newline terminated line
 bool GDB_ParseRecord(char *buf, size_t bufsize, ParseRecordContext &ctx);
 
 void GDB_GrabBlockData();
