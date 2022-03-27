@@ -3,8 +3,7 @@ GDB frontend made with Dear Imgui
 
 ![image](https://user-images.githubusercontent.com/25188464/160298425-a5267c22-89fc-4d60-b93a-cd6dd9098924.png)
 
-*Tugboat captain is the GDB archer fish logo https://sourceware.org/gdb/mascot/*
-
+*Tugboat captain is the GDB archer fish logo https://sourceware.org/gdb/mascot/*</br>
 *Jamie Guinan's original archer fish logo and the vector versions by Andreas Arnez are licensed under CC BY-SA 3.0 US.*
 
 
