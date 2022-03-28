@@ -7,8 +7,7 @@ GDB frontend made with Dear Imgui
 *Jamie Guinan's original archer fish logo and the vector versions by Andreas Arnez are licensed under CC BY-SA 3.0 US.*
 *https://creativecommons.org/licenses/by-sa/3.0/us/*
 
-
-<img width="838" alt="preview" src="https://user-images.githubusercontent.com/25188464/155052886-23e46ed7-94f8-460e-8116-17953d54efee.png">
+![image](https://user-images.githubusercontent.com/25188464/160457519-15b65af3-0046-4c78-8fda-0b56a3ae7664.png)
 
 # Debug Tutorial
 Option 1:
