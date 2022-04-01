@@ -456,6 +456,7 @@ RecordAtomSequence GDB_RecurseEvaluation(ParseRecordContext &ctx)
     return sequence;
 }
 
+
 void GDB_PrintRecordAtom(const Record &rec, const RecordAtom &iter, 
                          int tab_level, FILE *out)
 {
@@ -807,6 +808,20 @@ void GDB_ReadELF(const char *elf_filename)
 
 int big_global_energy = 1;
 
+void IterateAtoms(Record &rec, RecordAtom &iter, AtomIterator *iterator, void *ctx)
+{
+    Assert(iter.type == Atom_Struct || iter.type == Atom_Array);
+    for (size_t i = 0; i < iter.value.length; i++)
+    {
+        RecordAtom &child = rec.atoms[iter.value.index + i];
+        iterator(rec, child, ctx);
+        if (child.type == Atom_Struct || child.type == Atom_Array)
+        {
+            IterateAtoms(rec, child, iterator, ctx);
+        }
+    }
+}
+
 bool GDB_ParseRecord(char *buf, size_t bufsize, ParseRecordContext &ctx)
 {
     // parse async/sync record
@@ -1093,8 +1108,8 @@ static void GDB_ProcessBlock(char *block, size_t blocksize)
         WriteToConsoleBuffer(start, linesize);
 
         // get the record type
-        char c = start[0];
-        if (c == PREFIX_RESULT || c == PREFIX_ASYNC0 || c == PREFIX_ASYNC1) 
+        char prefix = start[0];
+        if (prefix == PREFIX_RESULT || prefix == PREFIX_ASYNC0 || prefix == PREFIX_ASYNC1) 
         {
             static ParseRecordContext ctx;
             if ( GDB_ParseRecord(start, linesize, ctx) )
@@ -1131,6 +1146,32 @@ static void GDB_ProcessBlock(char *block, size_t blocksize)
                 rec.buf.resize(linesize);
                 rec.id = this_record_id;
                 memcpy(const_cast<char*>(rec.buf.data()), start, linesize);
+
+                // resolve literal within strings
+                // ignore those of name "value" because these get handled in GDB_RecurseEvaluation
+                const auto RemoveStringBackslashes = [](Record &record, RecordAtom &iter, void * /* user context */)
+                {
+                    if (iter.type == Atom_String)
+                    {
+                        size_t new_length = iter.value.length;
+                        for (size_t i = 0; i < iter.value.length; i++)
+                        {
+                            size_t buf_idx = iter.value.index + i;
+                            char c = record.buf[buf_idx];
+                            char n = (i + 1 < iter.value.length) ? record.buf[buf_idx + 1] : '\0';
+                            if (c == '\\' && (n == '\\' || n == '\"'))
+                            {
+                                //record.buf[iter.value.index + new_length - 1] = ' ';
+                                memmove(&record.buf[buf_idx], &record.buf[buf_idx + 1], iter.value.length - (i + 1));
+                                new_length--;
+                            }
+                        }
+                        iter.value.length = new_length;
+                    }      
+                };
+
+                if (rec.atoms.size() > 1)
+                    IterateAtoms(rec, rec.atoms[0], RemoveStringBackslashes, NULL);
 
                 // @Debug
                 //GDB_PrintRecordAtom(rec, rec.atoms[0], 0);

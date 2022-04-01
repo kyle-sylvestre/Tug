@@ -467,4 +467,7 @@ void GDB_GrabBlockData();
 
 RecordAtomSequence GDB_RecurseEvaluation(ParseRecordContext &ctx);
 
+typedef void AtomIterator(Record &rec, RecordAtom &iter, void *ctx);
+void IterateAtoms(Record &rec, RecordAtom &iter, AtomIterator *iterator, void *ctx);
+
 void GDB_PrintRecordAtom(const Record &rec, const RecordAtom &iter, int tab_level, FILE *out = stdout);

@@ -868,6 +868,31 @@ VarObj CreateVarObj(String name, String value = "")
             result.expr_changed.resize( ctx.num_end_atoms );
 
             //GDB_PrintRecordAtom(result.expr, result.expr.atoms[0], 0, out);
+            // remove format backslashes in atom strings
+            // ignore those of name "value" because these get handled in GDB_RecurseEvaluation
+            const auto RemoveStringBackslashes = [](Record &record, RecordAtom &iter, void * /* user context */)
+            {
+                if (iter.type == Atom_String)
+                {
+                    size_t new_length = iter.value.length;
+                    for (size_t i = 0; i < iter.value.length; i++)
+                    {
+                        size_t buf_idx = iter.value.index + i;
+                        char c = record.buf[buf_idx];
+                        char n = (i + 1 < iter.value.length) ? record.buf[buf_idx + 1] : '\0';
+                        if (c == '\\' && (n == '\\' || n == '\"'))
+                        {
+                            //record.buf[iter.value.index + new_length - 1] = ' ';
+                            memmove(&record.buf[buf_idx], &record.buf[buf_idx + 1], iter.value.length - (i + 1));
+                            new_length--;
+                        }
+                    }
+                    iter.value.length = new_length;
+                }      
+            };
+
+            if (result.expr.atoms.size() > 1)
+                IterateAtoms(result.expr, result.expr.atoms[0], RemoveStringBackslashes, NULL);
         }
     }
 
@@ -886,43 +911,56 @@ bool RecurseCheckChanged(VarObj &this_var, size_t this_parent_idx,
     Assert( (this_parent.type == Atom_Struct || this_parent.type == Atom_Array) &&
             (this_parent.type == last_parent.type) );
 
-    Assert(this_parent.value.length == last_parent.value.length);
-    size_t t_idx = this_parent.value.index;
-    size_t t_end = t_idx + this_parent.value.length;
-    size_t o_idx = last_parent.value.index;
-    size_t o_end = o_idx + last_parent.value.length;
-
-    for (; t_idx < t_end && o_idx < o_end; t_idx++, o_idx++)
+    if (this_parent.value.length == last_parent.value.length)
     {
-        const RecordAtom &this_child = this_var.expr.atoms[t_idx];
-        const RecordAtom &last_child = last_var.expr.atoms[o_idx];
-        if (this_child.type == Atom_Struct || this_child.type == Atom_Array)
+        size_t t_idx = this_parent.value.index;
+        size_t t_end = t_idx + this_parent.value.length;
+        size_t o_idx = last_parent.value.index;
+        size_t o_end = o_idx + last_parent.value.length;
+
+        for (; t_idx < t_end && o_idx < o_end; t_idx++, o_idx++)
         {
-            changed |= RecurseCheckChanged(this_var, t_idx, 
-                                           last_var, o_idx);
+            const RecordAtom &this_child = this_var.expr.atoms[t_idx];
+            const RecordAtom &last_child = last_var.expr.atoms[o_idx];
+            if (this_child.type == Atom_Struct || this_child.type == Atom_Array)
+            {
+                changed |= RecurseCheckChanged(this_var, t_idx, 
+                                               last_var, o_idx);
+            }
+            else if (this_child.type == Atom_String)
+            {
+                const char *this_buf = this_var.expr.buf.c_str();
+                const char *last_buf = last_var.expr.buf.c_str();
+
+                Assert(this_child.value.index + this_child.value.length <=
+                       this_var.expr.buf.size());
+                Assert(last_child.value.index + last_child.value.length <=
+                       last_var.expr.buf.size());
+
+                const char *this_text = this_buf + this_child.value.index;
+                const char *last_text = last_buf + last_child.value.index;
+
+                this_var.expr_changed[t_idx] 
+                    = (this_child.value.length != last_child.value.length) ||
+                    (0 != memcmp(this_text, last_text, this_child.value.length));
+
+                changed |= this_var.expr_changed[t_idx];
+            }
+            else
+            {
+                Assert(false);
+            }
         }
-        else if (this_child.type == Atom_String)
+    }
+    else
+    {
+        // atom array/struct changed its length, set all to changed
+        changed = true;
+        size_t t_idx = this_parent.value.index;
+        size_t t_end = t_idx + this_parent.value.length;
+        for (size_t i = t_idx; i < t_end; i++)
         {
-            const char *this_buf = this_var.expr.buf.c_str();
-            const char *last_buf = last_var.expr.buf.c_str();
-
-            Assert(this_child.value.index + this_child.value.length <=
-                   this_var.expr.buf.size());
-            Assert(last_child.value.index + last_child.value.length <=
-                   last_var.expr.buf.size());
-
-            const char *this_text = this_buf + this_child.value.index;
-            const char *last_text = last_buf + last_child.value.index;
-
-            this_var.expr_changed[t_idx] 
-                = (this_child.value.length != last_child.value.length) ||
-                  (0 != memcmp(this_text, last_text, this_child.value.length));
-
-            changed |= this_var.expr_changed[t_idx];
-        }
-        else
-        {
-            Assert(false);
+            this_var.expr_changed[i] = true;
         }
     }
 
@@ -937,7 +975,7 @@ void CheckIfChanged(VarObj &this_var, const VarObj &last_var)
     if (this_agg && last_agg)
     {
         // aggregate, go through each child and check if it changed
-        RecurseCheckChanged(this_var, 0, last_var, 0);
+        this_var.changed = RecurseCheckChanged(this_var, 0, last_var, 0);
     }
     else if (!this_agg && !last_agg)
     {
@@ -977,10 +1015,15 @@ void QueryWatchlist()
 
         if (GDB_SendBlocking(cmd.c_str(), rec))
         {
-            VarObj incoming = CreateVarObj("expression", GDB_ExtractValue("value", rec));
+            uint32_t counter = 0;
+            String exprname = StringPrintf("expression##%u", counter);
+            counter++;
+
+            VarObj incoming = CreateVarObj(exprname, GDB_ExtractValue("value", rec));
             CheckIfChanged(incoming, iter);
             iter.value = incoming.value;
             iter.expr = incoming.expr;
+            iter.changed = incoming.changed;
             iter.expr_changed = incoming.expr_changed;
         }
     }
@@ -2277,6 +2320,60 @@ void Draw(GLFWwindow * /* window */)
             return 0;
         };
 
+        static Vector<String> phrases;
+        static size_t phrase_idx;
+        static String query_phrase;
+
+        if (query_phrase != input_command)
+        {
+            phrase_idx = 0;
+            phrases.clear();
+            query_phrase = input_command;
+        }
+
+        if (gui.IsKeyClicked(GLFW_KEY_TAB) && ImGui::GetIO().WantCaptureKeyboard)
+        {
+            bool shift_down = ( 0 != (gui.Key(GLFW_KEY_TAB).mods & GLFW_MOD_SHIFT) );
+            if (phrases.size() == 0)
+            {
+                String cmd = StringPrintf("-complete \"%s\"", input_command);
+                if (GDB_SendBlocking(cmd.c_str(), rec))
+                {
+                    phrase_idx = 0;
+                    phrases.clear();
+                    const RecordAtom *matches = GDB_ExtractAtom("matches", rec);
+                    for (const RecordAtom &match : GDB_IterChild(rec, matches))
+                    {
+                        phrases.push_back( GetAtomString(match.value, rec) );
+                    }
+                }
+            }
+            else
+            {
+                if (phrase_idx == phrases.size() - 1 && !shift_down)
+                    phrase_idx = 0;
+                else if (phrase_idx == 0 && shift_down)
+                    phrase_idx = phrases.size() - 1;
+                else 
+                    phrase_idx += (shift_down) ? -1 : 1;
+            }
+        }
+
+        if (gui.IsKeyClicked(GLFW_KEY_ESCAPE))
+        {
+            phrase_idx = 0;
+            phrases.clear();
+        }
+
+        if (phrases.size() > 0)
+        {
+            ImGui::BeginTooltip();
+            for (size_t i = 0; i < phrases.size(); i++)
+            {
+                ImGui::Selectable(phrases[i].c_str(), i == phrase_idx);
+            }
+            ImGui::EndTooltip();
+        }
 
         // TODO: syncing up gui disabled buttons when user inputs step next continue
         const float CONSOLE_BAR_HEIGHT = 30.0f;
@@ -2290,11 +2387,18 @@ void Draw(GLFWwindow * /* window */)
         {
             // retain focus on the input line
             ImGui::SetKeyboardFocusHere(-1);
-
+            
             // emulate GDB, repeat last executed command upon hitting
             // enter on an empty line
             bool use_last_command = (input_command[0] == '\0' && prog.num_input_cmds > 0);
             const char *send_command = (use_last_command) ? &prog.input_cmd[0][0] : input_command;
+
+            if (phrase_idx < phrases.size())
+            {
+                tsnprintf(input_command, "%s", phrases[phrase_idx].c_str());
+                phrase_idx = 0;
+                phrases.clear();
+            }
 
             const char *end = strchr(send_command, ' ');
             if (end == NULL) end = send_command + strlen(send_command);
