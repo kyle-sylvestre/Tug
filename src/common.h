@@ -437,7 +437,7 @@ inline String GetAtomString(Span s, const Record &rec)
 }
 
 // send a message to GDB, don't wait for result
-ssize_t GDB_Send(const char *cmd);
+bool GDB_Send(const char *cmd);
 
 // send a message to GDB, wait for a result record
 bool GDB_SendBlocking(const char *cmd, bool remove_after = true);

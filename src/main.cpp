@@ -960,7 +960,6 @@ void QueryWatchlist()
         String cmd = StringPrintf("-data-evaluate-expression --frame %zu --thread 1 \"%s\"", 
                                   prog.frame_idx, expr.c_str());
 
-        dbg();
         if (GDB_SendBlocking(cmd.c_str(), rec))
         {
             VarObj incoming = CreateVarObj("expression", GDB_ExtractValue("value", rec));
@@ -1363,6 +1362,10 @@ void Draw(GLFWwindow * /* window */)
                     prog.frames.clear();
                     prog.local_vars.clear();
                 }
+                else
+                {
+                    prog.started = true;
+                }
             }
         }
     }
@@ -1457,15 +1460,18 @@ void Draw(GLFWwindow * /* window */)
         for (VarObj &local : prog.local_vars) local.changed = false;
         
         const RecordAtom *vars = GDB_ExtractAtom("variables", rec);
+        size_t start_locals_length = prog.local_vars.size();
+        Vector<bool> var_found( start_locals_length );
+
         for (const RecordAtom &child : GDB_IterChild(rec, vars))
         {
             VarObj incoming = CreateVarObj(GDB_ExtractValue("name", child, rec),
                                            GDB_ExtractValue("value", child, rec));
 
             bool found = false;
-            for (size_t i = prog.local_vars.size(); i > 0; i--)
+            for (size_t i = start_locals_length - 1; i < start_locals_length; i--)
             {
-                VarObj &local = prog.local_vars[i - 1];
+                VarObj &local = prog.local_vars[i];
                 if (local.name == incoming.name)
                 {
                     // @Hack: clean this up
@@ -1475,12 +1481,21 @@ void Draw(GLFWwindow * /* window */)
                     local.expr_changed = incoming.expr_changed;
                     local.changed = incoming.changed;
                     found = true;
+                    var_found[i] = true;
                     break;
                 }
             }
 
             if (!found)
                 prog.local_vars.emplace_back(incoming);
+        }
+
+        // remove any locals that went out of scope
+        for (size_t i = var_found.size() - 1; i < var_found.size(); i--)
+        {
+            if (!var_found[i])
+                prog.local_vars.erase(prog.local_vars.begin() + i,
+                                      prog.local_vars.begin() + i + 1);
         }
 
         // update global values, just registers right now
@@ -1494,8 +1509,8 @@ void Draw(GLFWwindow * /* window */)
                                            GDB_ExtractValue("value", iter, rec));
 
             const char *srcname = incoming.name.c_str();
-            const char *namestart = NULL;
-            if ( (namestart = strstr(srcname, GLOBAL_NAME_PREFIX)) )
+            const char *namestart = strstr(srcname, GLOBAL_NAME_PREFIX);
+            if (srcname == namestart)
             {
                 // check for global variable change 
                 namestart += strlen(GLOBAL_NAME_PREFIX);
@@ -2141,17 +2156,13 @@ void Draw(GLFWwindow * /* window */)
 
         // start
         ImGui::SameLine();
-        bool vs_continue = gui.IsKeyClicked(GLFW_KEY_F5);
-        ImGuiDisabled(prog.running, clicked = ImGui::Button("|>") || vs_continue);
-        if (clicked)
+        ImGuiDisabled(prog.running, clicked = ImGui::Button("|>"));
+        if (clicked || (!prog.running && gui.IsKeyClicked(GLFW_KEY_F5)))
         {
             if (!prog.started)
             {
-                if (gdb.has_exec_run_start)
-                {
-                    if (GDB_SendBlocking("-exec-run --start"))
-                        prog.started = true;
-                }
+                const char *cmd = (gdb.has_exec_run_start) ? "-exec-run --start" : "-exec-run";
+                GDB_SendBlocking(cmd);
             }
             else
             {
@@ -2265,16 +2276,54 @@ void Draw(GLFWwindow * /* window */)
             // retain focus on the input line
             ImGui::SetKeyboardFocusHere(-1);
 
-            if (input_command[0] == '\0' && prog.num_input_cmds > 0)
+            // emulate GDB, repeat last executed command upon hitting
+            // enter on an empty line
+            bool use_last_command = (input_command[0] == '\0' && prog.num_input_cmds > 0);
+            const char *send_command = (use_last_command) ? &prog.input_cmd[0][0] : input_command;
+
+            const char *end = strchr(send_command, ' ');
+            if (end == NULL) end = send_command + strlen(send_command);
+            String keyword(send_command, end - send_command);
+            String modified;
+
+            // intercept commands that resume execution
+            if (keyword == "step" || keyword == "s")
             {
-                // emulate GDB, repeat last executed command upon hitting
-                // enter on an empty line
-                GDB_Send(&prog.input_cmd[0][0]);
+                modified = StringPrintf("-exec-step %s", end);
+            }
+            else if (keyword == "next" || keyword == "n")
+            {
+                modified = StringPrintf("-exec-next %s", end);
+            }
+            else if (keyword == "continue" || keyword == "c" || keyword == "cont")
+            {
+                modified = "-exec-continue";
+            }
+            else if (keyword == "finish")
+            {
+                modified = "-exec-finish";
+            }
+            else if (keyword == "start" && gdb.has_exec_run_start)
+            {
+                modified = "-exec-run --start";
+            }
+            else if (keyword == "run")
+            {
+                modified = "-exec-run";
+            }
+
+            if (modified != "")
+            {
+                if (GDB_SendBlocking(modified.c_str(), false))
+                    prog.running = true;
             }
             else
             {
-                GDB_Send(input_command);
+                GDB_Send(send_command);
+            }
 
+            if (!use_last_command)
+            {
                 if (prog.num_input_cmds == NUM_USER_CMDS)
                 {
                     // hit end of list, end command gets popped

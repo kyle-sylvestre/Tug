@@ -877,32 +877,38 @@ bool GDB_ParseRecord(char *buf, size_t bufsize, ParseRecordContext &ctx)
     return !ctx.error;
 }
 
-ssize_t GDB_Send(const char *cmd)
+bool GDB_Send(const char *cmd)
 {
-    if (*cmd == '\0') return 0; // special case: don't send but dec semaphore
-
-    // write to GDB
-    size_t cmdsize = strlen(cmd);
+    bool result = false;
 
 #if defined(DEBUG)
     WriteToConsoleBuffer(cmd, cmdsize);
 #endif
 
-    ssize_t written = write(gdb.fd_out_write, cmd, cmdsize);
-    if (written != (ssize_t)cmdsize)
+    if (!prog.running || gdb.supports_async_execution)
     {
-        PrintErrorLibC("GDB_Send");
-    }
-    else
-    {
-        ssize_t newline_written = write(gdb.fd_out_write, "\n", 1);
-        if (newline_written != 1)
+        // write to GDB
+        size_t cmdsize = strlen(cmd);
+        ssize_t written = write(gdb.fd_out_write, cmd, cmdsize);
+        if (written != (ssize_t)cmdsize)
         {
             PrintErrorLibC("GDB_Send");
         }
+        else
+        {
+            ssize_t newline_written = write(gdb.fd_out_write, "\n", 1);
+            if (newline_written != 1)
+            {
+                PrintErrorLibC("GDB_Send");
+            }
+            else
+            {
+                result = true;
+            }
+        }
     }
 
-    return written;
+    return result;
 }
 
 static size_t GDB_SendBlockingInternal(const char *cmd, bool remove_after)
@@ -910,11 +916,9 @@ static size_t GDB_SendBlockingInternal(const char *cmd, bool remove_after)
     uint32_t this_record_id = gdb.record_id++;
     char fullrecord[8 * 1024];
     tsnprintf(fullrecord, "%u%s", this_record_id, cmd);
-
     size_t result = BAD_INDEX;
-    ssize_t num_sent = GDB_Send(fullrecord);
 
-    if (num_sent >= 0)
+    if (GDB_Send(fullrecord))
     {
         bool found = false;
         do
