@@ -251,8 +251,7 @@ RecordAtomSequence GDB_RecurseEvaluation(ParseRecordContext &ctx)
     {
         bool atom = false;
         if (ctx.i + 10 < ctx.bufsize &&
-            ctx.buf[ ctx.i + 10 ] == ' ' &&
-            ctx.buf[ ctx.i + 2 ] == '<')
+            0 == strcmp(&ctx.buf[ ctx.i + 2 ], "<repeats "))
         {
             // TODO: make run length atom that precedes an atom array/value with
             // a <repeats XXX times> string appended to it
@@ -263,12 +262,19 @@ RecordAtomSequence GDB_RecurseEvaluation(ParseRecordContext &ctx)
             atom = true;
             rle_num_repeat = 0;
             size_t dig_idx = ctx.i + 10 + 1;
-            for (;
-                 dig_idx < ctx.bufsize && ctx.buf[ dig_idx ] >= '0' && ctx.buf[ dig_idx ] <= '9';
-                 dig_idx++)
+            for (; dig_idx < ctx.bufsize; dig_idx++)
             {
-                rle_num_repeat *= 10;
-                rle_num_repeat += (ctx.buf[ dig_idx ] - '0');
+                char c = ctx.buf[ dig_idx ];
+                if (c >= '0' && c <= '9')
+                {
+                    rle_num_repeat *= 10;
+                    rle_num_repeat += (c - '0');
+                }
+                else 
+                {
+                    Assert(c == ' ');
+                    break;
+                }
             }
 
             // skip over " times>"
@@ -899,13 +905,13 @@ ssize_t GDB_Send(const char *cmd)
     return written;
 }
 
-int GDB_SendBlocking(const char *cmd, bool remove_after)
+static size_t GDB_SendBlockingInternal(const char *cmd, bool remove_after)
 {
     uint32_t this_record_id = gdb.record_id++;
     char fullrecord[8 * 1024];
     tsnprintf(fullrecord, "%u%s", this_record_id, cmd);
 
-    int rc;
+    size_t result = BAD_INDEX;
     ssize_t num_sent = GDB_Send(fullrecord);
 
     if (num_sent >= 0)
@@ -915,9 +921,9 @@ int GDB_SendBlocking(const char *cmd, bool remove_after)
         {
             timespec wait_for;
             clock_gettime(CLOCK_REALTIME, &wait_for);
-            wait_for.tv_sec += 1;
+            wait_for.tv_sec += 3;
 
-            rc = sem_timedwait(gdb.recv_block, &wait_for);
+            int rc = sem_timedwait(gdb.recv_block, &wait_for);
             if (rc < 0)
             {
                 if (errno == ETIMEDOUT)
@@ -960,6 +966,7 @@ int GDB_SendBlocking(const char *cmd, bool remove_after)
                                     },
                                     "^done,value=\"<optimized out>\""
                                 };
+
                                 prog.num_recs++;
                                 RecordHolder &last = prog.read_recs[ prog.num_recs - 1 ];
                                 last.rec = OPTIMIZED_OUT_FIX;
@@ -972,13 +979,13 @@ int GDB_SendBlocking(const char *cmd, bool remove_after)
                                 errmsg = "&\"GDB MI Error: " + errmsg + "\\n\"\n";
                                 WriteToConsoleBuffer(errmsg.data(), errmsg.size());
                                 iter.parsed = true;
-                                return -1;
+                                return BAD_INDEX;
                             }
                         }
                         else
                         {
                             iter.parsed = remove_after;
-                            rc = i;
+                            result = i;
                             found = true;
                         }
                     }
@@ -988,24 +995,34 @@ int GDB_SendBlocking(const char *cmd, bool remove_after)
         } while (!found);
     }
 
-    return rc;
+    return result;
 }
 
-int GDB_SendBlocking(const char *cmd, Record &rec)
+bool GDB_SendBlocking(const char *cmd, bool remove_after)
+{
+    size_t index = GDB_SendBlockingInternal(cmd, remove_after);
+    return (index < prog.read_recs.size());
+}
+
+bool GDB_SendBlocking(const char *cmd, Record &rec)
 {
     // errno or result record index
-    int error_or_index = GDB_SendBlocking(cmd, false);
-    if (error_or_index < 0)
+    size_t index = GDB_SendBlockingInternal(cmd, false);
+    bool result;
+
+    if (index < prog.read_recs.size())
     {
-        rec = {};
+        rec = prog.read_recs[index].rec;
+        prog.read_recs[index].parsed = true;
+        result = true;
     }
     else
     {
-        rec = prog.read_recs[error_or_index].rec;
-        prog.read_recs[error_or_index].parsed = true;
+        rec = {};
+        result = false;
     }
 
-    return error_or_index;
+    return result;
 }
 
 static void GDB_ProcessBlock(char *block, size_t blocksize)

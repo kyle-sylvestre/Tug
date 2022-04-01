@@ -66,7 +66,7 @@ if ( !(cond) )\
 #endif
 
 // log errno and strerror, along with user error message
-#define PrintErrorLibC(msg) PrintErrorf("%s, errno(%d): %s", msg, errno, strerror(errno))
+#define PrintErrorLibC(msg) PrintErrorf("%s, errno(%d): %s\n", msg, errno, strerror(errno))
 
 // log user error message
 #define PrintError(str) PrintErrorf("%s", str)
@@ -440,10 +440,10 @@ inline String GetAtomString(Span s, const Record &rec)
 ssize_t GDB_Send(const char *cmd);
 
 // send a message to GDB, wait for a result record
-int GDB_SendBlocking(const char *cmd, bool remove_after = true);
+bool GDB_SendBlocking(const char *cmd, bool remove_after = true);
 
 // send a message to GDB, wait for a result record, then retrieve it
-int GDB_SendBlocking(const char *cmd, Record &rec);
+bool GDB_SendBlocking(const char *cmd, Record &rec);
 
 // extract a MI record from a newline terminated line
 bool GDB_ParseRecord(char *buf, size_t bufsize, ParseRecordContext &ctx);
