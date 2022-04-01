@@ -1075,14 +1075,14 @@ static void GDB_ProcessBlock(char *block, size_t blocksize)
         }
 
         size_t linesize = eol - start;
-        WriteToConsoleBuffer(start, eol - start);
+        WriteToConsoleBuffer(start, linesize);
 
         // get the record type
         char c = start[0];
         if (c == PREFIX_RESULT || c == PREFIX_ASYNC0 || c == PREFIX_ASYNC1) 
         {
             static ParseRecordContext ctx;
-            if ( GDB_ParseRecord(start, eol - start, ctx) )
+            if ( GDB_ParseRecord(start, linesize, ctx) )
             {
                 // search for unused block before adding new one
                 RecordHolder *out = NULL;
@@ -1113,9 +1113,9 @@ static void GDB_ProcessBlock(char *block, size_t blocksize)
 
                 Record &rec = out->rec;
                 rec.atoms = ctx.atoms;
-                rec.buf.resize(eol - start);
+                rec.buf.resize(linesize);
                 rec.id = this_record_id;
-                memcpy(const_cast<char*>(rec.buf.data()), start, eol - start);
+                memcpy(const_cast<char*>(rec.buf.data()), start, linesize);
 
                 // @Debug
                 //GDB_PrintRecordAtom(rec, rec.atoms[0], 0);
