@@ -24,15 +24,14 @@
 #include <imgui/imgui_internal.h>
 #include <imgui/imgui_impl_glfw.h>
 #include <imgui/imgui_impl_opengl2.h>
-#include <GLFW/glfw3.h>
-#include "imgui_file_window.h"
+#include <glfw/glfw3.h>
+#include <imgui_file_window.h>
 
 #define WINDOW_WIDTH 1280
 #define WINDOW_HEIGHT 640
 
 #define SOURCE_WIDTH 800
 #define SOURCE_HEIGHT 450
-
 
 // dynamic colors that change upon the brightness of the background
 ImVec4 IM_COL32_WIN_RED;
