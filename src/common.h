@@ -39,29 +39,49 @@
 #include <sys/time.h>
 #include <sys/stat.h>
 
-#include "utility.h"
+//
+// STL Switcheroo
+//
 
+extern "C" {
+    void *dlmalloc(size_t);
+    void dlfree(void*);
+}
 
-#ifdef _WIN32
+template <class T>
+struct DL_Allocator
+{
+    // the ugly stuff
+    typedef T value_type;
+    typedef char char_type;
 
-#include "win_elf.h"
-#pragma warning(disable:4996)   //disable lame _CRT_SECURE error (actually warning)
-#define Break __debugbreak
-typedef int pthread_mutex_t;
-typedef int pthread_cond_t;
-typedef int pthread_t;
-typedef int sem_t;
-typedef int pid_t;
-typedef intptr_t ssize_t;
+    DL_Allocator() noexcept {} //default ctor not required by C++ Standard Library
+    template<class U> DL_Allocator(const DL_Allocator<U>&) noexcept {}
+    template<class U> bool operator==(const DL_Allocator<U>&) const noexcept
+    {
+        return true;
+    }
+    template<class U> bool operator!=(const DL_Allocator<U>&) const noexcept
+    {
+        return false;
+    }
 
-#else
+    // the good stuff
+    T* allocate(const size_t n)
+    {
+        return (T *)dlmalloc(n * sizeof(T));
+    }
+    void deallocate(T* const p, size_t)
+    {
+        dlfree(p);
+    }
+};
 
-#include <elf.h>
-#define Break() asm("int $3")
+template <typename T>
+using Vector = std::vector<T, DL_Allocator<T>>;
 
-#endif
+using String = std::basic_string<char, std::char_traits<char>, DL_Allocator<char>>;
 
-#define PrintTrace() 
 #define ArrayCount(arr) (sizeof(arr) / sizeof(arr[0]))
 #define tsnprintf(buf, fmt, ...) snprintf(buf, sizeof(buf), fmt, ##__VA_ARGS__)
 #define DefaultInvalid default: Assert(false);
@@ -92,9 +112,6 @@ do {\
     Assert(0);\
     exit(0);\
 } while(0)
-
-#define Printf(fmt, ...) printf(fmt, ##__VA_ARGS__);
-#define Print(msg) Printf("%s", msg);
 
 #define NUM_LOG_ROWS 40
 #define NUM_LOG_COLS 128
