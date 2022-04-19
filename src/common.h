@@ -100,17 +100,13 @@ if ( !(cond) )\
 #define Assert(cond) (void)0;
 #endif
 
-// log errno and strerror, along with user error message
-#define PrintErrorLibC(msg) PrintErrorf("%s, errno(%d): %s\n", msg, errno, strerror(errno))
-
 // log user error message
 #define PrintError(str) PrintErrorf("%s", str)
 #define PrintErrorf(fmt, ...)\
 do {\
-    fprintf(stderr, "(%s : %d : %s) ", __FILE__, __LINE__, __FUNCTION__);\
-    fprintf(stderr, fmt, ##__VA_ARGS__);\
-    Assert(0);\
-    exit(0);\
+    fprintf(stderr, "(%s : %s : %d) ", __FILE__, __FUNCTION__, __LINE__);\
+    fprintf(stderr, fmt, __VA_ARGS__);\
+    Assert(false);\
 } while(0)
 
 #define NUM_LOG_ROWS 40

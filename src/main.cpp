@@ -50,7 +50,7 @@ String _StringPrintf(int /* vargs_check */, const char *fmt, ...)
 
     if (rc < 0)
     {
-        PrintErrorLibC("vsnprintf");
+        PrintErrorf("vsnprintf: %s\n", strerror(errno));
     }
     else
     {
@@ -61,7 +61,7 @@ String _StringPrintf(int /* vargs_check */, const char *fmt, ...)
 
         if (rc < 0)
         {
-            PrintErrorLibC("vsnprintf");
+            PrintErrorf("vsnprintf: %s\n", strerror(errno));
             result = "";
         }
         else 
@@ -158,6 +158,12 @@ GUI gui;
 
 void dbg() {}
 
+static bool IsExecutableFile(const char *filename)
+{
+    struct stat sb = {};
+    return (0 == stat(filename, &sb)) && (sb.st_mode & S_IXUSR);
+}
+
 uint64_t ParseHex(const String &str)
 {
     uint64_t result = 0;
@@ -195,7 +201,7 @@ void *RedirectStdin(void *)
         char c = fgetc(stdin);
         ssize_t num_written = write(gdb.fd_out_write, &c, 1);
         if (num_written < 0)
-            PrintErrorLibC("console write to stdin");
+            PrintErrorf("console write to stdin: %s\n", strerror(errno));
     }
     return NULL;
 }
@@ -396,7 +402,7 @@ bool Tug_Init(GLFWwindow *window, int argc, char **argv)
     rc = pipe(pipes);
     if (rc < 0)
     {
-        PrintErrorLibC("from gdb pipe");
+        PrintErrorf("from gdb pipe: %s\n", strerror(errno));
         return false;
     }
 
@@ -406,7 +412,7 @@ bool Tug_Init(GLFWwindow *window, int argc, char **argv)
     rc = pipe(pipes);
     if (rc < 0)
     {
-        PrintErrorLibC("to gdb pipe");
+        PrintErrorf("to gdb pipe: %s\n", strerror(errno));
         return false;
     }
 
@@ -416,31 +422,31 @@ bool Tug_Init(GLFWwindow *window, int argc, char **argv)
     rc = pthread_mutex_init(&gdb.modify_block, NULL);
     if (rc < 0) 
     {
-        PrintErrorLibC("pthread_mutex_init");
+        PrintErrorf("pthread_mutex_init: %s\n", strerror(errno));
         return false;
     }
 
     gdb.recv_block = sem_open("recv_gdb_block", O_CREAT, S_IRWXU, 0);
     if (gdb.recv_block == NULL) 
     {
-        PrintErrorLibC("sem_open");
+        PrintErrorf("sem_open: %s\n", strerror(errno));
         return false;
     }
 
     //if (0 > (gdb.fd_pty_master = posix_openpt(O_RDWR | O_NOCTTY | O_NONBLOCK)))
     //{
-    //    PrintErrorLibC("posix_openpt");
+    //    PrintErrorf("posix_openpt: %s\n", strerror(errno));
     //    break;
     //}
 
     //if (0 > (rc = grantpt(gdb.fd_pty_master)) )
     //{
-    //    PrintErrorLibC("grantpt");
+    //    PrintErrorf("grantpt: %s\n", strerror(errno));
     //    break;
     //}
     //if (0 > (rc = unlockpt(gdb.fd_pty_master)) )
     //{
-    //    PrintErrorLibC("grantpt");
+    //    PrintErrorf("grantpt: %s\n", strerror(errno));
     //    break;
     //}
     //printf("pty slave: %s\n", ptsname(gdb.fd_pty_master));
@@ -450,11 +456,17 @@ bool Tug_Init(GLFWwindow *window, int argc, char **argv)
     //rc = chdir("/mnt/c/Users/Kyle/Downloads/Chrome Downloads/ARM/AARCH32");
     //if (rc < 0)
     //{
-    //    PrintErrorLibC("chdir");
+    //    PrintErrorf("chdir: %s\n", strerror(errno));
     //    break;
     //}
 
-    if (prog.config.gdb_path.value != "")
+    if (!IsExecutableFile(prog.config.gdb_path.value.c_str()))
+    {
+        PrintErrorf("invalid gdb_path: %s\n", 
+                    prog.config.gdb_path.value.c_str());
+        return false;
+    }
+    else
     {
 #if 0 // old way, can't get gdb process PID this way
         dup2(gdb.fd_out_read, 0);           // stdin
@@ -526,7 +538,7 @@ bool Tug_Init(GLFWwindow *window, int argc, char **argv)
         FILE *fsh = popen("printenv", "r");
         if (fsh == NULL)
         {
-            PrintErrorLibC("getenv popen");
+            PrintErrorf("getenv popen: %s\n", strerror(errno));
             return false;
         }
 
@@ -558,7 +570,7 @@ bool Tug_Init(GLFWwindow *window, int argc, char **argv)
         if (rc != 0) 
         {
             errno = rc;
-            PrintErrorLibC("posix_spawnp");
+            PrintErrorf("posix_spawnp: %s\n", strerror(errno));
             return false;
         }
 
@@ -567,7 +579,7 @@ bool Tug_Init(GLFWwindow *window, int argc, char **argv)
     rc = pthread_create(&gdb.thread_read_interp, NULL, ReadInterpreterBlocks, (void*) NULL);
     if (rc < 0) 
     {
-        PrintErrorLibC("pthread_create");
+        PrintErrorf("pthread_create: %s\n", strerror(errno));
         return false;
     }
 
@@ -613,8 +625,8 @@ bool Tug_Init(GLFWwindow *window, int argc, char **argv)
 
     if (argc > 1)
     {
-        struct stat sb;
-        if ( (0 == stat(argv[1], &sb)) && (sb.st_mode & S_IXUSR) )
+        struct stat sb = {};
+        if (IsExecutableFile(argv[1]))
         {
             // override debug application
             prog.config.debug_exe_path.value = argv[1]; 
@@ -2852,7 +2864,7 @@ void Draw(GLFWwindow * /* window */)
                     FILE *f = fopen("tug.ini", "w");
                     if (f == NULL) 
                     {
-                        PrintErrorLibC("fopen tug.ini");
+                        PrintErrorf("fopen tug.ini: %s\n", strerror(errno));
                     }
                     else
                     {

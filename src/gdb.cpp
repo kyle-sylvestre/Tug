@@ -694,14 +694,14 @@ bool GDB_Send(const char *cmd)
         ssize_t written = write(gdb.fd_out_write, cmd, cmdsize);
         if (written != (ssize_t)cmdsize)
         {
-            PrintErrorLibC("GDB_Send");
+            PrintErrorf("GDB_Send: %s\n", strerror(errno));
         }
         else
         {
             ssize_t newline_written = write(gdb.fd_out_write, "\n", 1);
             if (newline_written != 1)
             {
-                PrintErrorLibC("GDB_Send");
+                PrintErrorf("GDB_Send: %s\n", strerror(errno));
             }
             else
             {
@@ -735,11 +735,11 @@ static size_t GDB_SendBlockingInternal(const char *cmd, bool remove_after)
                 if (errno == ETIMEDOUT)
                 {
                     // TODO: retry counts
-                    PrintErrorf("Command Timeout: %s", cmd);
+                    PrintErrorf("Command Timeout: %s\n", cmd);
                 }
                 else
                 {
-                    PrintErrorLibC("sem_timedwait");
+                    PrintErrorf("sem_timedwait: %s\n", strerror(errno));
                 }
                 break;
             }
