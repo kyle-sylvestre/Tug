@@ -1,5 +1,5 @@
 DEBUG ?= 1
-EXE = tug.elf
+EXE = tug
 IMGUI_DIR = ./third-party/imgui
 OBJDIR =
 
@@ -29,7 +29,7 @@ UNAME_S = $(shell uname -s)
 
 ifeq ($(UNAME_S), Linux) #LINUX
 	ECHO_MESSAGE = "Linux"
-	LIBS += -lpthread -lGL -lglfw
+	LIBS += -lpthread -lGL -lglfw -ldl
 endif
 
 ifeq ($(UNAME_S), Darwin) #APPLE

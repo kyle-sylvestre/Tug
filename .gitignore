@@ -1,5 +1,5 @@
 debug_misc
-*.ini
-*.elf
+imgui.ini
+tug
 *.o
 badrecord*
