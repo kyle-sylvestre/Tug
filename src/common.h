@@ -106,7 +106,7 @@ if ( !(cond) )\
 do {\
     fprintf(stderr, "(%s : %s : %d) ", __FILE__, __FUNCTION__, __LINE__);\
     fprintf(stderr, fmt, __VA_ARGS__);\
-    Assert(false);\
+    /*Assert(false);*/\
 } while(0)
 
 #define NUM_LOG_ROWS 40
