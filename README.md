@@ -10,14 +10,12 @@ GDB frontend made with Dear Imgui
 ![image](https://user-images.githubusercontent.com/25188464/160457519-15b65af3-0046-4c78-8fda-0b56a3ae7664.png)
 
 # Debug Tutorial
-Option 1:
-1. pass executable to tug.elf as a command line argument (this overrides the debug_exe_path)
-
-Option 2:
 1. open tug.ini
 2. enter path to gdb after gdb_path=
-3. enter path to debugged executable after debug_exe_path=
-4. open tug.elf then hit the |> button
+3. do one of the following:
+    -pass executable to tug.elf as a command line argument (this overrides the debug_exe_path)
+    -enter path to debugged executable after debug_exe_path=
+6. run ./tug, on startup the source screen should be blank. Hit the |> button to start debugging
 
 # Source Window
 -CTRL-F: open text search mode, N = next match, SHIFT-N = previous match, ESC to exit 
