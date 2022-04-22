@@ -9,7 +9,8 @@ GDB frontend made with Dear Imgui
 
 ![image](https://user-images.githubusercontent.com/25188464/160457519-15b65af3-0046-4c78-8fda-0b56a3ae7664.png)
 # Building the Project
-1. install glfw: https://www.glfw.org/docs/latest/compile.html</br>
+1. download pre-compiled glfw: https://www.glfw.org/download.html</br>
+   OR compile glfw: https://www.glfw.org/docs/latest/compile.html</br>
 2. run make in root git directory</br>
 
 # Debuging an Executable
