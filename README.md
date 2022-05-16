@@ -8,14 +8,18 @@ GDB frontend made with Dear Imgui
 *https://creativecommons.org/licenses/by-sa/3.0/us/*
 
 ![image](https://user-images.githubusercontent.com/25188464/160457519-15b65af3-0046-4c78-8fda-0b56a3ae7664.png)
+# Building the Project
+1. download pre-compiled glfw: https://www.glfw.org/download.html</br>
+   OR compile glfw: https://www.glfw.org/docs/latest/compile.html</br>
+2. run make in root git directory</br>
 
-# Debug Tutorial
-1. open tug.ini
+# Debuging an Executable
+1. open tug.ini in the root git directory
 2. enter path to gdb after gdb_path=
 3. do one of the following:</br>
-    -pass executable to tug.elf as a command line argument (this overrides the debug_exe_path)</br>
-    -enter path to debugged executable after debug_exe_path=</br>
-6. run ./tug, on startup the source screen should be blank. Hit the |> button to start debugging
+    run command "tug [executable name here]". This overrides the debug_exe_path in tug.ini</br>
+    enter path to debugged executable after debug_exe_path=, then run command "tug"</br>
+4. on startup the source screen should be blank. Hit the |> button to start debugging
 
 # Source Window
 -CTRL-F: open text search mode, N = next match, SHIFT-N = previous match, ESC to exit 
