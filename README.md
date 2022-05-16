@@ -14,12 +14,9 @@ GDB frontend made with Dear Imgui
 2. run make in root git directory</br>
 
 # Debuging an Executable
-1. open tug.ini in the root git directory
-2. enter path to gdb after gdb_path=
-3. do one of the following:</br>
-    run command "tug [executable name here]". This overrides the debug_exe_path in tug.ini</br>
-    enter path to debugged executable after debug_exe_path=, then run command "tug"</br>
-4. on startup the source screen should be blank. Hit the |> button to start debugging
+tug --exe [path to exe here] --gdb [path to gdb here]
+
+NOTE: if you are debugging an executable in another directory, use gdb dir command to search for symbols in another path
 
 # Source Window
 -CTRL-F: open text search mode, N = next match, SHIFT-N = previous match, ESC to exit 
