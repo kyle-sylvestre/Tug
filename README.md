@@ -14,6 +14,7 @@ GDB frontend made with Dear Imgui
 2. run make in root git directory</br>
 
 # Debuging an Executable
+command line arguments:</br>
 tug --exe [path to exe here] --gdb [path to gdb here]
 
 NOTE: if you are debugging an executable in another directory, use gdb dir command to search for symbols in another path
