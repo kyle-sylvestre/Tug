@@ -83,7 +83,7 @@ using Vector = std::vector<T, DL_Allocator<T>>;
 using String = std::basic_string<char, std::char_traits<char>, DL_Allocator<char>>;
 
 #define ArrayCount(arr) (sizeof(arr) / sizeof(arr[0]))
-#define tsnprintf(buf, fmt, ...) snprintf(buf, sizeof(buf), fmt, ##__VA_ARGS__)
+#define tsnprintf(buf, fmt, ...) snprintf(buf, sizeof(buf), fmt, __VA_ARGS__)
 #define DefaultInvalid default: Assert(false);
 #define GetMax(a, b) (a > b) ? a : b
 #define GetMin(a, b) (a < b) ? a : b
@@ -94,7 +94,7 @@ using String = std::basic_string<char, std::char_traits<char>, DL_Allocator<char
 #define Assert(cond)\
 if ( !(cond) )\
 {\
-    char __gdb_buf[128]; tsnprintf(__gdb_buf, "gdb --pid %d", (int)getpid()); int __unused = system(__gdb_buf); __unused = __unused; exit(1);\
+    char __gdb_buf[128]; tsnprintf(__gdb_buf, "gdb --pid %d", (int)getpid()); system(__gdb_buf); exit(1);\
 }
 #else
 #define Assert(cond) (void)0;

@@ -1,5 +1,4 @@
 DEBUG ?= 1
-EXE = tug
 IMGUI_DIR = ./third-party/imgui
 OBJDIR =
 
@@ -15,10 +14,19 @@ else
 	OBJDIR = ./build_release
 endif
 
-SOURCES = ./src/main.cpp ./src/gdb.cpp
-SOURCES += ./third-party/dlmalloc.cpp
-SOURCES += $(IMGUI_DIR)/imgui.cpp $(IMGUI_DIR)/imgui_demo.cpp $(IMGUI_DIR)/imgui_draw.cpp $(IMGUI_DIR)/imgui_tables.cpp $(IMGUI_DIR)/imgui_widgets.cpp
-SOURCES += $(IMGUI_DIR)/imgui_impl_glfw.cpp $(IMGUI_DIR)/imgui_impl_opengl2.cpp
+EXE = $(OBJDIR)/tug
+
+SOURCES = ./src/main.cpp\
+		  ./src/gdb.cpp\
+		  ./third-party/dlmalloc.cpp\
+          $(IMGUI_DIR)/imgui.cpp\
+          $(IMGUI_DIR)/imgui_demo.cpp\
+          $(IMGUI_DIR)/imgui_draw.cpp\
+          $(IMGUI_DIR)/imgui_impl_glfw.cpp\
+          $(IMGUI_DIR)/imgui_impl_opengl2.cpp\
+          $(IMGUI_DIR)/imgui_tables.cpp\
+          $(IMGUI_DIR)/imgui_widgets.cpp
+
 OBJS = $(addprefix $(OBJDIR)/, $(addsuffix .o, $(basename $(notdir $(SOURCES)))))
 UNAME_S = $(shell uname -s)
 
@@ -29,7 +37,7 @@ UNAME_S = $(shell uname -s)
 
 ifeq ($(UNAME_S), Linux) #LINUX
 	ECHO_MESSAGE = "Linux"
-	LIBS += -lpthread -lGL -lglfw -ldl
+	LIBS += -lpthread -lGL -lglfw -lm -ldl
 endif
 
 ifeq ($(UNAME_S), Darwin) #APPLE
@@ -41,10 +49,11 @@ ifeq ($(UNAME_S), Darwin) #APPLE
 	CXXFLAGS += -I/usr/local/include -I/opt/local/include -I/opt/homebrew/include
 endif
 
-ifeq ($(OS), Windows_NT)
-	ECHO_MESSAGE = "MinGW"
-	LIBS += -lpthread -lglfw3 -lgdi32 -lopengl32 -limm32
-endif
+# TODO: mingw doesn't support spawn.h, need replacement for posix_spawnp
+#ifeq ($(OS), Windows_NT)
+#	ECHO_MESSAGE = "MinGW"
+#	LIBS += -lpthread -lglfw3 -lgdi32 -lopengl32 -limm32
+#endif
 
 all: $(EXE)
 	@echo build complete for $(ECHO_MESSAGE)

@@ -34,7 +34,7 @@
 #if defined(_WIN32)
 #include <minwindef.h>      // MAX_PATH
 #else
-#include <linux/limits.h>   // PATH_MAX
+#include <limits.h>   // PATH_MAX
 #include <strings.h>        // strcasecmp
 #define MAX_PATH PATH_MAX   // lmao
 #define stricmp strcasecmp
@@ -98,7 +98,7 @@ inline bool OS_GetAbsolutePath(const char *relpath, char (&abspath)[MAX_PATH])
     GetFullPathNameA(relpath, sizeof(abspath), abspath, NULL);
     if (INVALID_FILE_ATTRIBUTES == GetFileAttributesA(abspath))
     {
-        fprintf(stderr, "file not found: %s\n", abspath):
+        fprintf(stderr, "file not found: %s\n", abspath);
         result = false;
     }
     else
@@ -144,14 +144,14 @@ inline void OS_PopulateDirEntries(const std::string &dirpath,
                 // skip current/parent directory
                 const char *ptr = find_data.cFileName;
                 bool skip = (ptr[0] == '.' && ptr[1] == '\0') || 
-                            (ptr[0] == '.' && ptr[1] == '.' && ptr[2] == '\0')
+                            (ptr[0] == '.' && ptr[1] == '.' && ptr[2] == '\0');
                 if (!skip) 
                     dirs.push_back(find_data.cFileName);
             }
             else 
             {
                 // check the file extension against the filters 
-                const char *ext = strrchr(ptr, '.');
+                const char *ext = strrchr(find_data.cFileName, '.');
                 if (!ext) continue;
                 ext += 1; // offset '.'
 
@@ -171,7 +171,7 @@ inline void OS_PopulateDirEntries(const std::string &dirpath,
                 }
 
                 if (add_file)
-                    files.push_back(ptr);
+                    files.push_back(find_data.cFileName);
             }
 
         } while (FindNextFileA(hFind, &find_data));

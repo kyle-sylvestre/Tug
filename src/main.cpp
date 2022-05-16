@@ -36,10 +36,43 @@
 // dynamic colors that change upon the brightness of the background
 ImVec4 IM_COL32_WIN_RED;
 
+// this enum is too damn long, shorten it down
+typedef int ImGuiMod;
+enum ImGuiMod_
+{
+    ImGuiMod_None = ImGuiKeyModFlags_None,
+    ImGuiMod_Alt = ImGuiKeyModFlags_Alt,
+    ImGuiMod_Shift = ImGuiKeyModFlags_Shift,
+    ImGuiMod_Super = ImGuiKeyModFlags_Super,
+    ImGuiMod_Ctrl = ImGuiKeyModFlags_Ctrl,
+};
+
+static bool ImGui_IsKeyClicked(ImGuiKey key, ImGuiMod mod = ImGuiMod_None)
+{
+    bool result = false;
+    ImGuiIO &io = ImGui::GetIO();
+    bool key_in_range = (size_t)key < ArrayCount(ImGuiIO::KeysData);
+    Assert(key_in_range);
+
+    if (key_in_range)
+    {
+        result = io.KeysData[key].DownDurationPrev >= 0.0f &&
+                 io.KeysData[key].DownDuration < 0.0f;
+
+        if (mod & ImGuiMod_Alt)   result &= io.KeyAlt;
+        if (mod & ImGuiMod_Ctrl)  result &= io.KeyCtrl;
+        if (mod & ImGuiMod_Shift) result &= io.KeyShift;
+        if (mod & ImGuiMod_Super) result &= io.KeySuper;
+    }
+
+    return result;
+}
+
+
 // verify a printf-family variadic arguments, MSVC doesn't have attribute printf like GCC
 // pass this as a parameter to printf like function macro
-#define VARGS_CHECK(fmt, ...) snprintf(NULL, 0, fmt, ##__VA_ARGS__)
-#define StringPrintf(fmt, ...) _StringPrintf(VARGS_CHECK(fmt, ##__VA_ARGS__), fmt, ##__VA_ARGS__)
+#define VARGS_CHECK(fmt, ...) snprintf(NULL, 0, fmt, __VA_ARGS__)
+#define StringPrintf(fmt, ...) _StringPrintf(VARGS_CHECK(fmt, __VA_ARGS__), fmt, __VA_ARGS__)
 String _StringPrintf(int /* vargs_check */, const char *fmt, ...)
 {
     String result;
@@ -115,41 +148,6 @@ struct GUI
     bool source_search_bar_open = false;
     char source_search_keyword[256];
     size_t source_found_line_idx;
-
-    bool IsKeyClicked(int glfw_key, int glfw_mods = 0)
-    {
-        GlfwInput &this_key = Key(glfw_key);
-        GlfwInput &last_key = LastKey(glfw_key);
-        bool result = last_key.action == GLFW_PRESS && 
-                      this_key.action == GLFW_RELEASE;
-
-        if (glfw_mods != 0)
-        {
-            result &= (glfw_mods == (this_key.mods & glfw_mods));
-        }
-        return result;
-    }
-    bool IsMouseClicked(int glfw_mouse_button, int glfw_mods = 0)
-    {
-        GlfwInput &this_button = this_mousestate.buttons[glfw_mouse_button];
-        GlfwInput &last_button = last_mousestate.buttons[glfw_mouse_button];
-        bool result = last_button.action == GLFW_PRESS && 
-                      this_button.action == GLFW_RELEASE;
-
-        if (glfw_mods != 0)
-        {
-            result &= (glfw_mods == (this_button.mods & glfw_mods));
-        }
-        return result;
-    }
-    GlfwInput &Key(int glfw_key)
-    {
-        return this_keystate.keys[glfw_key];
-    }
-    GlfwInput &LastKey(int glfw_key)
-    {
-        return last_keystate.keys[glfw_key];
-    }
 };
 
 Program prog;
@@ -160,8 +158,25 @@ void dbg() {}
 
 static bool IsExecutableFile(const char *filename)
 {
+    bool result = false;
     struct stat sb = {};
-    return (0 == stat(filename, &sb)) && (sb.st_mode & S_IXUSR);
+    if (0 != stat(filename, &sb))
+    {
+        PrintErrorf("file not found: \"%s\"\n", filename);
+    }
+    else
+    {
+        if ( (sb.st_mode & S_IXUSR) == 0)
+        {
+            PrintErrorf("file not an executable: \"%s\"\n", filename);
+        }
+        else 
+        {
+            result = true;
+        }
+    }
+    
+    return result;
 }
 
 uint64_t ParseHex(const String &str)
@@ -361,9 +376,11 @@ size_t CreateOrGetFile(const String &fullpath)
 }
 
 
-bool Tug_Init(GLFWwindow *window, int argc, char **argv)
+bool Tug_Init(int argc, char **argv)
 {
+    
     int rc = 0;
+
 
     // read in configuration file
     {
@@ -396,6 +413,60 @@ bool Tug_Init(GLFWwindow *window, int argc, char **argv)
         }
 
         file.close();
+    }
+
+    // read in the command line args, skip exename argv[0]
+    for (int i = 1; i < argc;)
+    {
+        String flag = argv[i++];
+        if (flag == "-h" || flag == "--help")
+        {
+            const char *usage = 
+                "tug [flags]\n"
+                "  --exe [path to executable to debug]\n"
+                "  --gdb [path to gdb to use]\n"
+                "  -h, --help see available flags to use\n";
+            printf("%s", usage);
+            return false;
+        }
+        else
+        {
+            // flag requires an additional arg passed in
+            if (i >= argc)
+            {
+                PrintError("not enough params provided\n");
+                return false;
+            }
+            else if (flag == "--gdb")
+            {
+                const char *gdb_path = argv[i++];
+                if (!IsExecutableFile(gdb_path))
+                {
+                    return false;
+                }
+                else
+                {
+                    prog.config.gdb_path.value = gdb_path;
+                }
+            }
+            else if (flag == "--exe")
+            {
+                const char *exe_path = argv[i++];
+                if (!IsExecutableFile(exe_path))
+                {
+                    return false;
+                }
+                else
+                {
+                    prog.config.debug_exe_path.value = exe_path;
+                }
+            }
+            else
+            {
+                PrintErrorf("unknown flag passed: %s\n", flag.c_str());
+                return false;
+            }
+        }
     }
 
     int pipes[2] = {};
@@ -526,7 +597,7 @@ bool Tug_Init(GLFWwindow *window, int argc, char **argv)
         gdb_argv.push_back(NULL);
 
         posix_spawn_file_actions_t actions = {};
-        posix_spawn_file_actions_adddup2(&actions, gdb.fd_out_read,  0);    // stdin
+        posix_spawn_file_actions_adddup2(&actions, gdb.fd_out_read, 0);    // stdin
         posix_spawn_file_actions_adddup2(&actions, gdb.fd_in_write, 1);     // stdout
         posix_spawn_file_actions_adddup2(&actions, gdb.fd_in_write, 2);     // stderr
 
@@ -622,22 +693,6 @@ bool Tug_Init(GLFWwindow *window, int argc, char **argv)
         gdb.supports_reverse_execution =        (NULL != strstr(src, "reverse"));
     }
 
-
-    if (argc > 1)
-    {
-        struct stat sb = {};
-        if (IsExecutableFile(argv[1]))
-        {
-            // override debug application
-            prog.config.debug_exe_path.value = argv[1]; 
-        }
-        else
-        {
-            String err = StringPrintf("couldn't open file: %s", argv[1]);
-            WriteToConsoleBuffer(err.data(), err.size());
-        }
-    }
-
     if (prog.config.debug_exe_path.value != "")
     {
         String str = StringPrintf("-file-exec-and-symbols \"%s\"", 
@@ -667,34 +722,6 @@ bool Tug_Init(GLFWwindow *window, int argc, char **argv)
     //}
 
 #endif
-
-    // TODO: setup global var objects that will last the duration of the program
-
-    const auto UpdateKey = [](GLFWwindow * /* window */, int key, int /* scancode */,
-                              int action, int mods) -> void
-    {
-        Assert((size_t)key < ArrayCount(gui.this_keystate.keys));
-        Assert((uint8_t)action <= UINT8_MAX && (uint8_t)mods <= UINT8_MAX);
-        //printf("key pressed: %s, glfw_macro: %d", name, key);
-
-        GlfwInput &update = gui.this_keystate.keys[key];
-        update.action = action;
-        update.mods = mods;
-    };
-
-    const auto UpdateMouseButton = [](GLFWwindow * /* window */, int button, int action, int mods)
-    {
-        Assert((size_t)button < ArrayCount(gui.this_mousestate.buttons));
-        Assert((uint8_t)action <= UINT8_MAX && (uint8_t)mods <= UINT8_MAX);
-        //printf("key pressed: %s, glfw_macro: %d", name, key);
-
-        GlfwInput &update = gui.this_mousestate.buttons[button];
-        update.action = action;
-        update.mods = mods;
-    };
-
-    glfwSetKeyCallback(window, UpdateKey);
-    glfwSetMouseButtonCallback(window, UpdateMouseButton);
 
     return true;
 }
@@ -1612,13 +1639,13 @@ void Draw(GLFWwindow * /* window */)
         ImGui::SetNextWindowSize({ SOURCE_WIDTH, SOURCE_HEIGHT });
         ImGui::Begin("Source", NULL, window_flags);
 
-        if ( gui.IsKeyClicked(GLFW_KEY_F, GLFW_MOD_CONTROL) )
+        if ( ImGui_IsKeyClicked(ImGuiKey_F, ImGuiMod_Ctrl) )
         {
             gui.source_search_bar_open = true;
             ImGui::SetKeyboardFocusHere(0); // auto click the input box
             gui.source_search_keyword[0] = '\0';
         }
-        else if (gui.source_search_bar_open && gui.IsKeyClicked(GLFW_KEY_ESCAPE))
+        else if (gui.source_search_bar_open && ImGui_IsKeyClicked(ImGuiKey_Escape))
         {
             gui.source_search_bar_open = false;
         }
@@ -1631,7 +1658,7 @@ void Draw(GLFWwindow * /* window */)
         bool goto_line_activate;
         static int goto_line;
 
-        if ( gui.IsKeyClicked(GLFW_KEY_G, GLFW_MOD_CONTROL) )
+        if ( ImGui_IsKeyClicked(ImGuiKey_G, ImGuiMod_Ctrl) )
         {
             goto_line_open = true;
             goto_line_activate = true;
@@ -1648,7 +1675,7 @@ void Draw(GLFWwindow * /* window */)
                 goto_line_activate = false;
             }
 
-            if (gui.IsKeyClicked(GLFW_KEY_ESCAPE))
+            if (ImGui_IsKeyClicked(ImGuiKey_Escape))
                 goto_line_open = false;
 
             if ( ImGui::InputInt("##goto_line", &goto_line, 1, 1, ImGuiInputTextFlags_EnterReturnsTrue) )    
@@ -1686,13 +1713,12 @@ void Draw(GLFWwindow * /* window */)
                 File &this_file = prog.files[ this_frame_idx ];
                 bool found = false;
 
-                if ( gui.IsKeyClicked(GLFW_KEY_N) &&
+                if ( ImGui_IsKeyClicked(ImGuiKey_N) &&
                      !ImGui::GetIO().WantCaptureKeyboard)
                 {
                     // N = search forward
                     // Shift N = search backward
-                    bool shift_down = ( 0 != (gui.Key(GLFW_KEY_N).mods & GLFW_MOD_SHIFT) );
-                    dir = (shift_down) ? -1 : 1;
+                    dir = (ImGui::GetIO().KeyShift) ? -1 : 1;
 
                     // advance search by skipping the previous match
                     gui.source_found_line_idx += dir;
@@ -1926,7 +1952,7 @@ void Draw(GLFWwindow * /* window */)
 
                                         // check to see if we should add the variable
                                         // to the watch variables
-                                        if (gui.IsMouseClicked(GLFW_MOUSE_BUTTON_RIGHT))
+                                        if (ImGui::IsMouseClicked(ImGuiMouseButton_Right))
                                         {
                                             String hover_string(line.data() + word_idx, char_idx - word_idx);
                                             VarObj add = CreateVarObj(hover_string);
@@ -2226,7 +2252,7 @@ void Draw(GLFWwindow * /* window */)
         // start
         ImGui::SameLine();
         ImGuiDisabled(prog.running, clicked = ImGui::Button("|>"));
-        if (clicked || (!prog.running && gui.IsKeyClicked(GLFW_KEY_F5)))
+        if (clicked || (!prog.running && ImGui_IsKeyClicked(ImGuiKey_F5)))
         {
             if (!prog.started)
             {
@@ -2342,9 +2368,8 @@ void Draw(GLFWwindow * /* window */)
             query_phrase = input_command;
         }
 
-        if (gui.IsKeyClicked(GLFW_KEY_TAB) && ImGui::GetIO().WantCaptureKeyboard)
+        if (ImGui_IsKeyClicked(ImGuiKey_Tab) && ImGui::GetIO().WantCaptureKeyboard)
         {
-            bool shift_down = ( 0 != (gui.Key(GLFW_KEY_TAB).mods & GLFW_MOD_SHIFT) );
             if (phrases.size() == 0)
             {
                 String cmd = StringPrintf("-complete \"%s\"", input_command);
@@ -2361,6 +2386,7 @@ void Draw(GLFWwindow * /* window */)
             }
             else
             {
+                bool shift_down = ImGui::GetIO().KeyShift;
                 if (phrase_idx == phrases.size() - 1 && !shift_down)
                     phrase_idx = 0;
                 else if (phrase_idx == 0 && shift_down)
@@ -2370,7 +2396,7 @@ void Draw(GLFWwindow * /* window */)
             }
         }
 
-        if (gui.IsKeyClicked(GLFW_KEY_ESCAPE))
+        if (ImGui_IsKeyClicked(ImGuiKey_Escape))
         {
             phrase_idx = 0;
             phrases.clear();
@@ -2677,7 +2703,7 @@ void Draw(GLFWwindow * /* window */)
                         bool deleted = false;
                         delay++;
                         bool active = ImGui::IsItemFocused() && (delay < 2 || ImGui::GetIO().WantCaptureKeyboard);
-                        if (gui.IsKeyClicked(GLFW_KEY_DELETE))
+                        if (ImGui_IsKeyClicked(ImGuiKey_Delete))
                         {
                             prog.watch_vars.erase(prog.watch_vars.begin() + i,
                                                   prog.watch_vars.begin() + i + 1);
@@ -2696,7 +2722,7 @@ void Draw(GLFWwindow * /* window */)
 
                         }
 
-                        if (!active || deleted || gui.IsKeyClicked(GLFW_KEY_ESCAPE))
+                        if (!active || deleted || ImGui_IsKeyClicked(ImGuiKey_Escape))
                         {
                             edit_var_name_idx = -1;
                             continue;
@@ -2993,12 +3019,14 @@ void Draw(GLFWwindow * /* window */)
 
 static void glfw_error_callback(int error, const char* description)
 {
-    fprintf(stderr, "Glfw Error %d: %s\n", error, description);
-    Assert(false);
+    PrintErrorf("Glfw Error %d: %s\n", error, description);
 }
 
 int main(int argc, char **argv)
 {
+    if (!Tug_Init(argc, argv))
+        return 1;
+
     // Setup window
     glfwSetErrorCallback(glfw_error_callback);
     if (!glfwInit())
@@ -3010,8 +3038,6 @@ int main(int argc, char **argv)
 
     glfwMakeContextCurrent(window);
     glfwSwapInterval(1); // Enable vsync
-    if (!Tug_Init(window, argc, argv))
-        return 1;
 
     // Setup Dear ImGui context
     IMGUI_CHECKVERSION();
@@ -3050,7 +3076,6 @@ int main(int argc, char **argv)
     //io.Fonts->AddFontFromFileTTF("../../misc/fonts/ProggyTiny.ttf", 10.0f);
     //ImFont* font = io.Fonts->AddFontFromFileTTF("c:\\Windows\\Fonts\\ArialUni.ttf", 18.0f, NULL, io.Fonts->GetGlyphRangesJapanese());
 
-    ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
 
     // Main loop
     while (!glfwWindowShouldClose(window))
@@ -3068,11 +3093,11 @@ int main(int argc, char **argv)
         ImGui::NewFrame();
 
 
-        if (gui.IsKeyClicked(GLFW_KEY_F12))
+        if (ImGui_IsKeyClicked(ImGuiKey_F12))
             Assert(false);
 
         static bool debug_window_toggled;
-        if (gui.IsKeyClicked(GLFW_KEY_F1))
+        if (ImGui_IsKeyClicked(ImGuiKey_F1))
             debug_window_toggled = !debug_window_toggled;
 
         if (debug_window_toggled)
@@ -3193,8 +3218,10 @@ int main(int argc, char **argv)
         ImGui::PopStyleColor(4);
 
         // Rendering
+        int display_w = 0, display_h = 0;
+        ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
+
         ImGui::Render();
-        int display_w, display_h;
         glfwGetFramebufferSize(window, &display_w, &display_h);
         glViewport(0, 0, display_w, display_h);
         glClearColor(clear_color.x * clear_color.w, clear_color.y * clear_color.w, clear_color.z * clear_color.w, clear_color.w);
