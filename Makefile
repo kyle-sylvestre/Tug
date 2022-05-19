@@ -17,8 +17,8 @@ endif
 EXE = $(OBJDIR)/tug
 
 SOURCES = ./src/main.cpp\
-		  ./src/gdb.cpp\
-		  ./third-party/dlmalloc.cpp\
+          ./src/gdb.cpp\
+          ./third-party/dlmalloc.cpp\
           $(IMGUI_DIR)/imgui.cpp\
           $(IMGUI_DIR)/imgui_demo.cpp\
           $(IMGUI_DIR)/imgui_draw.cpp\
@@ -37,7 +37,7 @@ UNAME_S = $(shell uname -s)
 
 ifeq ($(UNAME_S), Linux) #LINUX
 	ECHO_MESSAGE = "Linux"
-	LIBS += -lpthread -lGL -lglfw3 -lm -ldl
+	LIBS += -lpthread -lGL -lglfw3 -lm -ldl	# -lglfw3=static, -lglfw=dynamic
 endif
 
 ifeq ($(UNAME_S), Darwin) #APPLE
