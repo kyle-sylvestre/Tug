@@ -9,7 +9,7 @@ GDB frontend made with Dear Imgui
 
 ![image](https://user-images.githubusercontent.com/25188464/160457519-15b65af3-0046-4c78-8fda-0b56a3ae7664.png)
 # Building the Project
-    sudo apt install libglfw3-dev
+    ./install_glfw.sh
     make
 
 # Debuging an Executable
