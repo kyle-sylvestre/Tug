@@ -12,10 +12,6 @@ GDB frontend made with Dear Imgui
     sudo apt install libglfw3-dev
     make
 
-website useds:</br>
-https://www.glfw.org/download.html</br>
-https://www.glfw.org/docs/latest/compile.html</br>
-
 # Debuging an Executable
 command line arguments:
 
@@ -53,5 +49,10 @@ tug --exe [path to exe here] --gdb [path to gdb here]
 -hit tab while typing to see all the autocompletions, hit tab/shift tab to cycle through them
 
 # Resources
--GDB Machine Interpreter: https://sourceware.org/gdb/download/onlinedocs/gdb/GDB_002fMI.html#GDB_002fMI
+GDB Machine Interpreter</br>
+https://sourceware.org/gdb/download/onlinedocs/gdb/GDB_002fMI.html#GDB_002fMI</br>
+
+additional information on glfw:</br>
+https://www.glfw.org/download.html</br>
+https://www.glfw.org/docs/latest/compile.html</br>
 
