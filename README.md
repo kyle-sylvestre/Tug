@@ -8,10 +8,13 @@ GDB frontend made with Dear Imgui
 *https://creativecommons.org/licenses/by-sa/3.0/us/*
 
 ![image](https://user-images.githubusercontent.com/25188464/160457519-15b65af3-0046-4c78-8fda-0b56a3ae7664.png)
-**Building the Project**
+# Building the Project
+    sudo apt install libglfw3-dev
+    make DEBUG=0
 
-sudo apt install libglfw3-dev
-make DEBUG=0
+website useds:</br>
+https://www.glfw.org/download.html</br>
+https://www.glfw.org/docs/latest/compile.html</br>
 
 # Debuging an Executable
 command line arguments:
