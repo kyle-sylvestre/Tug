@@ -61,15 +61,17 @@ all: $(EXE)
 $(EXE): $(OBJS)
 	$(CXX) -o $@ $^ $(CXXFLAGS) $(LIBS)
 
-$(OBJDIR)/%.o:./src/%.cpp | $(OBJDIR)
+$(OBJDIR)/%.o:./src/%.cpp
 	$(CXX) $(CXXFLAGS) -c -o $@ $<
 
-$(OBJDIR)/%.o:./third-party/%.cpp | $(OBJDIR)
+$(OBJDIR)/%.o:./third-party/%.cpp
 	$(CXX) $(CXXFLAGS) -c -o $@ $<
 
-$(OBJDIR)/%.o:$(IMGUI_DIR)/%.cpp | $(OBJDIR)
+$(OBJDIR)/%.o:$(IMGUI_DIR)/%.cpp
 	$(CXX) $(CXXFLAGS) -c -o $@ $<
 	
+$(OBJS): | $(OBJDIR)
+
 $(OBJDIR):
 	mkdir -p $@
 
