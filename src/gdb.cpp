@@ -13,15 +13,402 @@
 // You should have received a copy of the GNU General Public License
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
-
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-
-#include <stdint.h>
-#include <iostream>
-
 #include "common.h"
+#include "gdb.h"
+
+static bool VerifyFileExecutable(const char *filename)
+{
+    bool result = false;
+    struct stat sb = {};
+
+    if (0 != stat(filename, &sb))
+    {
+        PrintErrorf("file not found: %s\n", filename);
+    }
+    else
+    {
+        if ((sb.st_mode & S_IXUSR) == 0)
+        {
+            PrintErrorf("file not executable: %s\n", filename);
+        }
+        else
+        {
+            result = true;
+        }
+    }
+    
+    return result;
+}
+
+ssize_t read_block_maxsize = 0;
+static void *ReadInterpreterBlocks(void *)
+{
+    // read data from GDB pipe
+    size_t insert_idx = 0;
+    size_t read_base_idx = 0;
+    bool set_read_start_idx = true;
+
+    while (true)
+    {
+        if (set_read_start_idx)
+            read_base_idx = insert_idx;
+
+        if (ArrayCount(gdb.block_data) - insert_idx < 64 * 1024)
+        {
+            // wrap around to beginning, moving a partially made record if available
+            // TODO: is there a function call to see if there is more read data
+            memmove(gdb.block_data, gdb.block_data + read_base_idx, 
+                    insert_idx - read_base_idx);
+            insert_idx = (insert_idx - read_base_idx);
+            read_base_idx = 0;
+        }
+
+        ssize_t num_read = read(gdb.fd_in_read, gdb.block_data + insert_idx,
+                                ArrayCount(gdb.block_data) - insert_idx);
+        if (num_read < 0)
+        {
+            fprintf(stderr, "gdb read: %s\n", strerror(errno));
+            break;
+        }
+
+        static int iteration = 0;
+        //printf("~%d~\n%d - num read: %zu \n~%d~\n", iteration,
+        //       (int)gdb.block_data[ insert_idx + num_read - 1 ], 
+        //       (size_t)num_read, iteration);
+        printf("~%d~\n%.*s\n~%d~\n", iteration, (int)num_read, 
+               gdb.block_data + insert_idx, iteration);
+        iteration++;
+        insert_idx += num_read;
+
+        if (gdb.block_data[ insert_idx - 1 ] != '\n')
+        {
+            // GDB blocks I've seen have a max of 64k, this record is
+            // split across multiple pipe reads
+            set_read_start_idx = false;
+            continue;
+        }
+        else
+        {
+            set_read_start_idx = true;
+        }
+
+
+        if (gdb.num_blocks + 1 > ArrayCount(gdb.block_spans))
+        {
+            fprintf(stderr, "exhausted available block spans\n");
+            break;
+        }
+
+        if (read_block_maxsize < num_read)
+            read_block_maxsize = num_read;
+
+        pthread_mutex_lock(&gdb.modify_block);
+
+        // set to the last inserted to get bufsize
+        Span span;
+        if (gdb.num_blocks == 0) span = {};
+        else span = gdb.block_spans[gdb.num_blocks - 1];
+
+        span.index = read_base_idx; 
+        span.length = num_read;
+        gdb.block_spans[ gdb.num_blocks ] = span;
+        gdb.num_blocks++;
+
+        // post a change if the binary semaphore is zero
+        int semvalue; 
+        sem_getvalue(gdb.recv_block, &semvalue);
+        if (semvalue == 0) 
+            sem_post(gdb.recv_block);
+
+        pthread_mutex_unlock(&gdb.modify_block);
+    }
+
+    printf("closing GDB interpreter read loop...\n");
+    return NULL;
+}
+
+bool GDB_Init(String gdb_filename, String gdb_args)
+{
+    int rc = 0;
+
+    int pipes[2] = {};
+    rc = pipe(pipes);
+    if (rc < 0)
+    {
+        PrintErrorf("from gdb pipe: %s\n", strerror(errno));
+        return false;
+    }
+
+    gdb.fd_in_read = pipes[0];
+    gdb.fd_in_write = pipes[1];
+
+    rc = pipe(pipes);
+    if (rc < 0)
+    {
+        PrintErrorf("to gdb pipe: %s\n", strerror(errno));
+        return false;
+    }
+
+    gdb.fd_out_read = pipes[0];
+    gdb.fd_out_write = pipes[1];
+
+    rc = pthread_mutex_init(&gdb.modify_block, NULL);
+    if (rc < 0) 
+    {
+        PrintErrorf("pthread_mutex_init: %s\n", strerror(errno));
+        return false;
+    }
+
+    gdb.recv_block = sem_open("recv_gdb_block", O_CREAT, S_IRWXU, 0);
+    if (gdb.recv_block == NULL) 
+    {
+        PrintErrorf("sem_open: %s\n", strerror(errno));
+        return false;
+    }
+
+    //if (0 > (gdb.fd_pty_master = posix_openpt(O_RDWR | O_NOCTTY | O_NONBLOCK)))
+    //{
+    //    PrintErrorf("posix_openpt: %s\n", strerror(errno));
+    //    break;
+    //}
+
+    //if (0 > (rc = grantpt(gdb.fd_pty_master)) )
+    //{
+    //    PrintErrorf("grantpt: %s\n", strerror(errno));
+    //    break;
+    //}
+    //if (0 > (rc = unlockpt(gdb.fd_pty_master)) )
+    //{
+    //    PrintErrorf("grantpt: %s\n", strerror(errno));
+    //    break;
+    //}
+    //printf("pty slave: %s\n", ptsname(gdb.fd_pty_master));
+
+
+
+    //rc = chdir("/mnt/c/Users/Kyle/Downloads/Chrome Downloads/ARM/AARCH32");
+    //if (rc < 0)
+    //{
+    //    PrintErrorf("chdir: %s\n", strerror(errno));
+    //    break;
+    //}
+
+    if (!VerifyFileExecutable(gdb_filename.c_str()))
+    {
+        return false;
+    }
+    else
+    {
+#if 0 // old way, can't get gdb process PID this way
+        dup2(gdb.fd_out_read, 0);        // stdin
+        dup2(gdb.fd_in_write, 1);        // stdout
+        dup2(gdb.fd_in_write, 2);        // stderr
+
+        close(gdb.fd_in_write);
+
+        rc = execl("/usr/bin/gdb-multiarch", "gdb-multiarch", "./advent.out", "--interpreter=mi", NULL);
+#endif
+        // TODO: using different versions of machine interpreter
+        String args = gdb_filename + " " + gdb_args + " --interpreter=mi "; 
+
+        std::string buf;
+        size_t startoff = 0;
+        size_t spaceoff = 0;
+        size_t bufoff = 0;
+        Vector<char *> gdb_argv;
+        bool inside_string = false;
+        bool is_whitespace = true;
+
+        // convert args strings to a char * vector, ended with NULL
+        for (size_t i = 0; i < args.size(); i++)
+        {
+            char c = args[i];
+            char p = (i > 0) ? args[i - 1] : '\0';
+            is_whitespace &= (c == ' ' || c == '\t');
+
+            // make sure we don't get a command line arg from inside a user string literal
+            if ( (c == '\'' || c == '\"') && p != '\\')
+            {
+                inside_string = !inside_string;
+            }
+
+            if (!inside_string && c == ' ')
+            {
+                spaceoff = i;
+                size_t arglen = spaceoff - startoff;
+                if (arglen != 0 && !is_whitespace)
+                {
+                    gdb_argv.push_back((char *)bufoff);
+                    buf.insert(buf.size(), &args[ startoff ], arglen);
+                    buf.push_back('\0');
+                    bufoff += (arglen + 1);
+                }
+                is_whitespace = true;
+                startoff = spaceoff + 1;
+            }
+        }
+
+        // convert base offsets to char pointers
+        gdb_argv.push_back(NULL);
+        for (size_t i = 0; i < gdb_argv.size() - 1; i++)
+        {
+            gdb_argv[i] = (char *)((size_t)gdb_argv[i] + buf.data());
+        }
+
+        // get all the environment variables for the process
+        Vector<char *> envptr;
+        FILE *fsh = popen("printenv", "r");
+        if (fsh == NULL)
+        {
+            PrintErrorf("printenv popen: %s\n", strerror(errno));
+        }
+        else
+        {
+            String env;
+            char tmp[1024];
+            ssize_t tmpread;
+            while (0 < (tmpread = fread(tmp, 1, sizeof(tmp), fsh)) )
+            {
+                env.insert(env.size(), tmp, tmpread);
+            }
+
+            size_t lineoff = 0;
+
+            for (size_t i = 0; i < env.size(); i++)
+            {
+                if (env[i] == '\n')
+                {
+                    envptr.push_back(&env[0] + lineoff);
+                    env[i] = '\0';
+                    lineoff = i + 1;
+                }
+            }
+
+            envptr.push_back(NULL);
+            pclose(fsh); fsh = NULL;
+        }
+
+        // start the GDB process
+        posix_spawn_file_actions_t actions = {};
+        posix_spawn_file_actions_adddup2(&actions, gdb.fd_out_read, 0);     // stdin
+        posix_spawn_file_actions_adddup2(&actions, gdb.fd_in_write, 1);     // stdout
+        posix_spawn_file_actions_adddup2(&actions, gdb.fd_in_write, 2);     // stderr
+
+        posix_spawnattr_t attrs = {};
+        posix_spawnattr_init(&attrs);
+        posix_spawnattr_setflags(&attrs, POSIX_SPAWN_SETSID);
+
+        rc = posix_spawnp((pid_t *) &gdb.spawned_pid, gdb_filename.c_str(),
+                          &actions, &attrs, gdb_argv.data(), envptr.data());
+        if (rc != 0) 
+        {
+            errno = rc;
+            PrintErrorf("posix_spawnp: %s\n", strerror(errno));
+            return false;
+        }
+
+    }
+
+    rc = pthread_create(&gdb.thread_read_interp, NULL, ReadInterpreterBlocks, (void*) NULL);
+    if (rc < 0) 
+    {
+        PrintErrorf("pthread_create: %s\n", strerror(errno));
+        return false;
+    }
+
+    //GDB_SendBlocking("-environment-cd /mnt/c/Users/Kyle/Documents/commercial-codebases/original/stevie");
+    //GDB_SendBlocking("-file-exec-and-symbols stevie");
+    //GDB_SendBlocking("-exec-arguments stevie.c");
+
+    // debug GAS
+    //GDB_SendBlocking("-environment-cd /mnt/c/Users/Kyle/Documents/commercial-codebases/original/binutils/binutils-gdb/gas");
+    //GDB_SendBlocking("-file-exec-and-symbols as-new");
+
+    //GDB_SendBlocking("-environment-cd \"/mnt/c/Users/Kyle/Downloads/Chrome Downloads/ARM/AARCH32\"");
+    //GDB_SendBlocking("-file-exec-and-symbols advent.out");
+
+
+    Record rec;
+    if (GDB_SendBlocking("-list-features", rec))
+    {
+        const char *src = rec.buf.c_str();
+        gdb.has_frozen_varobj =                 (NULL != strstr(src, "frozen-varobjs"));
+        gdb.has_pending_breakpoints =           (NULL != strstr(src, "pending-breakpoints"));
+        gdb.has_python_scripting_support =      (NULL != strstr(src, "python"));
+        gdb.has_thread_info =                   (NULL != strstr(src, "thread-info"));
+        gdb.has_data_rw_bytes =                 (NULL != strstr(src, "data-read-memory-bytes"));
+        gdb.has_async_breakpoint_notification = (NULL != strstr(src, "breakpoint-notifications"));
+        gdb.has_ada_task_info =                 (NULL != strstr(src, "ada-task-info"));
+        gdb.has_language_option =               (NULL != strstr(src, "language-option"));
+        gdb.has_gdb_mi_command =                (NULL != strstr(src, "info-gdb-mi-command"));
+        gdb.has_undefined_command_error_code =  (NULL != strstr(src, "undefined-command-error-code"));
+        gdb.has_exec_run_start =                (NULL != strstr(src, "exec-run-start-option"));
+        gdb.has_data_disassemble_option_a =     (NULL != strstr(src, "data-disassemble-a-option"));
+
+        // TODO: "Whenever a target can change, due to commands such as -target-select, 
+        // -target-attach or -exec-run, the list of target features may change, 
+        // and the frontend should obtain it again
+        // GDB_SendBlocking("-list-target-features", rec);
+
+        gdb.supports_async_execution =          (NULL != strstr(src, "async"));
+        gdb.supports_reverse_execution =        (NULL != strstr(src, "reverse"));
+    }
+
+    return true;
+}
+
+bool GDB_LoadInferior(String filename, String args)
+{
+    bool result = false;
+    char tmp[PATH_MAX];
+    char *dir = NULL;
+
+    tsnprintf(tmp, "%s", filename.c_str());
+    dir = dirname(tmp);
+
+    if (VerifyFileExecutable(filename.c_str()) && dir != NULL)
+    {
+        // set the debugged executable
+        String str = StringPrintf("-file-exec-and-symbols \"%s\"", 
+                                  prog.debug_exe_filename.c_str());
+
+        if (GDB_SendBlocking(str.c_str()))
+        {
+            // look for source files in the directory of the exe
+            str = StringPrintf("-environment-directory \"%s\"", dir);
+            if (GDB_SendBlocking(str.c_str()))
+            {
+                // set the command line arguments for the debugged executable
+                bool good_args = true;
+                if (args != "")
+                {
+                    str = StringPrintf("-exec-arguments %s",
+                                       prog.debug_exe_args.c_str());
+
+                    good_args = GDB_SendBlocking(str.c_str());
+                }
+
+                result = good_args;
+            }
+        }
+    }
+
+    return result;
+}
+
+void GDB_Shutdown()
+{
+    pthread_kill(gdb.thread_read_interp, SIGINT);
+    pthread_join(gdb.thread_read_interp, NULL);
+    kill(gdb.spawned_pid, SIGINT);
+
+    pthread_mutex_destroy(&gdb.modify_block);
+    sem_close(gdb.recv_block);
+    close(gdb.fd_in_read);
+    close(gdb.fd_out_read);
+    close(gdb.fd_in_write);
+    close(gdb.fd_out_write);
+}
 
 AtomIter GDB_IterChild(const Record &rec, const RecordAtom *parent)
 {
@@ -41,7 +428,7 @@ AtomIter GDB_IterChild(const Record &rec, const RecordAtom *parent)
     return result;
 }
 
-AtomType GDB_InferAtomStart(char c)
+static AtomType InferAtomStart(char c)
 {
     AtomType result = Atom_None;
     if (c == '{')
@@ -66,7 +453,7 @@ AtomType GDB_InferAtomStart(char c)
     return result;
 }
 
-void GDB_PushUnordered(ParseRecordContext &ctx, RecordAtom atom)
+static void PushUnorderedAtom(ParseRecordContext &ctx, RecordAtom atom)
 {
     Assert(ctx.num_end_atoms <= ctx.atoms.size() &&
            ctx.atom_idx < ctx.atoms.size() - ctx.num_end_atoms);
@@ -74,7 +461,7 @@ void GDB_PushUnordered(ParseRecordContext &ctx, RecordAtom atom)
     ctx.atom_idx++;
 }
 
-RecordAtom GDB_PopUnordered(ParseRecordContext &ctx, size_t start_idx)
+static RecordAtom PopUnorderedAtom(ParseRecordContext &ctx, size_t start_idx)
 {
     // pop unordered atoms to the end of the array 
     RecordAtom result = {};
@@ -98,7 +485,7 @@ RecordAtom GDB_PopUnordered(ParseRecordContext &ctx, size_t start_idx)
     return result;
 }
 
-RecordAtom GDB_RecurseRecord(ParseRecordContext &ctx)
+static RecordAtom RecurseRecord(ParseRecordContext &ctx)
 {
     static const auto RecurseError = [&](const char *message, char error_char)
     {
@@ -143,7 +530,7 @@ RecordAtom GDB_RecurseRecord(ParseRecordContext &ctx)
             case Atom_None:
             {
                 // figure out what kind of block this is 
-                AtomType start = GDB_InferAtomStart(c);
+                AtomType start = InferAtomStart(c);
                 if (start == Atom_String)
                 {
                     // start after " index
@@ -178,7 +565,7 @@ RecordAtom GDB_RecurseRecord(ParseRecordContext &ctx)
                     result.name.length = ctx.i - string_start_idx;
                     result.type = Atom_None;
                 }
-                else if (Atom_Name != GDB_InferAtomStart(c))
+                else if (Atom_Name != InferAtomStart(c))
                 {
                     RecurseError("hit bad atom name character", c);
                     continue;
@@ -211,13 +598,13 @@ RecordAtom GDB_RecurseRecord(ParseRecordContext &ctx)
             case Atom_Array:
             case Atom_Struct:
             {
-                AtomType start = GDB_InferAtomStart(c);
+                AtomType start = InferAtomStart(c);
 
                 if (start != Atom_None)
                 {
                     // start of new elem, recurse and add
-                    RecordAtom elem = GDB_RecurseRecord(ctx);
-                    GDB_PushUnordered(ctx, elem);
+                    RecordAtom elem = RecurseRecord(ctx);
+                    PushUnorderedAtom(ctx, elem);
                 }
                 else if (c == ']' || c == '}')
                 {
@@ -233,7 +620,7 @@ RecordAtom GDB_RecurseRecord(ParseRecordContext &ctx)
                     else
                     {
                         // end of aggregate, pop from unordered and store in gdb 
-                        RecordAtom pop = GDB_PopUnordered(ctx, aggregate_start_idx);
+                        RecordAtom pop = PopUnorderedAtom(ctx, aggregate_start_idx);
                         result.value.index = pop.value.index;
                         result.value.length = pop.value.length;
                         return result;
@@ -412,7 +799,7 @@ RecordAtomSequence GDB_RecurseEvaluation(ParseRecordContext &ctx)
             if (c == '}')
             {
                 // end of aggregate, pop from unordered and store in gdb 
-                RecordAtom pop = GDB_PopUnordered(ctx, aggregate_start_idx);
+                RecordAtom pop = PopUnorderedAtom(ctx, aggregate_start_idx);
                 atom.value.index = pop.value.index;
                 atom.value.length = pop.value.length;
 
@@ -436,7 +823,7 @@ RecordAtomSequence GDB_RecurseEvaluation(ParseRecordContext &ctx)
                 {
                     size_t addcount = GetMin(elem.length, AGGREGATE_MAX - num_children);
                     for (size_t i = 0; i < addcount; i++)
-                        GDB_PushUnordered(ctx, elem.atom);
+                        PushUnorderedAtom(ctx, elem.atom);
                     num_children += addcount;
                 }
                 else
@@ -636,7 +1023,7 @@ bool GDB_ParseRecord(char *buf, size_t bufsize, ParseRecordContext &ctx)
         // total=(name+value atoms) * num atoms
         ctx.atoms.resize(num_atoms_found * 2);
 
-        root = GDB_RecurseRecord(ctx);
+        root = RecurseRecord(ctx);
 
         // restore the modified chars
         *comma = prev_comma;
@@ -920,7 +1307,7 @@ static void GDB_ProcessBlock(char *block, size_t blocksize)
                 memcpy(const_cast<char*>(rec.buf.data()), start, linesize);
 
                 // resolve literal within strings
-                // ignore those of name "value" because these get handled in GDB_RecurseEvaluation
+                // ignore those of name "value" because these get handled in RecurseEvaluation
                 const auto RemoveStringBackslashes = [](Record &record, RecordAtom &iter, void * /* user context */)
                 {
                     if (iter.type == Atom_String)

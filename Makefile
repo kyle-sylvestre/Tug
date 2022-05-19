@@ -1,4 +1,4 @@
-DEBUG ?= 1
+DEBUG ?= 0
 IMGUI_DIR = ./third-party/imgui
 OBJDIR =
 
@@ -37,7 +37,7 @@ UNAME_S = $(shell uname -s)
 
 ifeq ($(UNAME_S), Linux) #LINUX
 	ECHO_MESSAGE = "Linux"
-	LIBS += -lpthread -lGL -lglfw -lm -ldl
+	LIBS += -lpthread -lGL -lglfw3 -lm -ldl
 endif
 
 ifeq ($(UNAME_S), Darwin) #APPLE

@@ -14,6 +14,8 @@
 // along with this program.  If not, see <http://www.gnu.org/licenses/>.
 
 #include "common.h"
+#include "gdb.h"
+#include <fstream>
 
 //
 // yoinked from glfw_example_opengl2
@@ -68,60 +70,41 @@ static bool ImGui_IsKeyClicked(ImGuiKey key, ImGuiMod mod = ImGuiMod_None)
     return result;
 }
 
-
-// verify a printf-family variadic arguments, MSVC doesn't have attribute printf like GCC
-// pass this as a parameter to printf like function macro
-#define VARGS_CHECK(fmt, ...) snprintf(NULL, 0, fmt, __VA_ARGS__)
-#define StringPrintf(fmt, ...) _StringPrintf(VARGS_CHECK(fmt, __VA_ARGS__), fmt, __VA_ARGS__)
 String _StringPrintf(int /* vargs_check */, const char *fmt, ...)
 {
     String result;
     va_list args;
     va_start(args, fmt);
-    int rc = vsnprintf(NULL, 0, fmt, args);
+    errno = 0;
+    int len_minus_nt = vsnprintf(NULL, 0, fmt, args);
     va_end(args);
 
-    if (rc < 0)
+    if (len_minus_nt < 0)
     {
         PrintErrorf("vsnprintf: %s\n", strerror(errno));
+        result = "";
     }
     else
     {
-        result.resize(rc + 1, '\0');
+        result.resize(len_minus_nt + 1, '\0');
         va_start(args, fmt);
-        rc = vsnprintf((char *)result.data(), result.size(), fmt, args);
+        int copied_minus_nt = vsnprintf((char *)result.data(), result.size(), fmt, args);
         va_end(args);
 
-        if (rc < 0)
+        if (copied_minus_nt < 0)
         {
             PrintErrorf("vsnprintf: %s\n", strerror(errno));
             result = "";
         }
-        else 
+        else
         {
-            // remove trailing nt, string maintains one internally
+            // remove trailing NT, std::string provides one with .c_str()
             result.pop_back();
         }
     }
 
     return result;
 }
-
-struct GlfwInput
-{
-    uint8_t action;
-    uint8_t mods;
-};
-
-struct GlfwKeyboardState
-{
-    GlfwInput keys[ GLFW_KEY_LAST + 1 ];
-};
-
-struct GlfwMouseState
-{
-    GlfwInput buttons[ GLFW_MOUSE_BUTTON_LAST + 1 ];
-};
 
 enum LineDisplay
 {
@@ -134,11 +117,6 @@ enum LineDisplay
 
 struct GUI
 {
-    GlfwKeyboardState this_keystate;
-    GlfwKeyboardState last_keystate;
-    GlfwMouseState this_mousestate;
-    GlfwMouseState last_mousestate;
-
     LineDisplay line_display = LineDisplay_Source;
     Vector<DisassemblyLine> line_disasm;
     Vector<DisassemblySourceLine> line_disasm_source;
@@ -156,30 +134,7 @@ GUI gui;
 
 void dbg() {}
 
-static bool IsExecutableFile(const char *filename)
-{
-    bool result = false;
-    struct stat sb = {};
-    if (0 != stat(filename, &sb))
-    {
-        PrintErrorf("file not found: \"%s\"\n", filename);
-    }
-    else
-    {
-        if ( (sb.st_mode & S_IXUSR) == 0)
-        {
-            PrintErrorf("file not an executable: \"%s\"\n", filename);
-        }
-        else 
-        {
-            result = true;
-        }
-    }
-    
-    return result;
-}
-
-uint64_t ParseHex(const String &str)
+static uint64_t ParseHex(const String &str)
 {
     uint64_t result = 0;
     uint64_t pow = 1;
@@ -208,123 +163,7 @@ uint64_t ParseHex(const String &str)
     return result;
 }
 
-void *RedirectStdin(void *)
-{
-    // forward user input to GDB
-    while (!gdb.end_program)
-    {
-        char c = fgetc(stdin);
-        ssize_t num_written = write(gdb.fd_out_write, &c, 1);
-        if (num_written < 0)
-            PrintErrorf("console write to stdin: %s\n", strerror(errno));
-    }
-    return NULL;
-}
-
-ssize_t read_block_maxsize = 0;
-void *ReadInterpreterBlocks(void *)
-{
-    // read data from GDB pipe
-    size_t insert_idx = 0;
-    size_t read_base_idx = 0;
-    bool set_read_start_idx = true;
-
-    while (true)
-    {
-        if (set_read_start_idx)
-            read_base_idx = insert_idx;
-
-        if (ArrayCount(gdb.block_data) - insert_idx < 64 * 1024)
-        {
-            // wrap around to beginning, moving a partially made record if available
-            // TODO: is there a function call to see if there is more read data
-            memmove(gdb.block_data, gdb.block_data + read_base_idx, 
-                    insert_idx - read_base_idx);
-            insert_idx = (insert_idx - read_base_idx);
-            read_base_idx = 0;
-        }
-
-        ssize_t num_read = read(gdb.fd_in_read, gdb.block_data + insert_idx,
-                                ArrayCount(gdb.block_data) - insert_idx);
-        if (num_read < 0)
-        {
-            fprintf(stderr, "gdb read: %s\n", strerror(errno));
-            break;
-        }
-
-        static int iteration = 0;
-        //printf("~%d~\n%d - num read: %zu \n~%d~\n", iteration,
-        //       (int)gdb.block_data[ insert_idx + num_read - 1 ], 
-        //       (size_t)num_read, iteration);
-        printf("~%d~\n%.*s\n~%d~\n", iteration, (int)num_read, 
-               gdb.block_data + insert_idx, iteration);
-        iteration++;
-        insert_idx += num_read;
-
-        if (gdb.block_data[ insert_idx - 1 ] != '\n')
-        {
-            // GDB blocks I've seen have a max of 64k, this record is
-            // split across multiple pipe reads
-            set_read_start_idx = false;
-            continue;
-        }
-        else
-        {
-            set_read_start_idx = true;
-        }
-
-
-        if (gdb.num_blocks + 1 > ArrayCount(gdb.block_spans))
-        {
-            fprintf(stderr, "exhausted available block spans\n");
-            break;
-        }
-
-        if (read_block_maxsize < num_read)
-            read_block_maxsize = num_read;
-
-        pthread_mutex_lock(&gdb.modify_block);
-
-        // set to the last inserted to get bufsize
-        Span span;
-        if (gdb.num_blocks == 0) span = {};
-        else span = gdb.block_spans[gdb.num_blocks - 1];
-
-        span.index = read_base_idx; 
-        span.length = num_read;
-        gdb.block_spans[ gdb.num_blocks ] = span;
-        gdb.num_blocks++;
-
-        // post a change if the binary semaphore is zero
-        int semvalue; 
-        sem_getvalue(gdb.recv_block, &semvalue);
-        if (semvalue == 0) 
-            sem_post(gdb.recv_block);
-
-        pthread_mutex_unlock(&gdb.modify_block);
-    }
-
-    fprintf(stderr, "closing GDB interpreter read loop...\n");
-    return NULL;
-}
-
-int Tug_Shutdown()
-{
-    printf("read_block_maxsize: %zu\n", (size_t)read_block_maxsize);
-    pthread_kill(gdb.thread_read_interp, SIGINT);
-    pthread_join(gdb.thread_read_interp, NULL);
-    kill(gdb.spawned_pid, SIGINT);
-
-    pthread_mutex_destroy(&gdb.modify_block);
-    sem_close(gdb.recv_block);
-    close(gdb.fd_in_read);
-    close(gdb.fd_out_read);
-    close(gdb.fd_in_write);
-    close(gdb.fd_out_write);
-    return 0;
-}
-
-bool CreateFile(const char *fullpath, File &result)
+static bool CreateFile(const char *fullpath, File &result)
 {
     result = {};
     result.fullpath = fullpath;
@@ -350,7 +189,7 @@ bool CreateFile(const char *fullpath, File &result)
     return found;
 }
 
-size_t CreateOrGetFile(const String &fullpath)
+static size_t CreateOrGetFile(const String &fullpath)
 {
     size_t result = BAD_INDEX;
 
@@ -373,357 +212,6 @@ size_t CreateOrGetFile(const String &fullpath)
     }
 
     return result;
-}
-
-
-bool Tug_Init(int argc, char **argv)
-{
-    
-    int rc = 0;
-
-
-    // read in configuration file
-    {
-        std::string line;
-        std::ifstream file(TUG_CONFIG_FILENAME, std::ios::in);
-        while (std::getline(file, line))
-        {
-            size_t commentoff = line.find('#');
-            if (commentoff != std::string::npos)
-                line.erase(commentoff);
-
-            if (line.size() > 0 && line[ line.size() - 1 ] == '\r')
-                line.pop_back();
-
-            size_t equaloff = line.find('=');
-            if (equaloff != std::string::npos && equaloff + 1 < line.size())
-            {
-                std::string key = line.substr(0, equaloff);
-                std::string value = line.substr(equaloff + 1);
-
-                static_assert(sizeof(prog.config) % sizeof(ConfigPair) == 0, "prog.config not all ConfigPair's");
-                ConfigPair *str = reinterpret_cast<ConfigPair *>(&prog.config);
-                for (size_t i = 0; i < NUM_CONFIG; i++)
-                {
-                    if (key == str[i].key) 
-                        str[i].value = value.c_str();
-                }
-
-            }
-        }
-
-        file.close();
-    }
-
-    // read in the command line args, skip exename argv[0]
-    for (int i = 1; i < argc;)
-    {
-        String flag = argv[i++];
-        if (flag == "-h" || flag == "--help")
-        {
-            const char *usage = 
-                "tug [flags]\n"
-                "  --exe [path to executable to debug]\n"
-                "  --gdb [path to gdb to use]\n"
-                "  -h, --help see available flags to use\n";
-            printf("%s", usage);
-            return false;
-        }
-        else
-        {
-            // flag requires an additional arg passed in
-            if (i >= argc)
-            {
-                PrintError("not enough params provided\n");
-                return false;
-            }
-            else if (flag == "--gdb")
-            {
-                const char *gdb_path = argv[i++];
-                if (!IsExecutableFile(gdb_path))
-                {
-                    return false;
-                }
-                else
-                {
-                    prog.config.gdb_path.value = gdb_path;
-                }
-            }
-            else if (flag == "--exe")
-            {
-                const char *exe_path = argv[i++];
-                if (!IsExecutableFile(exe_path))
-                {
-                    return false;
-                }
-                else
-                {
-                    prog.config.debug_exe_path.value = exe_path;
-                }
-            }
-            else
-            {
-                PrintErrorf("unknown flag passed: %s\n", flag.c_str());
-                return false;
-            }
-        }
-    }
-
-    int pipes[2] = {};
-    rc = pipe(pipes);
-    if (rc < 0)
-    {
-        PrintErrorf("from gdb pipe: %s\n", strerror(errno));
-        return false;
-    }
-
-    gdb.fd_in_read = pipes[0];
-    gdb.fd_in_write = pipes[1];
-
-    rc = pipe(pipes);
-    if (rc < 0)
-    {
-        PrintErrorf("to gdb pipe: %s\n", strerror(errno));
-        return false;
-    }
-
-    gdb.fd_out_read = pipes[0];
-    gdb.fd_out_write = pipes[1];
-
-    rc = pthread_mutex_init(&gdb.modify_block, NULL);
-    if (rc < 0) 
-    {
-        PrintErrorf("pthread_mutex_init: %s\n", strerror(errno));
-        return false;
-    }
-
-    gdb.recv_block = sem_open("recv_gdb_block", O_CREAT, S_IRWXU, 0);
-    if (gdb.recv_block == NULL) 
-    {
-        PrintErrorf("sem_open: %s\n", strerror(errno));
-        return false;
-    }
-
-    //if (0 > (gdb.fd_pty_master = posix_openpt(O_RDWR | O_NOCTTY | O_NONBLOCK)))
-    //{
-    //    PrintErrorf("posix_openpt: %s\n", strerror(errno));
-    //    break;
-    //}
-
-    //if (0 > (rc = grantpt(gdb.fd_pty_master)) )
-    //{
-    //    PrintErrorf("grantpt: %s\n", strerror(errno));
-    //    break;
-    //}
-    //if (0 > (rc = unlockpt(gdb.fd_pty_master)) )
-    //{
-    //    PrintErrorf("grantpt: %s\n", strerror(errno));
-    //    break;
-    //}
-    //printf("pty slave: %s\n", ptsname(gdb.fd_pty_master));
-
-
-
-    //rc = chdir("/mnt/c/Users/Kyle/Downloads/Chrome Downloads/ARM/AARCH32");
-    //if (rc < 0)
-    //{
-    //    PrintErrorf("chdir: %s\n", strerror(errno));
-    //    break;
-    //}
-
-    if (!IsExecutableFile(prog.config.gdb_path.value.c_str()))
-    {
-        PrintErrorf("invalid gdb_path: %s\n", 
-                    prog.config.gdb_path.value.c_str());
-        return false;
-    }
-    else
-    {
-#if 0 // old way, can't get gdb process PID this way
-        dup2(gdb.fd_out_read, 0);           // stdin
-        dup2(gdb.fd_in_write, 1);        // stdout
-        dup2(gdb.fd_in_write, 2);        // stderr
-
-        close(gdb.fd_in_write);
-
-        //rc = execl("/usr/bin/gdb", "gdb", "--interpreter=mi", NULL);
-        rc = execl("/usr/bin/gdb-multiarch", "gdb-multiarch", "./advent.out", "--interpreter=mi", NULL);
-        VerifyCond(rc == 0);
-#endif
-        // TODO: config for MI version used
-        String args = prog.config.gdb_path.value + " " + prog.config.gdb_args.value + " --interpreter=mi "; 
-
-        std::string buf;
-        size_t startoff = 0;
-        size_t spaceoff = 0;
-        size_t bufoff = 0;
-        Vector<char *> gdb_argv;
-        bool inside_string = false;
-        bool is_whitespace = true;
-
-        for (size_t i = 0; i < args.size(); i++)
-        {
-            char c = args[i];
-            char p = (i > 0) ? args[i - 1] : '\0';
-            is_whitespace &= (c == ' ' || c == '\t');
-
-            // make sure we don't get a command line arg from inside a user string literal
-            if ( (c == '\'' || c == '\"') && p != '\\')
-            {
-                inside_string = !inside_string;
-            }
-
-            if (!inside_string && c == ' ')
-            {
-                spaceoff = i;
-                size_t arglen = spaceoff - startoff;
-                if (arglen != 0 && !is_whitespace)
-                {
-                    gdb_argv.push_back((char *)bufoff);
-                    buf.insert(buf.size(), &args[ startoff ], arglen);
-                    buf.push_back('\0');
-                    bufoff += (arglen + 1);
-                }
-                is_whitespace = true;
-                startoff = spaceoff + 1;
-            }
-        }
-
-        // convert base offsets to char pointers
-        for (size_t i = 0; i < gdb_argv.size(); i++)
-        {
-            gdb_argv[i] = (char *)((size_t)gdb_argv[i] + buf.data());
-        }
-        gdb_argv.push_back(NULL);
-
-        posix_spawn_file_actions_t actions = {};
-        posix_spawn_file_actions_adddup2(&actions, gdb.fd_out_read, 0);    // stdin
-        posix_spawn_file_actions_adddup2(&actions, gdb.fd_in_write, 1);     // stdout
-        posix_spawn_file_actions_adddup2(&actions, gdb.fd_in_write, 2);     // stderr
-
-        posix_spawnattr_t attrs = {};
-        posix_spawnattr_init(&attrs);
-        posix_spawnattr_setflags(&attrs, POSIX_SPAWN_SETSID);
-
-        String env;
-        FILE *fsh = popen("printenv", "r");
-        if (fsh == NULL)
-        {
-            PrintErrorf("getenv popen: %s\n", strerror(errno));
-            return false;
-        }
-
-        char tmp[1024];
-        ssize_t tmpread;
-        while (0 < (tmpread = fread(tmp, 1, sizeof(tmp), fsh)) )
-        {
-            env.insert(env.size(), tmp, tmpread);
-        }
-
-        Vector<char *> envptr;
-        size_t lineoff = 0;
-
-        for (size_t i = 0; i < env.size(); i++)
-        {
-            if (env[i] == '\n')
-            {
-                envptr.push_back(&env[0] + lineoff);
-                env[i] = '\0';
-                lineoff = i + 1;
-            }
-        }
-        envptr.push_back(NULL);
-
-        pclose(fsh);
-
-        rc = posix_spawnp((pid_t *) &gdb.spawned_pid, prog.config.gdb_path.value.c_str(),
-                          &actions, &attrs, gdb_argv.data(), envptr.data());
-        if (rc != 0) 
-        {
-            errno = rc;
-            PrintErrorf("posix_spawnp: %s\n", strerror(errno));
-            return false;
-        }
-
-    }
-
-    rc = pthread_create(&gdb.thread_read_interp, NULL, ReadInterpreterBlocks, (void*) NULL);
-    if (rc < 0) 
-    {
-        PrintErrorf("pthread_create: %s\n", strerror(errno));
-        return false;
-    }
-
-#if 1
-    //GDB_SendBlocking("-environment-cd /mnt/c/Users/Kyle/Documents/commercial-codebases/original/stevie");
-    //GDB_SendBlocking("-file-exec-and-symbols stevie");
-    //GDB_SendBlocking("-exec-arguments stevie.c");
-
-    // debug GAS
-    //GDB_SendBlocking("-environment-cd /mnt/c/Users/Kyle/Documents/commercial-codebases/original/binutils/binutils-gdb/gas");
-    //GDB_SendBlocking("-file-exec-and-symbols as-new");
-
-    //GDB_SendBlocking("-environment-cd \"/mnt/c/Users/Kyle/Downloads/Chrome Downloads/ARM/AARCH32\"");
-    //GDB_SendBlocking("-file-exec-and-symbols advent.out");
-
-
-    Record rec;
-    if (GDB_SendBlocking("-list-features", rec))
-    {
-        const char *src = rec.buf.c_str();
-        gdb.has_frozen_varobj =                 (NULL != strstr(src, "frozen-varobjs"));
-        gdb.has_pending_breakpoints =           (NULL != strstr(src, "pending-breakpoints"));
-        gdb.has_python_scripting_support =      (NULL != strstr(src, "python"));
-        gdb.has_thread_info =                   (NULL != strstr(src, "thread-info"));
-        gdb.has_data_rw_bytes =                 (NULL != strstr(src, "data-read-memory-bytes"));
-        gdb.has_async_breakpoint_notification = (NULL != strstr(src, "breakpoint-notifications"));
-        gdb.has_ada_task_info =                 (NULL != strstr(src, "ada-task-info"));
-        gdb.has_language_option =               (NULL != strstr(src, "language-option"));
-        gdb.has_gdb_mi_command =                (NULL != strstr(src, "info-gdb-mi-command"));
-        gdb.has_undefined_command_error_code =  (NULL != strstr(src, "undefined-command-error-code"));
-        gdb.has_exec_run_start =                (NULL != strstr(src, "exec-run-start-option"));
-        gdb.has_data_disassemble_option_a =     (NULL != strstr(src, "data-disassemble-a-option"));
-
-        // TODO: "Whenever a target can change, due to commands such as -target-select, 
-        // -target-attach or -exec-run, the list of target features may change, 
-        // and the frontend should obtain it again
-        // GDB_SendBlocking("-list-target-features", rec);
-        src = rec.buf.c_str();
-        gdb.supports_async_execution =          (NULL != strstr(src, "async"));
-        gdb.supports_reverse_execution =        (NULL != strstr(src, "reverse"));
-    }
-
-    if (prog.config.debug_exe_path.value != "")
-    {
-        String str = StringPrintf("-file-exec-and-symbols \"%s\"", 
-                                  prog.config.debug_exe_path.value.c_str());
-        GDB_Send(str.c_str());
-    }
-
-    if (prog.config.debug_exe_args.value != "")
-    {
-        String str = StringPrintf("-exec-arguments %s",
-                                  prog.config.debug_exe_args.value.c_str());
-        GDB_Send(str.c_str());
-    }
-
-    // set FILE_IDX_INVALID
-    //
-    CreateOrGetFile( String("") );
-
-    // preload all the referenced files
-    //GDB_SendBlocking("-file-list-exec-source-files", tmp, "files");
-    //const RecordAtom *files = GDB_ExtractAtom("files", tmp);
-    //for (const RecordAtom &file : GDB_IterChild(tmp, files))
-    //{
-    //    String fullpath = GDB_ExtractValue("fullname", file, tmp);
-    //    File::Create(fullpath.c_str(), file_ctx);
-    //    prog.files.emplace_back(file_ctx);
-    //}
-
-#endif
-
-    return true;
 }
 
 #define ImGuiDisabled(is_disabled, code)\
@@ -1053,7 +541,7 @@ void QueryWatchlist()
 
         if (GDB_SendBlocking(cmd.c_str(), rec))
         {
-            uint32_t counter = 0;
+            static uint32_t counter = 0;
             String exprname = StringPrintf("expression##%u", counter);
             counter++;
 
@@ -2649,7 +2137,6 @@ void Draw(GLFWwindow * /* window */)
 
         if (ImGui::BeginTable("Watch", 2, flags, control_subwindow_size))
         {
-
             static size_t edit_var_name_idx = -1;
             static size_t max_name_length = 0;
             static bool focus_name_input = false;
@@ -2822,90 +2309,10 @@ void Draw(GLFWwindow * /* window */)
             ImGui::EndTable();
         }
 
-
-
         //
         // configuration row of widgets
         //
         {
-            // @Hack(ish): all of prog.config needs to be ConfigPair for this to work
-            const size_t CONFIG_SIZE = 4096;
-            static char config_input[NUM_CONFIG][CONFIG_SIZE];
-            static bool show_config_window;
-            static_assert(sizeof(prog.config) % sizeof(ConfigPair) == 0, "prog.config not all ConfigPair's");
-
-            ConfigPair *src = reinterpret_cast<ConfigPair *>(&prog.config);
-
-            // configuration window
-            if ( ImGui::Button("Config") )
-            {
-                // set all of the initial values for the config input fields
-                show_config_window = true;
-                for (size_t i = 0; i < NUM_CONFIG; i++)
-                    tsnprintf(config_input[i], "%s", src[i].value.c_str());
-            }
-
-            if (show_config_window)
-            {
-                ImGui::Begin("Tug Configuration", &show_config_window);
-
-                for (size_t i = 0; i < NUM_CONFIG; i++)
-                {
-                    ConfigPair &iter = src[i];
-                    tsnprintf(tmpbuf, "%s##config", iter.key);
-                    ImGui::InputText(tmpbuf, &config_input[i][0], CONFIG_SIZE);
-
-                    if (iter.type == ConfigType_File)
-                    {
-                        static size_t open_index = BAD_INDEX;
-
-                        ImGui::SameLine();
-                        tsnprintf(tmpbuf, "...##%zu", i);
-                        if (ImGui::Button(tmpbuf))
-                            open_index = i;
-
-                        if (open_index == i)
-                        {
-                            ImGuiFileWindowMode mode = ImGuiFileWindowMode_SelectFile;
-                            static FileWindowContext ctx;
-                            if ( ImGuiFileWindow(ctx, mode) )
-                            {
-                                if (ctx.selected)
-                                {
-                                    tsnprintf(config_input[i], "%s", 
-                                              ctx.path.c_str());
-                                }
-                                open_index = BAD_INDEX;
-                            }
-                        }
-                    }
-                }
-
-                if ( ImGui::Button("apply") )
-                {
-                    show_config_window = false;
-                    for (size_t i = 0; i < NUM_CONFIG; i++)
-                        src[i].value = config_input[i];
-
-                    FILE *f = fopen("tug.ini", "w");
-                    if (f == NULL) 
-                    {
-                        PrintErrorf("fopen tug.ini: %s\n", strerror(errno));
-                    }
-                    else
-                    {
-                        // write out key=value pairs, double spaced
-                        for (size_t i = 0; i < NUM_CONFIG; i++)
-                        {
-                            fprintf(f, "%s=%s\n\n", src[i].key, src[i].value.c_str());
-                        }        
-                        fclose(f);
-                    }
-                }
-
-                ImGui::End();
-            }
-
             struct RegisterName
             {
                 String text;
@@ -2914,7 +2321,6 @@ void Draw(GLFWwindow * /* window */)
             static Vector<RegisterName> all_registers;
             static bool show_add_register_window = false;
 
-            ImGui::SameLine();
             if (ImGui::Button("Modify Tracked Registers##button"))
             {
                 show_add_register_window = true;
@@ -3012,9 +2418,6 @@ void Draw(GLFWwindow * /* window */)
 
         ImGui::End();
     }
-
-    gui.last_keystate = gui.this_keystate;
-    gui.last_mousestate = gui.this_mousestate;
 }
 
 static void glfw_error_callback(int error, const char* description)
@@ -3024,7 +2427,51 @@ static void glfw_error_callback(int error, const char* description)
 
 int main(int argc, char **argv)
 {
-    if (!Tug_Init(argc, argv))
+    // create the file for FILE_IDX_INVALID 
+    CreateOrGetFile( String("") );
+
+    // read in the command line args, skip exename argv[0]
+    for (int i = 1; i < argc;)
+    {
+        String flag = argv[i++];
+        if (flag == "-h" || flag == "--help")
+        {
+            const char *usage = 
+                "tug [flags]\n"
+                "  --exe [path to executable to debug]\n"
+                "  --gdb [path to gdb to use]\n"
+                "  -h, --help see available flags to use\n";
+            printf("%s", usage);
+            return false;
+        }
+        else
+        {
+            // flag requires an additional arg passed in
+            if (i >= argc)
+            {
+                PrintError("not enough params provided\n");
+                return false;
+            }
+            else if (flag == "--gdb")
+            {
+                prog.gdb_filename = argv[i++];
+            }
+            else if (flag == "--exe")
+            {
+                prog.debug_exe_filename = argv[i++];
+            }
+            else
+            {
+                PrintErrorf("unknown flag passed: %s\n", flag.c_str());
+                return false;
+            }
+        }
+    }
+
+    if (!GDB_Init(prog.gdb_filename, ""))
+        return 1;
+
+    if (!GDB_LoadInferior(prog.debug_exe_filename, ""))
         return 1;
 
     // Setup window
@@ -3040,9 +2487,16 @@ int main(int argc, char **argv)
     glfwSwapInterval(1); // Enable vsync
 
     // Setup Dear ImGui context
-    IMGUI_CHECKVERSION();
-    ImGui::CreateContext();
-    ImGuiIO& io = ImGui::GetIO(); (void)io;
+    bool imgui_started = IMGUI_CHECKVERSION() &&
+                         NULL != ImGui::CreateContext() &&
+                         ImGui_ImplGlfw_InitForOpenGL(window, true) &&
+                         ImGui_ImplOpenGL2_Init();
+
+    if (!imgui_started)
+        return 1;
+
+    ImGuiIO& io = ImGui::GetIO();
+    //io.IniFilename = NULL;
     //io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;     // Enable Keyboard Controls
     //io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;      // Enable Gamepad Controls
 
@@ -3052,8 +2506,6 @@ int main(int argc, char **argv)
     //ImGui::StyleColorsLight();
 
     // Setup Platform/Renderer backends
-    ImGui_ImplGlfw_InitForOpenGL(window, true);
-    ImGui_ImplOpenGL2_Init();
 
     // Load Fonts
     // - If no fonts are loaded, dear imgui will use the default font. You can also load multiple fonts and use ImGui::PushFont()/PopFont() to select them.
@@ -3063,13 +2515,6 @@ int main(int argc, char **argv)
     // - Read 'docs/FONTS.md' for more instructions and details.
     // - Remember that in C/C++ if you want to include a backslash \ in a string literal you need to write a double backslash \\ !
     io.Fonts->AddFontDefault();
-
-    if (0 && prog.config.font_filename.value != "")
-    {
-        float fontsize = atof(prog.config.font_filename.value.c_str());
-        if (fontsize == 0) fontsize = 12.0f;
-        io.Fonts->AddFontFromFileTTF(prog.config.font_filename.value.c_str(), fontsize);
-    }
 
     //io.Fonts->AddFontFromFileTTF("../../misc/fonts/Cousine-Regular.ttf", 15.0f);
     //io.Fonts->AddFontFromFileTTF("../../misc/fonts/DroidSans.ttf", 16.0f);
@@ -3239,7 +2684,7 @@ int main(int argc, char **argv)
         glfwSwapBuffers(window);
     }
 
-    Tug_Shutdown();
+    GDB_Shutdown();
 
     // Cleanup
     ImGui_ImplOpenGL2_Shutdown();

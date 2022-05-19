@@ -18,7 +18,6 @@
 // sepples
 #include <string>
 #include <vector>
-#include <fstream>
 
 // cstd
 #include <assert.h>
@@ -30,6 +29,8 @@
 #include <inttypes.h>
 
 // linoox
+#include <linux/limits.h>
+#include <libgen.h>
 #include <errno.h>
 #include <pthread.h>
 #include <spawn.h>
@@ -79,12 +80,15 @@ struct DL_Allocator
 
 template <typename T>
 using Vector = std::vector<T, DL_Allocator<T>>;
-
 using String = std::basic_string<char, std::char_traits<char>, DL_Allocator<char>>;
+
+#define VARGS_CHECK(fmt, ...) (0 && snprintf(NULL, 0, fmt, __VA_ARGS__))
+#define StringPrintf(fmt, ...) _StringPrintf(VARGS_CHECK(fmt, __VA_ARGS__), fmt, __VA_ARGS__)
+String _StringPrintf(int vargs_check, const char *fmt, ...);
 
 #define ArrayCount(arr) (sizeof(arr) / sizeof(arr[0]))
 #define tsnprintf(buf, fmt, ...) snprintf(buf, sizeof(buf), fmt, __VA_ARGS__)
-#define DefaultInvalid default: Assert(false);
+#define DefaultInvalid default: PrintError("hit invalid default switch"); break;
 #define GetMax(a, b) (a > b) ? a : b
 #define GetMin(a, b) (a < b) ? a : b
 #define GetAbs(a, b) (a > b) ? a - b : b - a
@@ -130,8 +134,6 @@ do {\
 // maximum amount of variables displayed in an expression if there 
 // are no run length values
 #define AGGREGATE_MAX 200
-
-#define TUG_CONFIG_FILENAME "tug.ini"
 
 const char *const DEFAULT_REG_ARM[] = {
     "r0", "r1", "r2", "r3", "r4", "r5", "r6", "r7", "r8",
@@ -335,23 +337,6 @@ struct GDB
     bool supports_reverse_execution;        // target is capable of reverse execution
 };
 
-enum ConfigType
-{
-    ConfigType_Text, 
-    ConfigType_File, 
-    ConfigType_Bool, 
-};
-
-struct ConfigPair
-{
-    const char *const key;
-    String value;
-    ConfigType type;
-
-    ConfigPair(const char *const pkey, 
-               ConfigType ptype = ConfigType_Text) : key(pkey), value(""), type(ptype) {}
-};
-
 enum ConsoleLineType
 {
     ConsoleLineType_None,
@@ -392,95 +377,14 @@ struct Program
     Vector<Frame> frames;
     size_t frame_idx = BAD_INDEX;
     pid_t inferior_process;
-
-    // key=value .ini configuration 
-    struct Config
-    {
-        ConfigPair gdb_path         = ConfigPair("gdb_path", ConfigType_File);
-        ConfigPair gdb_args         = ConfigPair("gdb_args");
-        ConfigPair debug_exe_path   = ConfigPair("debug_exe_path", ConfigType_File);
-        ConfigPair debug_exe_args   = ConfigPair("debug_exe_args");
-        ConfigPair font_filename    = ConfigPair("font_filename", ConfigType_File);
-        ConfigPair font_size        = ConfigPair("font_size");
-    } config;
-
+    String debug_exe_filename;
+    String debug_exe_args;
+    String gdb_filename;
+    String gdb_args;
 };
 
-const size_t NUM_CONFIG = sizeof(Program::Config) / sizeof(ConfigPair);
-
-
-
-
-// 
-// main.cpp
-//
 extern Program prog;
-void WriteToConsoleBuffer(const char *raw, size_t rawsize);
-
-//
-// gdb.cpp
-//
 extern GDB gdb;
 
-// record management functions
-struct ParseRecordContext
-{
-    Vector<RecordAtom> atoms;
-    size_t atom_idx;
-    size_t num_end_atoms;   // contiguous atoms stored at the end of atoms
+void WriteToConsoleBuffer(const char *raw, size_t rawsize);
 
-    bool error;
-
-    size_t i;
-    const char *buf;      // record line data
-    size_t bufsize;
-};
-
-// traverse through all the child elements of an array/struct
-struct AtomIter
-{
-    const RecordAtom *iter_begin;
-    const RecordAtom *iter_end;
-    const RecordAtom *begin() { return iter_begin; }
-    const RecordAtom *end() { return iter_end; }
-};
-AtomIter GDB_IterChild(const Record &rec, const RecordAtom *array);
-
-// extract values from parsed records
-String GDB_ExtractValue(const char *name, const RecordAtom &root, const Record &rec);
-int GDB_ExtractInt(const char *name, const RecordAtom &root, const Record &rec);
-const RecordAtom *GDB_ExtractAtom(const char *name, const RecordAtom &root, const Record &rec);
-
-// helper functions for searching the root node of a record 
-String GDB_ExtractValue(const char *name, const Record &rec);
-int GDB_ExtractInt(const char *name, const Record &rec);
-const RecordAtom *GDB_ExtractAtom(const char *name, const Record &rec);
-
-inline String GetAtomString(Span s, const Record &rec)
-{
-    Assert(s.index + s.length <= rec.buf.size());
-    String result = {};
-    result.assign(rec.buf.data() + s.index, s.length);
-    return result;
-}
-
-// send a message to GDB, don't wait for result
-bool GDB_Send(const char *cmd);
-
-// send a message to GDB, wait for a result record
-bool GDB_SendBlocking(const char *cmd, bool remove_after = true);
-
-// send a message to GDB, wait for a result record, then retrieve it
-bool GDB_SendBlocking(const char *cmd, Record &rec);
-
-// extract a MI record from a newline terminated line
-bool GDB_ParseRecord(char *buf, size_t bufsize, ParseRecordContext &ctx);
-
-void GDB_GrabBlockData();
-
-RecordAtomSequence GDB_RecurseEvaluation(ParseRecordContext &ctx);
-
-typedef void AtomIterator(Record &rec, RecordAtom &iter, void *ctx);
-void IterateAtoms(Record &rec, RecordAtom &iter, AtomIterator *iterator, void *ctx);
-
-void GDB_PrintRecordAtom(const Record &rec, const RecordAtom &iter, int tab_level, FILE *out = stdout);
