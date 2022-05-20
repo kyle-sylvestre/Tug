@@ -1,14 +1,27 @@
-# compile GLFW, if your distro is new enough you can skip compiling with "sudo apt install libglfw3-dev" and linking the -lglfw shared library
-git clone https://github.com/glfw/glfw.git
-cd glfw
-sudo apt install cmake
-sudo apt install libx11-dev
-sudo apt install libxrandr-dev
-sudo apt install libxinerama-dev
-sudo apt install libxcursor-dev
-sudo apt install libxi-dev
-sudo apt install libgl-dev
-cmake . -D GLFW_BUILD_EXAMPLES=0 -D GLFW_BUILD_TESTS=0 -D GLFW_BUILD_DOCS=0
-make clean
-make -j
-sudo make install
+# get precompiled GLFW if available, else compile GLFW from source
+sudo apt update
+apt-cache show libglfw3
+exit_code=$?
+if [ $exit_code = 0 ]
+then
+    sudo apt -y install libglfw3
+else
+    sudo apt -y install git
+    git clone https://github.com/glfw/glfw.git
+    exit_code=$?
+    if [ $exit_code = 0 ]
+    then    
+        cd glfw
+        sudo apt -y install cmake libx11-dev libxrandr-dev libxinerama-dev libxcursor-dev libxi-dev libgl-dev
+        cmake . -DBUILD_SHARED_LIBS=1\
+                -DGLFW_BUILD_EXAMPLES=0\
+                -DGLFW_BUILD_TESTS=0\
+                -DGLFW_BUILD_DOCS=0 
+        make clean
+        make -j
+        sudo make install
+        cd ..
+        rm -rf glfw
+    fi
+fi 
+

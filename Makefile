@@ -37,7 +37,7 @@ UNAME_S = $(shell uname -s)
 
 ifeq ($(UNAME_S), Linux) #LINUX
 	ECHO_MESSAGE = "Linux"
-	LIBS += -lpthread -lGL -lglfw3 -lm -ldl	# -lglfw3=static, -lglfw=dynamic
+	LIBS += -lpthread -lGL -lglfw -lm -ldl	# -lglfw3=static, -lglfw=dynamic
 endif
 
 ifeq ($(UNAME_S), Darwin) #APPLE
