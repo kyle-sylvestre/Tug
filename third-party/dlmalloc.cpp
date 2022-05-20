@@ -262,10 +262,8 @@ ONLY_MSPACES             default: 0 (false)
 USE_LOCKS                default: 0 (false)
   Causes each call to each public routine to be surrounded with
   pthread or WIN32 mutex lock/unlock. (If set true, this can be
-  overridden on a per-mspace basis for mspace versions.) If set to a
-  non-zero value other than 1, locks are used, but their
-  implementation is left out, so lock functions must be supplied manually,
-  as described below.
+  overridden on a per-mspace basis for mspace versions.)
+  NOTE(KLS): replaced #if USE_LOCKS > 1 with #if defined(USER_DEFINED_LOCKS)
 
 USE_SPIN_LOCKS           default: 1 iff USE_LOCKS and spin locks available
   If true, uses custom spin locks for locking. This is currently
@@ -523,15 +521,11 @@ MAX_RELEASE_CHECK_RATE   default: 4095 unless not HAVE_MMAP
 
 
 /* Configuration */
-/* !!! NOT THREAD SAFE, need #define USE_LOCKS 1 for that !!! */
 #define USE_DL_PREFIX 1
 
 #ifndef _WIN32 // FAT PENGUIN
 #define HAVE_MREMAP 1
 #endif
-
-
-
 
 /* Version identifier to allow people to support multiple versions */
 #ifndef DLMALLOC_VERSION
@@ -1812,6 +1806,7 @@ static FORCEINLINE int win32munmap(void* ptr, size_t size) {
 */
 
 #if !defined(USE_LOCKS)
+#pragma message "!!! NOT USING LOCKS !!!"
 #define USE_LOCK_BIT               (0U)
 #define INITIAL_LOCK(l)            (0)
 #define DESTROY_LOCK(l)            (0)
@@ -1819,7 +1814,8 @@ static FORCEINLINE int win32munmap(void* ptr, size_t size) {
 #define RELEASE_MALLOC_GLOBAL_LOCK()
 
 #else
-#if USE_LOCKS > 1
+#if defined(USER_DEFINED_LOCKS) /* replaced #if USE_LOCKS > 1 */
+
 /* -----------------------  User-defined locks ------------------------ */
 /* Define your own lock implementation here */
 /* #define INITIAL_LOCK(lk)  ... */

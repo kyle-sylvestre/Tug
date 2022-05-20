@@ -891,9 +891,15 @@ const RecordAtom *GDB_ExtractAtom(const char *name, size_t namelen,
     if ( (bracket = strchr(temp, '[')) )
     {
         int num_found = sscanf(bracket, "[%llu]", &index);
-        Assert(num_found == 1);
-        size_t bracket_offset = bracket - temp;
-        memset(bracket, '\0', sizeof(temp) - bracket_offset);
+        if (num_found != 1)
+        {
+            PrintError("sscanf error\n");
+        }
+        else
+        {
+            size_t bracket_offset = bracket - temp;
+            memset(bracket, '\0', sizeof(temp) - bracket_offset);
+        }
     }
     size_t tempsize = strlen(temp);
 
