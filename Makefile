@@ -4,7 +4,7 @@ OBJDIR =
 
 CXX = g++
 CXXFLAGS = -I./third-party -I./src
-CXXFLAGS += -g3 -gdwarf-2 -std=c++11 -Wall -Wformat -Wextra -Wshadow -pedantic -pthread
+CXXFLAGS += -g3 -gdwarf-2 -std=c++11 -Wall -Werror=format -Wextra -Werror=shadow -pedantic -pthread
 
 ifeq ($(DEBUG), 1)
     CXXFLAGS += -DDEBUG -O0 #-fsanitize=undefined,address  #-fsanitize-undefined-trap-on-error
