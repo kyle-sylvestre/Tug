@@ -12,8 +12,8 @@ GDB frontend made with Dear Imgui
 1. install GLFW3 from your package system</br>
     if not found compile from git repo https://github.com/glfw/glfw </br>
     https://www.glfw.org/docs/latest/compile.html</br>
-    NOTE: -lglfw is the shared library, -lglfw3 is the static library</br>
-2. run makefile in the root directory, output in build_release directory
+    NOTE: linker flag -lglfw is the shared library, -lglfw3 is the static library</br>
+2. run command "make DEBUG=0", output in generated build_release directory
 
 # Debuging an Executable
 have either gdb or gdb-mulitarch installed
