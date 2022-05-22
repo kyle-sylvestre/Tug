@@ -23,11 +23,11 @@ static bool VerifyFileExecutable(const char *filename)
 
     if (0 != stat(filename, &sb))
     {
-        PrintErrorf("file not found: %s\n", filename);
+        PrintErrorf("stat filename \"%s\": %s\n", filename, strerror(errno));
     }
     else
     {
-        if ((sb.st_mode & S_IXUSR) == 0)
+        if (!S_ISREG(sb.st_mode) || (sb.st_mode & S_IXUSR) == 0)
         {
             PrintErrorf("file not executable: %s\n", filename);
         }
@@ -350,10 +350,18 @@ bool GDB_Init(String gdb_filename, String gdb_args)
         // and the frontend should obtain it again
         // GDB_SendBlocking("-list-target-features", rec);
 
+    }
+
+    if (GDB_SendBlocking("-list-target-features", rec))
+    {
+        const char *src = rec.buf.c_str();
         gdb.supports_async_execution =          (NULL != strstr(src, "async"));
         gdb.supports_reverse_execution =        (NULL != strstr(src, "reverse"));
     }
 
+    PrintMessagef("spawned %s %s\n", gdb_filename.c_str(), gdb_args.c_str());
+    gdb.filename = gdb_filename;
+    gdb.args = gdb_args;
     return true;
 }
 
@@ -370,7 +378,7 @@ bool GDB_LoadInferior(String filename, String args)
     {
         // set the debugged executable
         String str = StringPrintf("-file-exec-and-symbols \"%s\"", 
-                                  prog.debug_exe_filename.c_str());
+                                  filename.c_str());
 
         if (GDB_SendBlocking(str.c_str()))
         {
@@ -383,12 +391,18 @@ bool GDB_LoadInferior(String filename, String args)
                 if (args != "")
                 {
                     str = StringPrintf("-exec-arguments %s",
-                                       prog.debug_exe_args.c_str());
+                                       args.c_str());
 
                     good_args = GDB_SendBlocking(str.c_str());
                 }
 
                 result = good_args;
+                if (result)
+                {
+                    PrintMessagef("set debug program: %s %s\n", filename.c_str(), args.c_str());
+                    gdb.debug_filename = filename;
+                    gdb.debug_args = args;
+                }
             }
         }
     }
@@ -408,6 +422,14 @@ void GDB_Shutdown()
     close(gdb.fd_out_read);
     close(gdb.fd_in_write);
     close(gdb.fd_out_write);
+
+    gdb.thread_read_interp = 0;
+    gdb.spawned_pid = 0;
+    gdb.modify_block = {};
+    gdb.fd_in_read = 0;
+    gdb.fd_out_read = 0;
+    gdb.fd_in_write = 0;
+    gdb.fd_out_write = 0;
 }
 
 AtomIter GDB_IterChild(const Record &rec, const RecordAtom *parent)
@@ -1081,7 +1103,7 @@ bool GDB_Send(const char *cmd)
     bool result = false;
     size_t cmdsize = strlen(cmd);
 
-    if (!prog.running || gdb.supports_async_execution)
+    if (gdb.spawned_pid != 0 && (!prog.running || gdb.supports_async_execution) )
     {
         // write to GDB
         ssize_t written = write(gdb.fd_out_write, cmd, cmdsize);

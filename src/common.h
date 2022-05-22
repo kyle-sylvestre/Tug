@@ -98,18 +98,22 @@ String _StringPrintf(int vargs_check, const char *fmt, ...);
 #define Assert(cond)\
 if ( !(cond) )\
 {\
-    char __gdb_buf[128]; tsnprintf(__gdb_buf, "gdb --pid %d", (int)getpid()); system(__gdb_buf); exit(1);\
+    char _gdb_buf[128]; tsnprintf(_gdb_buf, "gdb --pid %d", (int)getpid()); system(_gdb_buf); exit(1);\
 }
 #else
 #define Assert(cond) (void)0;
 #endif
+
+#define PrintMessagef(fmt, ...) do { String _msg = StringPrintf(fmt, __VA_ARGS__); WriteToConsoleBuffer(_msg.data(), _msg.size()); } while(0)
 
 // log user error message
 #define PrintError(str) PrintErrorf("%s", str)
 #define PrintErrorf(fmt, ...)\
 do {\
     fprintf(stderr, "(%s : %s : %d) ", __FILE__, __FUNCTION__, __LINE__);\
-    fprintf(stderr, fmt, __VA_ARGS__);\
+    String _msg = StringPrintf("Error " fmt, __VA_ARGS__);\
+    fprintf(stderr, "%s", _msg.c_str());\
+    WriteToConsoleBuffer(_msg.data(), _msg.size());\
     /*Assert(false);*/\
 } while(0)
 
@@ -292,6 +296,10 @@ const size_t BAD_INDEX = ~0;
 struct GDB
 {
     pid_t spawned_pid;      // process running GDB
+    String debug_filename;  // debug executable filename
+    String debug_args;      // args passed to debug executable
+    String filename;        // filename of spawned GDB 
+    String args;            // args passed to spawned GDB 
     
     bool end_program;
     pthread_t thread_read_interp;
@@ -377,10 +385,6 @@ struct Program
     Vector<Frame> frames;
     size_t frame_idx = BAD_INDEX;
     pid_t inferior_process;
-    String debug_exe_filename;
-    String debug_exe_args;
-    String gdb_filename;
-    String gdb_args;
 };
 
 extern Program prog;

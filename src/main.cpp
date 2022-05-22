@@ -832,12 +832,15 @@ void Draw(GLFWwindow * /* window */)
     char tmpbuf[4096];                  // scratch for snprintf
 
     // check for new blocks
-    int recv_block_semvalue;
-    sem_getvalue(gdb.recv_block, &recv_block_semvalue);
-    if (recv_block_semvalue > 0)
+    if (gdb.recv_block)
     {
-        GDB_GrabBlockData();
-        sem_wait(gdb.recv_block);
+        int recv_block_semvalue;
+        sem_getvalue(gdb.recv_block, &recv_block_semvalue);
+        if (recv_block_semvalue > 0)
+        {
+            GDB_GrabBlockData();
+            sem_wait(gdb.recv_block);
+        }
     }
 
     // process and clear all records found
@@ -1123,9 +1126,79 @@ void Draw(GLFWwindow * /* window */)
     //
     {
         ImGui::SetNextWindowBgAlpha(1.0);   // @Imgui: bug where GetStyleColor doesn't respect window opacity
-        ImGui::SetNextWindowPos( { 0, 0 } );
-        ImGui::SetNextWindowSize({ SOURCE_WIDTH, SOURCE_HEIGHT });
+        ImGui::SetNextWindowPos( ImVec2(0, 0) );
+        ImGui::SetNextWindowSize( ImVec2(SOURCE_WIDTH, SOURCE_HEIGHT) );
         ImGui::Begin("Source", NULL, window_flags);
+
+        if ( ImGui::BeginMainMenuBar() )
+        {
+            static bool just_opened_debug_program = true;
+            if (ImGui::BeginMenu("Debug Program"))
+            {
+                static FileWindowContext ctx;
+                static char gdb_filename[PATH_MAX];
+                static char gdb_args[1024];
+                static bool pick_gdb_file = false;
+                static char debug_filename[PATH_MAX];
+                static char debug_args[1024];
+                static bool pick_debug_file = false;
+
+                if (just_opened_debug_program)
+                {
+                    tsnprintf(debug_filename, "%s", gdb.debug_filename.c_str());
+                    tsnprintf(debug_args, "%s", gdb.debug_args.c_str());
+                    tsnprintf(gdb_filename, "%s", gdb.filename.c_str());
+                    tsnprintf(gdb_args, "%s", gdb.args.c_str());
+                    just_opened_debug_program = false;
+                }
+
+                ImGui::InputText("GDB filename", gdb_filename, sizeof(gdb_filename));
+                ImGui::SameLine();
+                if (ImGui::Button("...##gdb_filename")) 
+                    pick_gdb_file = true;
+                ImGui::InputText("GDB arguments", gdb_args, sizeof(gdb_args));
+
+                ImGui::InputText("debug filename", debug_filename, sizeof(debug_filename));
+                ImGui::SameLine();
+                if (ImGui::Button("...##debug_filename")) 
+                    pick_debug_file = true;
+                ImGui::InputText("debug arguments", debug_args, sizeof(debug_args));
+
+                if ( (pick_gdb_file || pick_debug_file) &&
+                    ImGuiFileWindow(ctx, ImGuiFileWindowMode_SelectFile))
+                {
+                   if (ctx.selected)
+                   {
+                       if (pick_gdb_file) tsnprintf(gdb_filename, "%s", ctx.path.c_str());
+                       if (pick_debug_file) tsnprintf(debug_filename, "%s", ctx.path.c_str());
+                   } 
+
+                   pick_debug_file = false;
+                   pick_gdb_file = false;
+                }
+
+                if (ImGui::Button("Start##Debug Program Menu"))
+                {
+                    if (gdb.filename != gdb_filename)
+                    {
+                        if (gdb.spawned_pid != 0)
+                            GDB_Shutdown();
+
+                        GDB_Init(gdb_filename, gdb_args);
+                    }
+
+                    if (gdb.spawned_pid != 0 && GDB_LoadInferior(debug_filename, debug_args))
+                    {
+                        just_opened_debug_program = true; // reset for next open
+                        ImGui::CloseCurrentPopup(); 
+                    }
+                }
+
+                ImGui::EndMenu();
+            }
+
+            ImGui::EndMainMenuBar();
+        }
 
         if ( ImGui_IsKeyClicked(ImGuiKey_F, ImGuiMod_Ctrl) )
         {
@@ -1845,60 +1918,12 @@ void Draw(GLFWwindow * /* window */)
             return 0;
         };
 
+        // show autocomplete modal after pressing tab on input
         static Vector<String> phrases;
         static size_t phrase_idx;
         static String query_phrase;
-
-        if (query_phrase != input_command)
-        {
-            phrase_idx = 0;
-            phrases.clear();
-            query_phrase = input_command;
-        }
-
-        if (ImGui_IsKeyClicked(ImGuiKey_Tab) && ImGui::GetIO().WantCaptureKeyboard)
-        {
-            if (phrases.size() == 0)
-            {
-                String cmd = StringPrintf("-complete \"%s\"", input_command);
-                if (GDB_SendBlocking(cmd.c_str(), rec))
-                {
-                    phrase_idx = 0;
-                    phrases.clear();
-                    const RecordAtom *matches = GDB_ExtractAtom("matches", rec);
-                    for (const RecordAtom &match : GDB_IterChild(rec, matches))
-                    {
-                        phrases.push_back( GetAtomString(match.value, rec) );
-                    }
-                }
-            }
-            else
-            {
-                bool shift_down = ImGui::GetIO().KeyShift;
-                if (phrase_idx == phrases.size() - 1 && !shift_down)
-                    phrase_idx = 0;
-                else if (phrase_idx == 0 && shift_down)
-                    phrase_idx = phrases.size() - 1;
-                else 
-                    phrase_idx += (shift_down) ? -1 : 1;
-            }
-        }
-
-        if (ImGui_IsKeyClicked(ImGuiKey_Escape))
-        {
-            phrase_idx = 0;
-            phrases.clear();
-        }
-
-        if (phrases.size() > 0)
-        {
-            ImGui::BeginTooltip();
-            for (size_t i = 0; i < phrases.size(); i++)
-            {
-                ImGui::Selectable(phrases[i].c_str(), i == phrase_idx);
-            }
-            ImGui::EndTooltip();
-        }
+        const ImVec2 AUTOCOMPLETE_START = ImVec2(ImGui::GetCursorPosX(),
+                                                 ImGui::GetCursorPosY() - phrases.size() * ImGui::GetTextLineHeight());
 
         // TODO: syncing up gui disabled buttons when user inputs step next continue
         const float CONSOLE_BAR_HEIGHT = 30.0f;
@@ -1918,6 +1943,7 @@ void Draw(GLFWwindow * /* window */)
             bool use_last_command = (input_command[0] == '\0' && prog.num_input_cmds > 0);
             const char *send_command = (use_last_command) ? &prog.input_cmd[0][0] : input_command;
 
+            query_phrase = "";
             if (phrase_idx < phrases.size())
             {
                 tsnprintf(input_command, "%s", phrases[phrase_idx].c_str());
@@ -1988,6 +2014,73 @@ void Draw(GLFWwindow * /* window */)
             }
         }
 
+        size_t command_length = strlen(input_command);
+        if (command_length < query_phrase.size())
+        {
+            // went outside of completion scope, clear old data
+            phrase_idx = 0;
+            phrases.clear();
+        }
+
+        size_t len_before_culling = phrases.size();
+        for (size_t end = phrases.size(); end > 0; end--)
+        {
+            size_t i = end - 1;
+            if (NULL == strstr(phrases[i].c_str(), input_command))
+            {
+                phrases.erase(phrases.begin() + i,
+                              phrases.begin() + i + 1);
+            }
+        }
+
+        if (len_before_culling != phrases.size()) 
+            phrase_idx = 0;
+
+        if (ImGui::IsItemActive() && ImGui_IsKeyClicked(ImGuiKey_Tab))// && ImGui::GetIO().WantCaptureKeyboard)
+        {
+            if (phrases.size() == 0)
+            {
+                String cmd = StringPrintf("-complete \"%s\"", input_command);
+                if (GDB_SendBlocking(cmd.c_str(), rec))
+                {
+                    phrase_idx = 0;
+                    phrases.clear();
+                    query_phrase = input_command;
+                    const RecordAtom *matches = GDB_ExtractAtom("matches", rec);
+                    for (const RecordAtom &match : GDB_IterChild(rec, matches))
+                    {
+                        phrases.push_back( GetAtomString(match.value, rec) );
+                    }
+                }
+            }
+            else
+            {
+                bool shift_down = ImGui::GetIO().KeyShift;
+                if (phrase_idx == phrases.size() - 1 && !shift_down)
+                    phrase_idx = 0;
+                else if (phrase_idx == 0 && shift_down)
+                    phrase_idx = phrases.size() - 1;
+                else 
+                    phrase_idx += (shift_down) ? -1 : 1;
+            }
+        }
+
+        if (ImGui_IsKeyClicked(ImGuiKey_Escape))
+        {
+            phrase_idx = 0;
+            phrases.clear();
+        }
+
+        if (phrases.size() > 0)
+        {
+            ImGui::SetNextWindowPos(AUTOCOMPLETE_START);
+            ImGui::BeginTooltip();
+            for (size_t i = 0; i < phrases.size(); i++)
+            {
+                ImGui::Selectable(phrases[i].c_str(), i == phrase_idx);
+            }
+            ImGui::EndTooltip();
+        }
 
         ImGui::SetCursorPos(logstart);
         ImVec2 logsize = ImGui::GetWindowSize();
@@ -2442,7 +2535,7 @@ int main(int argc, char **argv)
                 "  --gdb [path to gdb to use]\n"
                 "  -h, --help see available flags to use\n";
             printf("%s", usage);
-            return false;
+            return 1;
         }
         else
         {
@@ -2450,28 +2543,30 @@ int main(int argc, char **argv)
             if (i >= argc)
             {
                 PrintError("not enough params provided\n");
-                return false;
+                return 1;
             }
             else if (flag == "--gdb")
             {
-                prog.gdb_filename = argv[i++];
+                gdb.filename = argv[i++];
             }
             else if (flag == "--exe")
             {
-                prog.debug_exe_filename = argv[i++];
+                gdb.debug_filename = argv[i++];
             }
             else
             {
                 PrintErrorf("unknown flag passed: %s\n", flag.c_str());
-                return false;
+                return 1;
             }
         }
     }
 
-    if (!GDB_Init(prog.gdb_filename, ""))
+    if (gdb.filename != "" && 
+        !GDB_Init(gdb.filename, ""))
         return 1;
 
-    if (!GDB_LoadInferior(prog.debug_exe_filename, ""))
+    if (gdb.debug_filename != "" && 
+        !GDB_LoadInferior(gdb.debug_filename, ""))
         return 1;
 
     // Setup window
