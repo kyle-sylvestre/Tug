@@ -51,8 +51,10 @@ static void *ReadInterpreterBlocks(void *)
         //printf("~%d~\n%d - num read: %zu \n~%d~\n", iteration,
         //       (int)gdb.block_data[ insert_idx + num_read - 1 ], 
         //       (size_t)num_read, iteration);
+#if defined(DEBUG)
         printf("~%d~\n%.*s\n~%d~\n", iteration, (int)num_read, 
                gdb.block_data + insert_idx, iteration);
+#endif
         iteration++;
         insert_idx += num_read;
 
@@ -99,82 +101,47 @@ static void *ReadInterpreterBlocks(void *)
         pthread_mutex_unlock(&gdb.modify_block);
     }
 
-    printf("closing GDB interpreter read loop...\n");
     return NULL;
 }
 
-bool GDB_Init(String gdb_filename, String gdb_args)
+bool GDB_StartProcess(String gdb_filename, String gdb_args)
 {
     int rc = 0;
-
-    int pipes[2] = {};
-    rc = pipe(pipes);
-    if (rc < 0)
-    {
-        PrintErrorf("from gdb pipe: %s\n", strerror(errno));
-        return false;
-    }
-
-    gdb.fd_in_read = pipes[0];
-    gdb.fd_in_write = pipes[1];
-
-    rc = pipe(pipes);
-    if (rc < 0)
-    {
-        PrintErrorf("to gdb pipe: %s\n", strerror(errno));
-        return false;
-    }
-
-    gdb.fd_out_read = pipes[0];
-    gdb.fd_out_write = pipes[1];
-
-    rc = pthread_mutex_init(&gdb.modify_block, NULL);
-    if (rc < 0) 
-    {
-        PrintErrorf("pthread_mutex_init: %s\n", strerror(errno));
-        return false;
-    }
-
-    gdb.recv_block = sem_open("recv_gdb_block", O_CREAT, S_IRWXU, 0);
-    if (gdb.recv_block == NULL) 
-    {
-        PrintErrorf("sem_open: %s\n", strerror(errno));
-        return false;
-    }
-
-    //if (0 > (gdb.fd_pty_master = posix_openpt(O_RDWR | O_NOCTTY | O_NONBLOCK)))
-    //{
-    //    PrintErrorf("posix_openpt: %s\n", strerror(errno));
-    //    break;
-    //}
-
-    //if (0 > (rc = grantpt(gdb.fd_pty_master)) )
-    //{
-    //    PrintErrorf("grantpt: %s\n", strerror(errno));
-    //    break;
-    //}
-    //if (0 > (rc = unlockpt(gdb.fd_pty_master)) )
-    //{
-    //    PrintErrorf("grantpt: %s\n", strerror(errno));
-    //    break;
-    //}
-    //printf("pty slave: %s\n", ptsname(gdb.fd_pty_master));
-
-
-
-    //rc = chdir("/mnt/c/Users/Kyle/Downloads/Chrome Downloads/ARM/AARCH32");
-    //if (rc < 0)
-    //{
-    //    PrintErrorf("chdir: %s\n", strerror(errno));
-    //    break;
-    //}
-
     if (!VerifyFileExecutable(gdb_filename.c_str()))
     {
         return false;
     }
     else
     {
+        // make sure the file provided is gdb or gdb-multiarch
+        FILE *fver = popen( StringPrintf("%s --version 2>&1", gdb_filename.c_str()).c_str(), "r");
+        bool is_gdb = false;
+        if (fver == NULL)
+        {
+            PrintErrorf("%s popen: %s\n", gdb_filename.c_str(), strerror(errno));
+        }
+        else
+        {
+            String version;
+            char tmp[1024] = {};
+            ssize_t tmpread = 0;
+            while (0 < (tmpread = fread(tmp, 1, sizeof(tmp), fver)) )
+            {
+                version.insert(version.size(), tmp, tmpread);
+            }
+
+            is_gdb = (NULL != strstr(version.c_str(), "GNU")) && 
+                     (NULL != strstr(version.c_str(), "gdb"));
+
+            pclose(fver); fver = NULL;
+        }
+
+        if (!is_gdb)
+        {
+            PrintErrorf("file not GDB: %s\n", gdb_filename.c_str());
+            return false;
+        }
+
 #if 0 // old way, can't get gdb process PID this way
         dup2(gdb.fd_out_read, 0);        // stdin
         dup2(gdb.fd_in_write, 1);        // stdout
@@ -237,6 +204,7 @@ bool GDB_Init(String gdb_filename, String gdb_args)
         if (fsh == NULL)
         {
             PrintErrorf("printenv popen: %s\n", strerror(errno));
+            return false;
         }
         else
         {
@@ -282,7 +250,6 @@ bool GDB_Init(String gdb_filename, String gdb_args)
             PrintErrorf("posix_spawnp: %s\n", strerror(errno));
             return false;
         }
-
     }
 
     rc = pthread_create(&gdb.thread_read_interp, NULL, ReadInterpreterBlocks, (void*) NULL);
@@ -384,28 +351,6 @@ bool GDB_LoadInferior(String filename, String args)
     }
 
     return result;
-}
-
-void GDB_Shutdown()
-{
-    pthread_kill(gdb.thread_read_interp, SIGINT);
-    pthread_join(gdb.thread_read_interp, NULL);
-    kill(gdb.spawned_pid, SIGINT);
-
-    pthread_mutex_destroy(&gdb.modify_block);
-    sem_close(gdb.recv_block);
-    close(gdb.fd_in_read);
-    close(gdb.fd_out_read);
-    close(gdb.fd_in_write);
-    close(gdb.fd_out_write);
-
-    gdb.thread_read_interp = 0;
-    gdb.spawned_pid = 0;
-    gdb.modify_block = {};
-    gdb.fd_in_read = 0;
-    gdb.fd_out_read = 0;
-    gdb.fd_in_write = 0;
-    gdb.fd_out_write = 0;
 }
 
 AtomIter GDB_IterChild(const Record &rec, const RecordAtom *parent)

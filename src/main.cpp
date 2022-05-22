@@ -832,15 +832,12 @@ void Draw(GLFWwindow * /* window */)
     char tmpbuf[4096];                  // scratch for snprintf
 
     // check for new blocks
-    if (gdb.recv_block)
+    int recv_block_semvalue = 0;
+    sem_getvalue(gdb.recv_block, &recv_block_semvalue);
+    if (recv_block_semvalue > 0)
     {
-        int recv_block_semvalue;
-        sem_getvalue(gdb.recv_block, &recv_block_semvalue);
-        if (recv_block_semvalue > 0)
-        {
-            GDB_GrabBlockData();
-            sem_wait(gdb.recv_block);
-        }
+        GDB_GrabBlockData();
+        sem_wait(gdb.recv_block);
     }
 
     // process and clear all records found
@@ -1182,9 +1179,13 @@ void Draw(GLFWwindow * /* window */)
                     if (gdb.filename != gdb_filename)
                     {
                         if (gdb.spawned_pid != 0)
-                            GDB_Shutdown();
+                        {
+                            PrintMessagef("ending %s...", gdb.filename.c_str());
+                            gdb.filename = "";
+                            kill(gdb.spawned_pid, SIGTERM);
+                        }
 
-                        GDB_Init(gdb_filename, gdb_args);
+                        GDB_StartProcess(gdb_filename, gdb_args);
                     }
 
                     if (gdb.spawned_pid != 0 && GDB_LoadInferior(debug_filename, debug_args))
@@ -2545,6 +2546,46 @@ static void glfw_error_callback(int error, const char* description)
 
 int main(int argc, char **argv)
 {
+    {
+        // GDB Init
+        int rc = 0;
+
+        int pipes[2] = {};
+        rc = pipe(pipes);
+        if (rc < 0)
+        {
+            PrintErrorf("from gdb pipe: %s\n", strerror(errno));
+            return 1;
+        }
+
+        gdb.fd_in_read = pipes[0];
+        gdb.fd_in_write = pipes[1];
+
+        rc = pipe(pipes);
+        if (rc < 0)
+        {
+            PrintErrorf("to gdb pipe: %s\n", strerror(errno));
+            return 1;
+        }
+
+        gdb.fd_out_read = pipes[0];
+        gdb.fd_out_write = pipes[1];
+
+        rc = pthread_mutex_init(&gdb.modify_block, NULL);
+        if (rc < 0) 
+        {
+            PrintErrorf("pthread_mutex_init: %s\n", strerror(errno));
+            return 1;
+        }
+
+        gdb.recv_block = sem_open("recv_gdb_block", O_CREAT, S_IRWXU, 0);
+        if (gdb.recv_block == NULL) 
+        {
+            PrintErrorf("sem_open: %s\n", strerror(errno));
+            return 1;
+        }
+    }
+
     // create the file for FILE_IDX_INVALID 
     CreateOrGetFile( String("") );
 
@@ -2591,7 +2632,7 @@ int main(int argc, char **argv)
     }
 
     if (gdb.filename != "" && 
-        !GDB_Init(gdb.filename, ""))
+        !GDB_StartProcess(gdb.filename, ""))
         return 1;
 
     if (gdb.spawned_pid != 0 && 
@@ -2811,7 +2852,19 @@ int main(int argc, char **argv)
         glfwSwapBuffers(window);
     }
 
-    GDB_Shutdown();
+
+    {
+        // GDB shutdown
+        kill(gdb.spawned_pid, SIGTERM);
+        pthread_cancel(gdb.thread_read_interp);
+        pthread_join(gdb.thread_read_interp, NULL);
+        pthread_mutex_destroy(&gdb.modify_block);
+        sem_close(gdb.recv_block);
+        close(gdb.fd_in_read);
+        close(gdb.fd_out_read);
+        close(gdb.fd_in_write);
+        close(gdb.fd_out_write);
+    }
 
     // Cleanup
     ImGui_ImplOpenGL2_Shutdown();
