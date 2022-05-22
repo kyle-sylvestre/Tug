@@ -315,9 +315,9 @@ bool GDB_LoadInferior(String filename, String args)
     char *dir = NULL;
 
     tsnprintf(tmp, "%s", filename.c_str());
-    dir = dirname(tmp);
+    
 
-    if (VerifyFileExecutable(filename.c_str()) && dir != NULL)
+    if (NULL != (dir = dirname(tmp)))
     {
         // set the debugged executable
         String str = StringPrintf("-file-exec-and-symbols \"%s\"", 
