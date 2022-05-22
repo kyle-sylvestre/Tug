@@ -9,13 +9,24 @@ GDB frontend made with Dear Imgui
 
 ![image](https://user-images.githubusercontent.com/25188464/160457519-15b65af3-0046-4c78-8fda-0b56a3ae7664.png)
 # Building the Project
-    ./install_glfw.sh
-    make
+1. install GLFW3 from your package system</br>
+    if not found compile from git repo https://github.com/glfw/glfw </br>
+    https://www.glfw.org/docs/latest/compile.html</br>
+    NOTE: -lglfw is the shared library, -lglfw3 is the static library</br>
+2. run makefile in the root directory, output in build_release directory
 
 # Debuging an Executable
-command line arguments:
+have either gdb or gdb-mulitarch installed
 
-tug --exe [path to exe here] --gdb [path to gdb here]
+1. run program from command line</br>
+    tug --exe [program to debug filename] --gdb [gdb filename]</br>
+
+OR 
+
+1. run tug</br>
+2. click "Debug Program" menu button</br>
+3. fill in gdb filename and debug filename, args are optional</br>
+4. click "Start" button</br>
 
 # Source Window
 -CTRL-F: open text search mode, N = next match, SHIFT-N = previous match, ESC to exit 
