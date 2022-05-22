@@ -16,30 +16,6 @@
 #include "common.h"
 #include "gdb.h"
 
-static bool VerifyFileExecutable(const char *filename)
-{
-    bool result = false;
-    struct stat sb = {};
-
-    if (0 != stat(filename, &sb))
-    {
-        PrintErrorf("stat filename \"%s\": %s\n", filename, strerror(errno));
-    }
-    else
-    {
-        if (!S_ISREG(sb.st_mode) || (sb.st_mode & S_IXUSR) == 0)
-        {
-            PrintErrorf("file not executable: %s\n", filename);
-        }
-        else
-        {
-            result = true;
-        }
-    }
-    
-    return result;
-}
-
 ssize_t read_block_maxsize = 0;
 static void *ReadInterpreterBlocks(void *)
 {

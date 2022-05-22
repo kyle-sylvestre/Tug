@@ -151,23 +151,27 @@ inline void OS_PopulateDirEntries(const std::string &dirpath,
             else 
             {
                 // check the file extension against the filters 
-                const char *ext = strrchr(find_data.cFileName, '.');
-                if (!ext) continue;
-                ext += 1; // offset '.'
-
                 bool add_file = false;
-                if (filters[0] == '*') add_file = true;
-
-                // parse the comma separated filters for acceptable file extensions
-                char filter_buf[128]; 
-                snprintf(filter_buf, sizeof(filter_buf), "%s", filters);
-
-                for (char *iter = strtok(filter_buf, ","); 
-                     !add_file && iter != NULL; 
-                     iter = strtok(NULL, ","))
+                const char *ext = NULL;
+                if (filters[0] == '*')
                 {
-                    if (0 == stricmp(iter, ext)) 
-                        add_file = true;
+                    add_file = true;
+                }
+                else if (NULL != (ext = strrchr(find_data.cFileName, '.')))
+                {
+                    ext += 1; // offset '.'
+
+                    // parse the comma separated filters for acceptable file extensions
+                    char filter_buf[128]; 
+                    snprintf(filter_buf, sizeof(filter_buf), "%s", filters);
+
+                    for (char *iter = strtok(filter_buf, ","); 
+                         !add_file && iter != NULL; 
+                         iter = strtok(NULL, ","))
+                    {
+                        if (0 == stricmp(iter, ext)) 
+                            add_file = true;
+                    }
                 }
 
                 if (add_file)
@@ -239,23 +243,29 @@ inline void OS_PopulateDirEntries(const std::string &dirpath,
             else if (entry->d_type & DT_REG)
             {
                 // check the file extension against the filters 
-                const char *ext = strrchr(entry->d_name, '.');
-                if (!ext) continue;
-                ext += 1; // offset '.'
-
                 bool add_file = false;
-                if (filters[0] == '*') add_file = true;
-
-                // parse the comma separated filters for acceptable file extensions
-                char filter_buf[128]; 
-                snprintf(filter_buf, sizeof(filter_buf), "%s", filters);
-
-                for (char *iter = strtok(filter_buf, ","); 
-                     !add_file && iter != NULL; 
-                     iter = strtok(NULL, ","))
+                const char *ext = NULL;
+                if (filters[0] == '*')
                 {
-                    if (0 == stricmp(iter, ext)) 
-                        add_file = true;
+                    add_file = true;
+                }
+                else if (NULL != (ext = strrchr(entry->d_name, '.')))
+                {
+                    ext += 1; // offset '.'
+
+                    // parse the comma separated filters for acceptable file extensions
+                    char filter_buf[128]; 
+                    snprintf(filter_buf, sizeof(filter_buf), "%s", filters);
+
+                    for (char *iter = strtok(filter_buf, ","); 
+                         !add_file && iter != NULL; 
+                         iter = strtok(NULL, ","))
+                    {
+                        if (0 == stricmp(iter, ext)) 
+                        {
+                            add_file = true;
+                        }
+                    }
                 }
 
                 if (add_file)

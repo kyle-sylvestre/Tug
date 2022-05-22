@@ -391,4 +391,4 @@ extern Program prog;
 extern GDB gdb;
 
 void WriteToConsoleBuffer(const char *raw, size_t rawsize);
-
+bool VerifyFileExecutable(const char *filename);

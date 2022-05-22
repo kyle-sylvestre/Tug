@@ -2513,6 +2513,31 @@ void Draw(GLFWwindow * /* window */)
     }
 }
 
+bool VerifyFileExecutable(const char *filename)
+{
+    bool result = false;
+    struct stat sb = {};
+
+    if (0 != stat(filename, &sb))
+    {
+        PrintErrorf("stat filename \"%s\": %s\n", filename, strerror(errno));
+    }
+    else
+    {
+        if (!S_ISREG(sb.st_mode) || (sb.st_mode & S_IXUSR) == 0)
+        {
+            PrintErrorf("file not executable: %s\n", filename);
+        }
+        else
+        {
+            result = true;
+        }
+    }
+    
+    return result;
+}
+
+
 static void glfw_error_callback(int error, const char* description)
 {
     PrintErrorf("Glfw Error %d: %s\n", error, description);
@@ -2542,20 +2567,24 @@ int main(int argc, char **argv)
             // flag requires an additional arg passed in
             if (i >= argc)
             {
-                PrintError("not enough params provided\n");
+                PrintErrorf("missing %s param\n", flag.c_str());
                 return 1;
             }
             else if (flag == "--gdb")
             {
                 gdb.filename = argv[i++];
+                if (!VerifyFileExecutable(gdb.filename.c_str()))
+                    return 1;
             }
             else if (flag == "--exe")
             {
                 gdb.debug_filename = argv[i++];
+                if (!VerifyFileExecutable(gdb.debug_filename.c_str()))
+                    return 1;
             }
             else
             {
-                PrintErrorf("unknown flag passed: %s\n", flag.c_str());
+                PrintErrorf("unknown flag: %s\n", flag.c_str());
                 return 1;
             }
         }
@@ -2565,9 +2594,12 @@ int main(int argc, char **argv)
         !GDB_Init(gdb.filename, ""))
         return 1;
 
-    if (gdb.debug_filename != "" && 
+    if (gdb.spawned_pid != 0 && 
+        gdb.debug_filename != "" && 
         !GDB_LoadInferior(gdb.debug_filename, ""))
+    {
         return 1;
+    }
 
     // Setup window
     glfwSetErrorCallback(glfw_error_callback);
