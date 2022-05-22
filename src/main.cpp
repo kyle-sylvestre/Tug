@@ -1885,8 +1885,7 @@ void Draw(GLFWwindow * /* window */)
         DrawHelpMarker(button_desc);
 
         #define CMDSIZE sizeof(Program::input_cmd[0])
-        static char input_command[CMDSIZE] = 
-            "target remote localhost:12345";
+        static char input_command[CMDSIZE];
 
         static const auto HistoryCallback = [](ImGuiInputTextCallbackData *data) -> int
         {
