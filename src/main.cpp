@@ -685,7 +685,7 @@ void RecurseSetNodeState(const Record &rec, size_t atom_idx, int state, String n
         const RecordAtom &child = rec.atoms[childoffset];
         String childname = name + String(rec.buf.c_str() + child.name.index,
                                          child.name.length);
-        if (child.type == Atom_Array || child.type == Atom_String)
+        if (child.type == Atom_Array || child.type == Atom_Struct)
         {
             RecurseSetNodeState(rec, childoffset, state, childname);
         }
@@ -1325,13 +1325,13 @@ void Draw(GLFWwindow * /* window */)
 
             // draw radio button and line offscreen to get the line size
             // TODO: how to do this without drawing offscreen
-            float sourcestart = ImGui::GetCursorPosY();
+            float start_curpos_y = ImGui::GetCursorPosY();
             ImGui::SetCursorPosY(-100);
             float ystartoffscreen = ImGui::GetCursorPosY();
             ImGui::RadioButton("##MeasureRadioHeight", false); ImGui::SameLine(); ImGui::Text("MeasureText");
             float lineheight = ImGui::GetCursorPosY() - ystartoffscreen;
             size_t perscreen = ceilf(ImGui::GetWindowHeight() / lineheight) + 1;
-            ImGui::SetCursorPosY(sourcestart);
+            ImGui::SetCursorPosY(start_curpos_y);
 
             // @Optimization: only draw the visible lines then SetCursorPosY to 
             // be lineheight * height per line to set the total scroll
@@ -1361,9 +1361,9 @@ void Draw(GLFWwindow * /* window */)
                 if (file.lines.size() > perscreen)
                 {
                     // set scrollbar height, -1 because index zero is never drawn
-                    ImGui::SetCursorPosY((file.lines.size() - 1) * lineheight); 
+                    ImGui::SetCursorPosY(start_curpos_y + (file.lines.size() - 1) * lineheight); 
                 }
-                ImGui::SetCursorPosY((start_idx - 1) * lineheight + sourcestart);
+                ImGui::SetCursorPosY((start_idx - 1) * lineheight + start_curpos_y);
 
                 for (size_t i = start_idx; i < end_idx; i++)
                 {
@@ -1611,7 +1611,6 @@ void Draw(GLFWwindow * /* window */)
             }
             else 
             {
-
                 // automatically scroll to the next executed line if it is far enough away
                 // and we've just stopped execution
                 if (gui.jump_to_exec_line)
@@ -1644,12 +1643,11 @@ void Draw(GLFWwindow * /* window */)
                 size_t end_idx = GetMin(start_idx + perscreen, gui.line_disasm.size());
                 if (gui.line_disasm.size() > perscreen)
                 {
-                    // set the proper scroll size by setting the cursor position
-                    // to the last line
-                    ImGui::SetCursorPosY(gui.line_disasm.size() * lineheight); 
+                    // set the proper scroll size by setting the cursor position to the last line
+                    ImGui::SetCursorPosY(start_curpos_y + gui.line_disasm.size() * lineheight); 
                 }
 
-                ImGui::SetCursorPosY(start_idx * lineheight + sourcestart);
+                ImGui::SetCursorPosY(start_idx * lineheight + start_curpos_y);
 
                 // display source window using retrieved disassembly
                 size_t src_idx = 0;
@@ -1922,13 +1920,14 @@ void Draw(GLFWwindow * /* window */)
         static Vector<String> phrases;
         static size_t phrase_idx;
         static String query_phrase;
-        const ImVec2 AUTOCOMPLETE_START = ImVec2(ImGui::GetCursorPosX(),
-                                                 ImGui::GetCursorPosY() - phrases.size() * ImGui::GetTextLineHeight());
 
         // TODO: syncing up gui disabled buttons when user inputs step next continue
         const float CONSOLE_BAR_HEIGHT = 30.0f;
         ImVec2 logstart = ImGui::GetCursorPos();
         ImGui::SetCursorPos( ImVec2(logstart.x, WINDOW_HEIGHT - SOURCE_HEIGHT - CONSOLE_BAR_HEIGHT) );
+        const ImVec2 AUTOCOMPLETE_START = ImVec2(ImGui::GetCursorScreenPos().x,
+                                                 ImGui::GetCursorScreenPos().y - (phrases.size() + 1) * ImGui::GetTextLineHeightWithSpacing());
+        
         if (ImGui::InputText("##input_command", input_command, 
                              sizeof(input_command), 
                              ImGuiInputTextFlags_EnterReturnsTrue | 
