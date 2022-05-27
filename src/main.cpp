@@ -177,7 +177,7 @@ static bool CreateFile(const char *fullpath, File &result)
 
         String tmp;
         int line = 1;
-        char linebuf[10];
+        char linebuf[32];
 
         while (std::getline(file, tmp))
         {
