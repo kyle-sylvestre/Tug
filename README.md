@@ -9,14 +9,20 @@ GDB frontend made with Dear Imgui
 
 ![image](https://user-images.githubusercontent.com/25188464/160457519-15b65af3-0046-4c78-8fda-0b56a3ae7664.png)
 # Building the Project
-1. install GLFW3 from your package system</br>
-    if not found compile from git repo https://github.com/glfw/glfw </br>
-    https://www.glfw.org/docs/latest/compile.html</br>
-    NOTE: linker flag -lglfw is the shared library, -lglfw3 is the static library</br>
-2. run command "make DEBUG=0", output in generated build_release directory
+1. Install GLFW3 from your package system</br>
+   **Debian:** sudo apt-get install libglfw3 libglfw3-dev</br>
+   **Arch:** sudo pacman -S glfw </br>
+   **Fedora:** sudo dnf install glfw glfw-devel </br>
+
+2. If unable to find package, compile from git repo </br>
+    https://github.com/glfw/glfw </br>
+    https://www.glfw.org/docs/latest/compile.html </br>
+    **NOTE**: linker flag -lglfw is the shared library, -lglfw3 is the static library </br>
+    
+3. Run command "make DEBUG=0", output in generated build_release directory
 
 # Debuging an Executable
-have either gdb or gdb-mulitarch installed
+have either gdb or gdb-multiarch installed
 
 1. run program from command line</br>
     tug --exe [program to debug filename] --gdb [gdb filename]</br>
@@ -29,35 +35,24 @@ OR
 4. click "Start" button</br>
 
 # Source Window
--CTRL-F: open text search mode, N = next match, SHIFT-N = previous match, ESC to exit 
-
--CTRL-G: open goto line window, ENTER to jump to input line, ESC to exit
-
--hover over any word to query its value, right click it to create a new watch within the control window
-
--add/remove breakpoint by clicking the empty column to the left of the line number
+* CTRL-F: open text search mode, N = next match, SHIFT-N = previous match, ESC to exit 
+* CTRL-G: open goto line window, ENTER to jump to input line, ESC to exit
+* hover over any word to query its value, right click it to create a new watch within the control window
+* add/remove breakpoint by clicking the empty column to the left of the line number
 
 # Control Window
--top row: program execution buttons
-
-  "---" = jump to next executed line inside source window
-  
-  "|>"  = start/continue program
-  
-  "||"  = pause program
-  
-  "-->" = step into
-  
-  "/\\>" = step over
-  
-  "</\\" = step out
+program execution buttons</br>
+* "---" = jump to next executed line inside source window
+* "|>"  = start/continue program
+* "||"  = pause program
+* "-->" = step into
+* "/\\>" = step over
+* "</\\" = step out
   
 # GDB Console Command Line
--repeat last command on hitting enter on an empty line (GDB emulation)
-
--cycle command history by pressing up/down arrow while clicked on the box
-
--hit tab while typing to see all the autocompletions, hit tab/shift tab to cycle through them
+* repeat last command on hitting enter on an empty line (GDB emulation)
+* cycle command history by pressing up/down arrow while clicked on the box
+* hit tab while typing to see all the autocompletions, hit tab/shift tab to cycle through them
 
 # Resources
 GDB Machine Interpreter:</br>
@@ -66,4 +61,5 @@ https://sourceware.org/gdb/download/onlinedocs/gdb/GDB_002fMI.html#GDB_002fMI</b
 GLFW:</br>
 https://www.glfw.org/download.html</br>
 https://www.glfw.org/docs/latest/compile.html</br>
+
 
