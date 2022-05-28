@@ -20,6 +20,7 @@
 #include <vector>
 
 // cstd
+#include <sys/wait.h>
 #include <assert.h>
 #include <stdio.h>
 #include <unistd.h>
@@ -392,3 +393,4 @@ extern GDB gdb;
 
 void WriteToConsoleBuffer(const char *raw, size_t rawsize);
 bool VerifyFileExecutable(const char *filename);
+bool DoesProcessExist(pid_t p);

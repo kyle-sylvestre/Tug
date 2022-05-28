@@ -106,6 +106,44 @@ String _StringPrintf(int /* vargs_check */, const char *fmt, ...)
     return result;
 }
 
+bool DoesProcessExist(pid_t p)
+{
+    struct stat st = {};
+    return (0 == stat( StringPrintf("/proc/%d", (int)p).c_str(), &st));
+}
+
+void EndProcess(pid_t p)
+{
+    if (0 > kill(p, SIGTERM))
+    {
+        PrintErrorf("kill SIGTERM: %s\n", strerror(errno));
+    }
+    else
+    {
+        usleep(1000000 / 10);
+        if (0 > kill(p, SIGKILL))
+        {
+            PrintErrorf("kill SIGKILL: %s\n", strerror(errno));
+        }
+
+        if (DoesProcessExist(p))
+        {
+            // defunct process, remove it with waitpid
+            int status = 0;
+            pid_t tmp = waitpid(p, &status, WNOHANG);
+            if (tmp < 0)
+            {
+                PrintErrorf("waitpid %s\n", strerror(errno));
+            }
+            else if (tmp == p)
+            {
+                PrintMessagef("ended process %d: exit code %d\n",
+                              (int)p, WEXITSTATUS(status));
+            }
+        }
+    }
+}
+
 enum LineDisplay
 {
     LineDisplay_Source,
@@ -133,6 +171,7 @@ GDB gdb;
 GUI gui;
 
 void dbg() {}
+
 
 static uint64_t ParseHex(const String &str)
 {
@@ -1182,7 +1221,8 @@ void Draw(GLFWwindow * /* window */)
                         {
                             PrintMessagef("ending %s...", gdb.filename.c_str());
                             gdb.filename = "";
-                            kill(gdb.spawned_pid, SIGTERM);
+                            EndProcess(gdb.spawned_pid);
+                            gdb.spawned_pid = 0;
                         }
 
                         GDB_StartProcess(gdb_filename, gdb_args);
@@ -2582,6 +2622,14 @@ int main(int argc, char **argv)
             PrintErrorf("sem_open: %s\n", strerror(errno));
             return 1;
         }
+
+        extern void *GDB_ReadInterpreterBlocks(void *);
+        rc = pthread_create(&gdb.thread_read_interp, NULL, GDB_ReadInterpreterBlocks, (void*) NULL);
+        if (rc < 0) 
+        {
+            PrintErrorf("pthread_create: %s\n", strerror(errno));
+            return false;
+        }
     }
 
     // create the file for FILE_IDX_INVALID 
@@ -2850,10 +2898,9 @@ int main(int argc, char **argv)
         glfwSwapBuffers(window);
     }
 
-
     {
         // GDB shutdown
-        kill(gdb.spawned_pid, SIGTERM);
+        EndProcess(gdb.spawned_pid);
         pthread_cancel(gdb.thread_read_interp);
         pthread_join(gdb.thread_read_interp, NULL);
         pthread_mutex_destroy(&gdb.modify_block);
@@ -2864,7 +2911,6 @@ int main(int argc, char **argv)
         close(gdb.fd_out_write);
     }
 
-    // Cleanup
     ImGui_ImplOpenGL2_Shutdown();
     ImGui_ImplGlfw_Shutdown();
     ImGui::DestroyContext();

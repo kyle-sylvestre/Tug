@@ -17,7 +17,7 @@
 #include "gdb.h"
 
 ssize_t read_block_maxsize = 0;
-static void *ReadInterpreterBlocks(void *)
+void *GDB_ReadInterpreterBlocks(void *)
 {
     // read data from GDB pipe
     size_t insert_idx = 0;
@@ -142,15 +142,6 @@ bool GDB_StartProcess(String gdb_filename, String gdb_args)
             return false;
         }
 
-#if 0 // old way, can't get gdb process PID this way
-        dup2(gdb.fd_out_read, 0);        // stdin
-        dup2(gdb.fd_in_write, 1);        // stdout
-        dup2(gdb.fd_in_write, 2);        // stderr
-
-        close(gdb.fd_in_write);
-
-        rc = execl("/usr/bin/gdb-multiarch", "gdb-multiarch", "./advent.out", "--interpreter=mi", NULL);
-#endif
         // TODO: using different versions of machine interpreter
         String args = gdb_filename + " " + gdb_args + " --interpreter=mi "; 
 
@@ -250,13 +241,6 @@ bool GDB_StartProcess(String gdb_filename, String gdb_args)
             PrintErrorf("posix_spawnp: %s\n", strerror(errno));
             return false;
         }
-    }
-
-    rc = pthread_create(&gdb.thread_read_interp, NULL, ReadInterpreterBlocks, (void*) NULL);
-    if (rc < 0) 
-    {
-        PrintErrorf("pthread_create: %s\n", strerror(errno));
-        return false;
     }
 
     //GDB_SendBlocking("-environment-cd /mnt/c/Users/Kyle/Documents/commercial-codebases/original/stevie");
