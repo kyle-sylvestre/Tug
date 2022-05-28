@@ -144,6 +144,23 @@ void EndProcess(pid_t p)
     }
 }
 
+void ResetProgramState()
+{
+    prog.other_frame_vars.clear();
+    prog.local_vars.clear();
+    //prog.breakpoints.clear(); TODO: requery breakpoints at start
+
+    prog.running = false;
+    prog.started = false;
+
+    prog.read_recs.clear();
+    prog.num_recs = 0;
+
+    prog.frames.clear();
+    prog.frame_idx = BAD_INDEX;
+    prog.inferior_process = 0;
+}
+
 enum LineDisplay
 {
     LineDisplay_Source,
@@ -981,9 +998,7 @@ void Draw(GLFWwindow * /* window */)
                 if ( (NULL != strstr(reason.c_str(), "exited")) )
                 {
                     async_stopped = false;
-                    prog.started = false;
-                    prog.frames.clear();
-                    prog.local_vars.clear();
+                    ResetProgramState();
                 }
                 else
                 {
@@ -1052,7 +1067,7 @@ void Draw(GLFWwindow * /* window */)
                     registers = DEFAULT_REG_X86;
                     num_registers = ArrayCount(DEFAULT_REG_X86);
                 }
-                else if (arch.size() >= 3 && 0 == memcmp(arch.data(), "arm", 3))
+                else if (NULL != strstr(arch.c_str(), "arm"))
                 {
                     registers = DEFAULT_REG_ARM;
                     num_registers = ArrayCount(DEFAULT_REG_ARM);
@@ -1166,6 +1181,14 @@ void Draw(GLFWwindow * /* window */)
         ImGui::SetNextWindowSize( ImVec2(SOURCE_WIDTH, SOURCE_HEIGHT) );
         ImGui::Begin("Source", NULL, window_flags);
 
+        struct RegisterName
+        {
+            String text;
+            bool registered;
+        };
+        static Vector<RegisterName> all_registers;
+        static bool show_register_window = false;
+
         if ( ImGui::BeginMainMenuBar() )
         {
             static bool just_opened_debug_program = true;
@@ -1222,6 +1245,7 @@ void Draw(GLFWwindow * /* window */)
                             PrintMessagef("ending %s...", gdb.filename.c_str());
                             gdb.filename = "";
                             EndProcess(gdb.spawned_pid);
+                            ResetProgramState();
                             gdb.spawned_pid = 0;
                         }
 
@@ -1238,8 +1262,107 @@ void Draw(GLFWwindow * /* window */)
                 ImGui::EndMenu();
             }
 
+            if (ImGui::BeginMenu("Settings"))
+            {
+                if (ImGui::Button("Configure Registers##Button"))
+                {
+                    show_register_window = true;
+                    all_registers.clear();
+                    GDB_SendBlocking("-data-list-register-names", rec);
+                    const RecordAtom *regs = GDB_ExtractAtom("register-names", rec);
+
+                    for (const RecordAtom &reg : GDB_IterChild(rec, regs))
+                    {
+                        RegisterName add = {};
+                        add.text = GetAtomString(reg.value, rec);
+                        if (add.text != "") 
+                        {
+                            String to_find = GLOBAL_NAME_PREFIX + add.text;
+                            add.registered = false;
+                            for (const VarObj &iter : prog.global_vars)
+                            {
+                                if (iter.name == add.text) 
+                                {
+                                    add.registered = true;
+                                    break;
+                                }
+                            }
+                            all_registers.emplace_back(add);
+                        }
+                    }
+                }
+
+                // line display: how to present the debugged executable: 
+                // source, disassembly, or source-and-disassembly
+                LineDisplay last_line_display = gui.line_display;
+                ImGui::SetNextItemWidth(160.0f);
+                ImGui::Combo("View Files As...##Settings", 
+                             reinterpret_cast<int *>(&gui.line_display),
+                             "Source\0Disassembly\0Source And Disassembly\0");
+
+
+                if (last_line_display == LineDisplay_Source && 
+                    gui.line_display != LineDisplay_Source &&
+                    prog.frame_idx < prog.frames.size())
+                {
+                    // query the disassembly for this function
+                    GetFunctionDisassembly(prog.frames[ prog.frame_idx ]);
+                }
+
+                ImGui::Checkbox("Show MI Records", &gui.show_machine_interpreter_commands);
+
+                ImGui::EndMenu();
+            }
+
             ImGui::EndMainMenuBar();
         }
+
+        // modify register window: query GDB for the list of register
+        // names then let the user pick which ones to use
+        if (show_register_window)
+        {
+            ImGui::SetNextWindowSize({ 400, 400 });
+            ImGui::Begin("Configure Registers##Window", &show_register_window);
+
+            for (RegisterName &reg : all_registers)
+            {
+                if ( ImGui::Checkbox(reg.text.c_str(), &reg.registered) )
+                {
+                    if (reg.registered)
+                    {
+                        // add register varobj, copied from var creation in async_stopped if statement
+                        // the only difference is GLOBAL_NAME_PREFIX and '@' used to signify a varobj
+                        // that lasts the duration of the program
+
+                        tsnprintf(tmpbuf, "-var-create " GLOBAL_NAME_PREFIX "%s @ $%s",
+                                  reg.text.c_str(), reg.text.c_str());
+                        GDB_SendBlocking(tmpbuf, rec);
+
+                        VarObj add = CreateVarObj(reg.text, GDB_ExtractValue("value", rec));
+                        prog.global_vars.emplace_back(add);
+                    }
+                    else
+                    {
+                        // delete register varobj
+                        for (size_t i = 0; i < prog.global_vars.size(); i++)
+                        {
+                            if (prog.global_vars[i].name == reg.text) 
+                            {
+                                tsnprintf(tmpbuf, "-var-delete " GLOBAL_NAME_PREFIX "%s", reg.text.c_str());
+                                if (GDB_SendBlocking(tmpbuf))
+                                {
+                                    prog.global_vars.erase(prog.global_vars.begin() + i,
+                                                           prog.global_vars.begin() + i + 1);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+
+            ImGui::End();
+        }
+
 
         if ( ImGui_IsKeyClicked(ImGuiKey_F, ImGuiMod_Ctrl) )
         {
@@ -2419,7 +2542,7 @@ void Draw(GLFWwindow * /* window */)
 
         if (ImGui::BeginTable("Registers", 2, flags, control_subwindow_size))
         {
-            ImGui::TableSetupColumn("Register");
+            ImGui::TableSetupColumn("eegister");
             ImGui::TableSetupColumn("Value");
             ImGui::TableHeadersRow();
 
@@ -2439,113 +2562,6 @@ void Draw(GLFWwindow * /* window */)
             }
 
             ImGui::EndTable();
-        }
-
-        //
-        // configuration row of widgets
-        //
-        {
-            struct RegisterName
-            {
-                String text;
-                bool registered;
-            };
-            static Vector<RegisterName> all_registers;
-            static bool show_add_register_window = false;
-
-            if (ImGui::Button("Modify Tracked Registers##button"))
-            {
-                show_add_register_window = true;
-                all_registers.clear();
-                GDB_SendBlocking("-data-list-register-names", rec);
-                const RecordAtom *regs = GDB_ExtractAtom("register-names", rec);
-
-                for (const RecordAtom &reg : GDB_IterChild(rec, regs))
-                {
-                    RegisterName add = {};
-                    add.text = GetAtomString(reg.value, rec);
-                    if (add.text != "") 
-                    {
-                        String to_find = GLOBAL_NAME_PREFIX + add.text;
-                        add.registered = false;
-                        for (const VarObj &iter : prog.global_vars)
-                        {
-                            if (iter.name == add.text) 
-                            {
-                                add.registered = true;
-                                break;
-                            }
-                        }
-                        all_registers.emplace_back(add);
-                    }
-                }
-            }
-
-            // add register window: query GDB for the list of register
-            // names then let the user pick which ones to use
-            if (show_add_register_window)
-            {
-                ImGui::SetNextWindowSize({ 400, 400 });
-                ImGui::Begin("Modify Tracked Registers##window", &show_add_register_window);
-
-                for (RegisterName &reg : all_registers)
-                {
-                    if ( ImGui::Checkbox(reg.text.c_str(), &reg.registered) )
-                    {
-                        if (reg.registered)
-                        {
-                            // add register varobj, copied from var creation in async_stopped if statement
-                            // the only difference is GLOBAL_NAME_PREFIX and '@' used to signify a varobj
-                            // that lasts the duration of the program
-
-                            tsnprintf(tmpbuf, "-var-create " GLOBAL_NAME_PREFIX "%s @ $%s",
-                                      reg.text.c_str(), reg.text.c_str());
-                            GDB_SendBlocking(tmpbuf, rec);
-
-                            VarObj add = CreateVarObj(reg.text, GDB_ExtractValue("value", rec));
-                            prog.global_vars.emplace_back(add);
-                        }
-                        else
-                        {
-                            // delete register varobj
-                            for (size_t i = 0; i < prog.global_vars.size(); i++)
-                            {
-                                if (prog.global_vars[i].name == reg.text) 
-                                {
-                                    tsnprintf(tmpbuf, "-var-delete " GLOBAL_NAME_PREFIX "%s", reg.text.c_str());
-                                    if (GDB_SendBlocking(tmpbuf))
-                                    {
-                                        prog.global_vars.erase(prog.global_vars.begin() + i,
-                                                               prog.global_vars.begin() + i + 1);
-                                    }
-                                }
-                            }
-                        }
-                    }
-                }
-
-                ImGui::End();
-            }
-
-            // line display: how to present the debugged executable: 
-            // source, disassembly, or source-and-disassembly
-            LineDisplay last_line_display = gui.line_display;
-            ImGui::SameLine();
-            ImGui::SetNextItemWidth(160.0f);
-            ImGui::Combo("##line_display", 
-                         reinterpret_cast<int *>(&gui.line_display),
-                         "Source\0Disassembly\0Source And Disassembly\0");
-
-
-            if (last_line_display == LineDisplay_Source && 
-                gui.line_display != LineDisplay_Source &&
-                prog.frame_idx < prog.frames.size())
-            {
-                // query the disassembly for this function
-                GetFunctionDisassembly(prog.frames[ prog.frame_idx ]);
-            }
-
-            ImGui::Checkbox("Show MI Records", &gui.show_machine_interpreter_commands);
         }
 
         ImGui::End();

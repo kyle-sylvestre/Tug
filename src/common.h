@@ -94,6 +94,12 @@ String _StringPrintf(int vargs_check, const char *fmt, ...);
 #define GetMin(a, b) (a < b) ? a : b
 #define GetAbs(a, b) (a > b) ? a - b : b - a
 
+template <typename T>
+inline void Zeroize(T &value)
+{
+    memset(&value, 0, sizeof(value));
+}
+
 // c standard wrappers
 #if !defined(NDEBUG)
 #define Assert(cond)\
@@ -106,6 +112,7 @@ if ( !(cond) )\
 #endif
 
 #define PrintMessagef(fmt, ...) do { String _msg = StringPrintf(fmt, __VA_ARGS__); WriteToConsoleBuffer(_msg.data(), _msg.size()); } while(0)
+#define PrintMessage(msg) PrintMessagef("%s", msg)
 
 // log user error message
 #define PrintError(str) PrintErrorf("%s", str)
@@ -365,6 +372,7 @@ struct Program
     bool log_scroll_to_bottom = true;
     size_t log_line_char_idx;
 
+    // GDB console history buffer
     char input_cmd[NUM_USER_CMDS][MAX_USER_CMDSIZE + 1 /* NT */];
     int input_cmd_idx = -1;
     int num_input_cmds;

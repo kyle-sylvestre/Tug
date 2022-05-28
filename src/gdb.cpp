@@ -1008,7 +1008,15 @@ bool GDB_Send(const char *cmd)
     bool result = false;
     size_t cmdsize = strlen(cmd);
 
-    if (gdb.spawned_pid != 0 && (!prog.running || gdb.supports_async_execution) )
+    if (gdb.spawned_pid == 0)
+    {
+        PrintMessage("GDB process not started\n");
+    }
+    else if (prog.running && !gdb.supports_async_execution)
+    {
+        PrintMessage("target doesn't support async execution\n");
+    }
+    else
     {
         // write to GDB
         ssize_t written = write(gdb.fd_out_write, cmd, cmdsize);
@@ -1047,7 +1055,7 @@ static size_t GDB_SendBlockingInternal(const char *cmd, bool remove_after)
         {
             timespec wait_for;
             clock_gettime(CLOCK_REALTIME, &wait_for);
-            wait_for.tv_sec += 3;
+            wait_for.tv_sec += 1;
 
             int rc = sem_timedwait(gdb.recv_block, &wait_for);
             if (rc < 0)
