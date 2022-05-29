@@ -125,8 +125,8 @@ do {\
     /*Assert(false);*/\
 } while(0)
 
-#define NUM_LOG_ROWS 40
-#define NUM_LOG_COLS 128
+#define MAX_LOG_ROWS 128
+#define NUM_LOG_COLS 256
 #define INVALID_LINE 0
 #define MAX_USER_CMDSIZE 128
 #define NUM_USER_CMDS 80
@@ -368,9 +368,10 @@ struct ConsoleLine
 struct Program
 {
     // console messages ordered from newest to oldest
-    ConsoleLine log[NUM_LOG_ROWS];
+    ConsoleLine log[MAX_LOG_ROWS];
     bool log_scroll_to_bottom = true;
     size_t log_line_char_idx;
+    size_t num_log_rows = 1;
 
     // GDB console history buffer
     char input_cmd[NUM_USER_CMDS][MAX_USER_CMDSIZE + 1 /* NT */];

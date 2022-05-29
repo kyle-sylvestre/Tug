@@ -320,6 +320,7 @@ void WriteToConsoleBuffer(const char *buf, size_t bufsize)
                     sizeof(prog.log) - sizeof(prog.log[0]));
             dest.type = ConsoleLineType_None;
             prog.log_line_char_idx = 0;
+            prog.num_log_rows = GetMin(prog.num_log_rows + 1, MAX_LOG_ROWS);
         }
         else if (prog.log_line_char_idx < NUM_LOG_COLS)
         {
@@ -378,6 +379,11 @@ void WriteToConsoleBuffer(const char *buf, size_t bufsize)
         // text that isn't a log record ex: shell ls
         for (size_t i = 0; i < bufsize; i++)
             PushChar(buf[i]);
+
+        // newline is chopped in user input, parsed as MI record
+        // PrintMessagef newline isn't chopped, check last char 
+        if (bufsize > 0 && buf[bufsize - 1] != '\n')
+            PushChar('\n');
     }
 
     size_t nt_index = GetMin(prog.log_line_char_idx, NUM_LOG_COLS);
@@ -2246,7 +2252,10 @@ void Draw(GLFWwindow * /* window */)
             logsize.x = 0.0f; // take up the full window width
             ImGui::BeginChild("##GDB_Console", logsize, true);
 
-            for (int i = NUM_LOG_ROWS; i > 0; i--)
+            // draw the log lines upwards from the bottom of the child window
+            ImGui::SetCursorPosY( GetMax(ImGui::GetCursorPosY(), logsize.y - prog.num_log_rows * ImGui::GetTextLineHeightWithSpacing()) );
+
+            for (size_t i = prog.num_log_rows; i > 0; i--)
             {
                 ConsoleLine &line = prog.log[i - 1];
                 const char *prefix = (line.type == ConsoleLineType_UserInput)
