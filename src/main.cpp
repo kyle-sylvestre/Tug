@@ -1168,17 +1168,12 @@ void Draw(GLFWwindow * /* window */)
         }
     }
 
-    ImGuiWindowFlags window_flags = ImGuiWindowFlags_NoMove |
-                                    ImGuiWindowFlags_NoResize |
-                                    ImGuiWindowFlags_NoCollapse | 
-                                    ImGuiWindowFlags_NoBringToFrontOnFocus;
-
     // 
     // source code window
     //
     {
         ImGui::SetNextWindowBgAlpha(1.0);   // @Imgui: bug where GetStyleColor doesn't respect window opacity
-        ImGui::Begin("Source", NULL, window_flags);
+        ImGui::Begin("Source");
 
         struct RegisterName
         {
@@ -1957,7 +1952,7 @@ void Draw(GLFWwindow * /* window */)
     //
     {
         ImGui::SetNextWindowBgAlpha(1.0);   // @Imgui: bug where GetStyleColor doesn't respect window opacity
-        ImGui::Begin("Control", NULL, window_flags);
+        ImGui::Begin("Control");
 
         // continue
         bool clicked;
