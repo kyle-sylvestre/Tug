@@ -2412,13 +2412,6 @@ void Draw(GLFWwindow * /* window */)
                     }
                 }
 
-                // empty columns to pad width
-                ImGui::TableNextRow();
-                ImGui::TableNextColumn();
-                ImGui::Text("%s", table_pad);
-                ImGui::TableNextColumn();
-                ImGui::Text("%s", table_pad);
-
                 ImGui::EndTable();
             }
 
@@ -3086,6 +3079,7 @@ int main(int argc, char **argv)
         ImGui::PushStyleColor(ImGuiCol_ButtonHovered, btn_hovered);
         ImGui::PushStyleColor(ImGuiCol_ButtonActive, btn_active);
 
+        DrawDebugOverlay();
         Draw(window);
 
         ImGui::PopStyleColor(4);
