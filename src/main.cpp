@@ -181,6 +181,7 @@ struct GUI
     bool source_search_bar_open = false;
     char source_search_keyword[256];
     size_t source_found_line_idx;
+    bool refresh_dock_space = true;
 };
 
 Program prog;
@@ -1177,8 +1178,6 @@ void Draw(GLFWwindow * /* window */)
     //
     {
         ImGui::SetNextWindowBgAlpha(1.0);   // @Imgui: bug where GetStyleColor doesn't respect window opacity
-        ImGui::SetNextWindowPos( ImVec2(0, 0) );
-        ImGui::SetNextWindowSize( ImVec2(SOURCE_WIDTH, SOURCE_HEIGHT) );
         ImGui::Begin("Source", NULL, window_flags);
 
         struct RegisterName
@@ -1948,17 +1947,16 @@ void Draw(GLFWwindow * /* window */)
 
         if (gui.source_search_bar_open)
             ImGui::EndChild();
+
         ImGui::End();
     }
 
 
     //
-    // program control / gdb command line
+    // program control / gdb console
     //
     {
         ImGui::SetNextWindowBgAlpha(1.0);   // @Imgui: bug where GetStyleColor doesn't respect window opacity
-        ImGui::SetNextWindowPos( ImVec2(0, SOURCE_HEIGHT) );
-        ImGui::SetNextWindowSize( ImVec2(SOURCE_WIDTH, WINDOW_HEIGHT - SOURCE_HEIGHT) );
         ImGui::Begin("Control", NULL, window_flags);
 
         // continue
@@ -2087,7 +2085,7 @@ void Draw(GLFWwindow * /* window */)
         // TODO: syncing up gui disabled buttons when user inputs step next continue
         const float CONSOLE_BAR_HEIGHT = 30.0f;
         ImVec2 logstart = ImGui::GetCursorPos();
-        ImGui::SetCursorPos( ImVec2(logstart.x, WINDOW_HEIGHT - SOURCE_HEIGHT - CONSOLE_BAR_HEIGHT) );
+        ImGui::SetCursorPos( ImVec2(logstart.x, ImGui::GetWindowHeight() - CONSOLE_BAR_HEIGHT) );
         const ImVec2 AUTOCOMPLETE_START = ImVec2(ImGui::GetCursorScreenPos().x,
                                                  ImGui::GetCursorScreenPos().y - (phrases.size() + 1) * ImGui::GetTextLineHeightWithSpacing());
         
@@ -2244,47 +2242,47 @@ void Draw(GLFWwindow * /* window */)
             ImGui::EndTooltip();
         }
 
-        ImGui::SetCursorPos(logstart);
-        ImVec2 logsize = ImGui::GetWindowSize();
-        logsize.y = logsize.y - logstart.y - CONSOLE_BAR_HEIGHT;
-        logsize.x = 0.0f; // take up the full window width
-        ImGui::BeginChild("##GDB_Console", logsize, true);
 
-        for (int i = NUM_LOG_ROWS; i > 0; i--)
         {
-            ConsoleLine &line = prog.log[i - 1];
-            const char *prefix = (line.type == ConsoleLineType_UserInput)
-                ? "(gdb) " : "";
-            ImGui::Text("%s%s", prefix, line.text);
+            // draw the console log
+            ImGui::SetCursorPos(logstart);
+            ImVec2 logsize = ImGui::GetWindowSize();
+            logsize.y = logsize.y - logstart.y - CONSOLE_BAR_HEIGHT;
+            logsize.x = 0.0f; // take up the full window width
+            ImGui::BeginChild("##GDB_Console", logsize, true);
+
+            for (int i = NUM_LOG_ROWS; i > 0; i--)
+            {
+                ConsoleLine &line = prog.log[i - 1];
+                const char *prefix = (line.type == ConsoleLineType_UserInput)
+                    ? "(gdb) " : "";
+                ImGui::Text("%s%s", prefix, line.text);
+            }
+
+            if (prog.log_scroll_to_bottom) 
+            {
+                ImGui::SetScrollHereY(1.0f);
+                prog.log_scroll_to_bottom = false;
+            }
+
+            ImGui::EndChild();
         }
 
-        if (prog.log_scroll_to_bottom) 
-        {
-            ImGui::SetScrollHereY(1.0f);
-            prog.log_scroll_to_bottom = false;
-        }
-
-        ImGui::EndChild();
-        ImGui::End();
 
         // don't set prog.running directly to prevent button flickering 
         if (resume_execution)
         {
             prog.running = true;
         }
+
+        ImGui::End();
     }
 
     //
     // registers, locals, watch
     //
     {
-
-        ImVec2 control_subwindow_size = ImVec2(400, 200);
         ImGui::SetNextWindowBgAlpha(1.0);   // @Imgui: bug where GetStyleColor doesn't respect window opacity
-        ImGui::SetNextWindowPos( ImVec2(SOURCE_WIDTH, 0) );
-        ImGui::SetNextWindowSize( ImVec2(WINDOW_WIDTH - SOURCE_WIDTH, WINDOW_HEIGHT) );
-        ImGui::Begin("Variables", NULL, window_flags);
-
         ImGuiTableFlags flags = ImGuiTableFlags_ScrollX |
                                 ImGuiTableFlags_ScrollY |
                                 ImGuiTableFlags_Borders;
@@ -2296,51 +2294,52 @@ void Draw(GLFWwindow * /* window */)
         const int MIN_TABLE_WIDTH_CHARS = 22;
         table_pad[ MIN_TABLE_WIDTH_CHARS ] = '\0';
 
-        if (ImGui::BeginTable("Locals", 2, flags, control_subwindow_size))
         {
-            ImGui::TableSetupColumn("Name");
-            ImGui::TableSetupColumn("Value");
-            ImGui::TableHeadersRow();
-
-            Vector<VarObj> &frame_vars = (prog.frame_idx == 0) ? prog.local_vars : prog.other_frame_vars;
-            for (size_t i = 0; i < frame_vars.size(); i++)
+            ImGui::Begin("Locals");
+            if (ImGui::BeginTable("##LocalsTable", 2, flags))
             {
-                const VarObj &iter = frame_vars[i];
-                if (iter.value[0] == '{')
-                {
-                    RecurseExpressionTreeNodes(iter, 0);
-                }
-                else
-                {
-                    ImGui::TableNextRow();
+                ImGui::TableSetupColumn("Name");
+                ImGui::TableSetupColumn("Value");
+                ImGui::TableHeadersRow();
 
-                    ImGui::TableNextColumn();
-                    ImGui::Text("%s", iter.name.c_str());
+                Vector<VarObj> &frame_vars = (prog.frame_idx == 0) ? prog.local_vars : prog.other_frame_vars;
+                for (size_t i = 0; i < frame_vars.size(); i++)
+                {
+                    const VarObj &iter = frame_vars[i];
+                    if (iter.value[0] == '{')
+                    {
+                        RecurseExpressionTreeNodes(iter, 0);
+                    }
+                    else
+                    {
+                        ImGui::TableNextRow();
 
-                    ImGui::TableNextColumn();
-                    ImColor color = (iter.changed)
-                        ? IM_COL32_WIN_RED
-                        : ImGui::GetStyleColorVec4(ImGuiCol_Text);
-                    ImGui::TextColored(color, "%s", iter.value.c_str());
+                        ImGui::TableNextColumn();
+                        ImGui::Text("%s", iter.name.c_str());
+
+                        ImGui::TableNextColumn();
+                        ImColor color = (iter.changed)
+                            ? IM_COL32_WIN_RED
+                            : ImGui::GetStyleColorVec4(ImGuiCol_Text);
+                        ImGui::TextColored(color, "%s", iter.value.c_str());
+                    }
                 }
+
+                // empty columns to pad width
+                ImGui::TableNextRow();
+                ImGui::TableNextColumn();
+                ImGui::Text("%s", table_pad);
+                ImGui::TableNextColumn();
+                ImGui::Text("%s", table_pad);
+
+                ImGui::EndTable();
             }
 
-            // empty columns to pad width
-            ImGui::TableNextRow();
-            ImGui::TableNextColumn();
-            ImGui::Text("%s", table_pad);
-            ImGui::TableNextColumn();
-            ImGui::Text("%s", table_pad);
-
-            ImGui::EndTable();
+            ImGui::End();
         }
 
-        if (ImGui::BeginChild("Callstack", control_subwindow_size, true) )
         {
-            //ImGui::TableSetupColumn("Function");
-            //ImGui::TableSetupColumn("Value");
-            //ImGui::TableHeadersRow();
-
+            ImGui::Begin("Callstack");
             for (size_t i = 0; i < prog.frames.size(); i++)
             {
                 const Frame &iter = prog.frames[i];
@@ -2387,184 +2386,191 @@ void Draw(GLFWwindow * /* window */)
                 }
             }
 
-            ImGui::EndChild();
+            ImGui::End();
         }
 
-        if (ImGui::BeginTable("Watch", 2, flags, control_subwindow_size))
         {
-            static size_t edit_var_name_idx = -1;
-            static size_t max_name_length = 0;
-            static bool focus_name_input = false;
-            ImGui::TableSetupColumn("Name");
-            ImGui::TableSetupColumn("Value");
-            ImGui::TableHeadersRow();
-
-            ImGui::PushStyleColor(ImGuiCol_FrameBg,
-                                  IM_COL32(255,255,255,16));
-
-            // @Imgui: how to see if an empty column cell has been clicked
-            // @VisualBug: after resizing a name column with a long name 
-            //             then clicking on a shorter name, the column will 
-            //             appear empty until arrow left or clicking
-            size_t this_max_name_length = MIN_TABLE_WIDTH_CHARS;
-            for (size_t i = 0; i < prog.watch_vars.size(); i++)
+            ImGui::Begin("Watch");
+            if (ImGui::BeginTable("##WatchTable", 2, flags))
             {
-                VarObj &iter = prog.watch_vars[i];
-                ImGui::TableNextRow();
+                static size_t edit_var_name_idx = -1;
+                static size_t max_name_length = 0;
+                static bool focus_name_input = false;
+                ImGui::TableSetupColumn("Name");
+                ImGui::TableSetupColumn("Value");
+                ImGui::TableHeadersRow();
 
-                ImGui::TableNextColumn();
-                ImGui::SetNextItemWidth(-FLT_MIN);
+                ImGui::PushStyleColor(ImGuiCol_FrameBg,
+                                      IM_COL32(255,255,255,16));
 
-                // is column clicked?
-                static char editwatch[4096];
-                bool column_clicked = false;
-                if (i == edit_var_name_idx)
+                // @Imgui: how to see if an empty column cell has been clicked
+                // @VisualBug: after resizing a name column with a long name 
+                //             then clicking on a shorter name, the column will 
+                //             appear empty until arrow left or clicking
+                size_t this_max_name_length = MIN_TABLE_WIDTH_CHARS;
+                for (size_t i = 0; i < prog.watch_vars.size(); i++)
                 {
-                    if (ImGui::InputText("##edit_watch", editwatch, 
-                                         sizeof(editwatch), 
-                                         ImGuiInputTextFlags_EnterReturnsTrue,
-                                         NULL, NULL))
+                    VarObj &iter = prog.watch_vars[i];
+                    ImGui::TableNextRow();
+
+                    ImGui::TableNextColumn();
+                    ImGui::SetNextItemWidth(-FLT_MIN);
+
+                    // is column clicked?
+                    static char editwatch[4096];
+                    bool column_clicked = false;
+                    if (i == edit_var_name_idx)
                     {
-                        iter = {};
-                        iter.name = editwatch;
-                        QueryWatchlist();
-                        memset(editwatch, 0, sizeof(editwatch));
-                        edit_var_name_idx = -1;
-                    }
+                        if (ImGui::InputText("##edit_watch", editwatch, 
+                                             sizeof(editwatch), 
+                                             ImGuiInputTextFlags_EnterReturnsTrue,
+                                             NULL, NULL))
+                        {
+                            iter = {};
+                            iter.name = editwatch;
+                            QueryWatchlist();
+                            memset(editwatch, 0, sizeof(editwatch));
+                            edit_var_name_idx = -1;
+                        }
 
 
-                    static int delay = 0; // @Imgui: need a delay or else it will auto de-focus
-                    if (focus_name_input)
-                    {
-                        ImGui::SetKeyboardFocusHere(-1);
-                        focus_name_input = false;
-                        delay = 0;
+                        static int delay = 0; // @Imgui: need a delay or else it will auto de-focus
+                        if (focus_name_input)
+                        {
+                            ImGui::SetKeyboardFocusHere(-1);
+                            focus_name_input = false;
+                            delay = 0;
+                        }
+                        else
+                        {
+                            bool deleted = false;
+                            delay++;
+                            bool active = ImGui::IsItemFocused() && (delay < 2 || ImGui::GetIO().WantCaptureKeyboard);
+                            if (ImGui_IsKeyClicked(ImGuiKey_Delete))
+                            {
+                                prog.watch_vars.erase(prog.watch_vars.begin() + i,
+                                                      prog.watch_vars.begin() + i + 1);
+                                size_t sz = prog.watch_vars.size();
+                                if (sz > 0)
+                                {
+                                    // activate another watch variable input box
+                                    ImGui::SetKeyboardFocusHere(0);
+                                    edit_var_name_idx = (i > sz) ? sz - 1 : i;
+                                    column_clicked = true;
+                                }
+                                else
+                                {
+                                    deleted = true;
+                                } 
+
+                            }
+
+                            if (!active || deleted || ImGui_IsKeyClicked(ImGuiKey_Escape))
+                            {
+                                edit_var_name_idx = -1;
+                                continue;
+                            }
+                        }
+
                     }
                     else
                     {
-                        bool deleted = false;
-                        delay++;
-                        bool active = ImGui::IsItemFocused() && (delay < 2 || ImGui::GetIO().WantCaptureKeyboard);
-                        if (ImGui_IsKeyClicked(ImGuiKey_Delete))
-                        {
-                            prog.watch_vars.erase(prog.watch_vars.begin() + i,
-                                                  prog.watch_vars.begin() + i + 1);
-                            size_t sz = prog.watch_vars.size();
-                            if (sz > 0)
-                            {
-                                // activate another watch variable input box
-                                ImGui::SetKeyboardFocusHere(0);
-                                edit_var_name_idx = (i > sz) ? sz - 1 : i;
-                                column_clicked = true;
-                            }
-                            else
-                            {
-                                deleted = true;
-                            } 
+                        if (iter.name.size() > this_max_name_length) 
+                            this_max_name_length = iter.name.size();
 
-                        }
+                        // make a clickable region for the empty column space
+                        size_t padsize = (iter.name.size() < max_name_length)
+                            ? max_name_length - iter.name.size() : 0;
+                        String pad(padsize, ' ');
 
-                        if (!active || deleted || ImGui_IsKeyClicked(ImGuiKey_Escape))
-                        {
-                            edit_var_name_idx = -1;
-                            continue;
-                        }
+                        ImGui::Text("%s%s", iter.name.c_str(), pad.c_str());
+                        if (ImGui::IsItemClicked())
+                            column_clicked = true;
+                    }
+
+                    if (column_clicked)
+                    {
+                        tsnprintf(editwatch, "%s", iter.name.c_str());
+                        focus_name_input = true;
+                        edit_var_name_idx = i;
+                    }
+
+
+                    ImGui::TableNextColumn();
+                    ImColor color = (iter.changed)
+                        ? IM_COL32_WIN_RED
+                        : ImGui::GetStyleColorVec4(ImGuiCol_Text);
+                    ImGui::TextColored(color, "%s", iter.value.c_str());
+
+                    if (iter.expr.atoms.size() > 0)
+                    {
+                        RecurseExpressionTreeNodes(iter, 0);
                     }
 
                 }
-                else
-                {
-                    if (iter.name.size() > this_max_name_length) 
-                        this_max_name_length = iter.name.size();
 
-                    // make a clickable region for the empty column space
-                    size_t padsize = (iter.name.size() < max_name_length)
-                        ? max_name_length - iter.name.size() : 0;
-                    String pad(padsize, ' ');
+                max_name_length = this_max_name_length;
 
-                    ImGui::Text("%s%s", iter.name.c_str(), pad.c_str());
-                    if (ImGui::IsItemClicked())
-                        column_clicked = true;
-                }
-
-                if (column_clicked)
-                {
-                    tsnprintf(editwatch, "%s", iter.name.c_str());
-                    focus_name_input = true;
-                    edit_var_name_idx = i;
-                }
-
-
-                ImGui::TableNextColumn();
-                ImColor color = (iter.changed)
-                    ? IM_COL32_WIN_RED
-                    : ImGui::GetStyleColorVec4(ImGuiCol_Text);
-                ImGui::TextColored(color, "%s", iter.value.c_str());
-
-                if (iter.expr.atoms.size() > 0)
-                {
-                    RecurseExpressionTreeNodes(iter, 0);
-                }
-
-            }
-
-            max_name_length = this_max_name_length;
-
-            ImGui::TableNextRow();
-            ImGui::TableNextColumn();
-            static char watch[256];
-
-            ImGui::SetNextItemWidth(-FLT_MIN);
-            if (ImGui::InputText("##create_new_watch", watch, 
-                                 sizeof(watch), 
-                                 ImGuiInputTextFlags_EnterReturnsTrue,
-                                 NULL, NULL))
-            {
-                VarObj add = CreateVarObj(watch);
-                prog.watch_vars.push_back(add);
-                QueryWatchlist();
-                memset(watch, 0, sizeof(watch));
-            }
-            ImGui::PopStyleColor();
-
-            ImGui::TableNextColumn();
-            ImGui::Text("%s", "");
-
-            // empty columns to pad width
-            ImGui::TableNextRow();
-            ImGui::TableNextColumn();
-            ImGui::Text("%s", table_pad);
-            ImGui::TableNextColumn();
-            ImGui::Text("%s", table_pad);
-
-            ImGui::EndTable();
-        }
-
-        if (ImGui::BeginTable("Registers", 2, flags, control_subwindow_size))
-        {
-            ImGui::TableSetupColumn("eegister");
-            ImGui::TableSetupColumn("Value");
-            ImGui::TableHeadersRow();
-
-            for (size_t i = 0; i < prog.global_vars.size(); i++)
-            {
-                const VarObj &iter = prog.global_vars[i];
                 ImGui::TableNextRow();
+                ImGui::TableNextColumn();
+                static char watch[256];
+
+                ImGui::SetNextItemWidth(-FLT_MIN);
+                if (ImGui::InputText("##create_new_watch", watch, 
+                                     sizeof(watch), 
+                                     ImGuiInputTextFlags_EnterReturnsTrue,
+                                     NULL, NULL))
+                {
+                    VarObj add = CreateVarObj(watch);
+                    prog.watch_vars.push_back(add);
+                    QueryWatchlist();
+                    memset(watch, 0, sizeof(watch));
+                }
+                ImGui::PopStyleColor();
 
                 ImGui::TableNextColumn();
-                ImGui::Text("%s", iter.name.c_str());
+                ImGui::Text("%s", "");
 
+                // empty columns to pad width
+                ImGui::TableNextRow();
                 ImGui::TableNextColumn();
-                ImColor color = (iter.changed)
-                    ? IM_COL32_WIN_RED
-                    : ImGui::GetStyleColorVec4(ImGuiCol_Text);
-                ImGui::TextColored(color, "%s", iter.value.c_str());
+                ImGui::Text("%s", table_pad);
+                ImGui::TableNextColumn();
+                ImGui::Text("%s", table_pad);
+
+                ImGui::EndTable();
             }
 
-            ImGui::EndTable();
+            ImGui::End();
         }
 
-        ImGui::End();
+        {
+            ImGui::Begin("Registers");
+            if (ImGui::BeginTable("##RegistersTable", 2, flags))
+            {
+                ImGui::TableSetupColumn("Register");
+                ImGui::TableSetupColumn("Value");
+                ImGui::TableHeadersRow();
+
+                for (size_t i = 0; i < prog.global_vars.size(); i++)
+                {
+                    const VarObj &iter = prog.global_vars[i];
+                    ImGui::TableNextRow();
+
+                    ImGui::TableNextColumn();
+                    ImGui::Text("%s", iter.name.c_str());
+
+                    ImGui::TableNextColumn();
+                    ImColor color = (iter.changed)
+                        ? IM_COL32_WIN_RED
+                        : ImGui::GetStyleColorVec4(ImGuiCol_Text);
+                    ImGui::TextColored(color, "%s", iter.value.c_str());
+                }
+
+                ImGui::EndTable();
+            }
+            ImGui::End();
+        }
     }
 }
 
@@ -2715,6 +2721,8 @@ int main(int argc, char **argv)
 
     glfwMakeContextCurrent(window);
     glfwSwapInterval(1); // Enable vsync
+    glfwSetFramebufferSizeCallback(window, [](GLFWwindow*,int,int) { gui.refresh_dock_space = true; prog.log_scroll_to_bottom = true; });
+
 
     // Setup Dear ImGui context
     bool imgui_started = IMGUI_CHECKVERSION() &&
@@ -2729,6 +2737,7 @@ int main(int argc, char **argv)
     //io.IniFilename = NULL;
     //io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;     // Enable Keyboard Controls
     //io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;      // Enable Gamepad Controls
+    io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;           // Enable Docking
 
     // Setup Dear ImGui style
     ImGui::StyleColorsDark();
@@ -2767,6 +2776,89 @@ int main(int argc, char **argv)
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
 
+        {
+            // the new hotness: docking windows
+            // yoinked from example
+            static ImGuiDockNodeFlags dockspace_flags = ImGuiDockNodeFlags_PassthruCentralNode;
+
+            // We are using the ImGuiWindowFlags_NoDocking flag to make the parent window not dockable into,
+            // because it would be confusing to have two docking targets within each others.
+            ImGuiWindowFlags window_flags = ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoDocking;
+
+            ImGuiViewport* viewport = ImGui::GetMainViewport();
+            ImGui::SetNextWindowPos(viewport->Pos);
+            ImGui::SetNextWindowSize(viewport->Size);
+            ImGui::SetNextWindowViewport(viewport->ID);
+
+            window_flags |= ImGuiWindowFlags_NoTitleBar |
+                            ImGuiWindowFlags_NoCollapse |
+                            ImGuiWindowFlags_NoResize |
+                            ImGuiWindowFlags_NoMove |
+                            ImGuiWindowFlags_NoBringToFrontOnFocus |
+                            ImGuiWindowFlags_NoNavFocus;
+
+
+            // When using ImGuiDockNodeFlags_PassthruCentralNode, DockSpace() will render our
+            // background and handle the pass-thru hole, so we ask Begin() to not render a background.
+            if (dockspace_flags & ImGuiDockNodeFlags_PassthruCentralNode)
+                window_flags |= ImGuiWindowFlags_NoBackground;
+
+            // Important: note that we proceed even if Begin() returns false (aka window is collapsed).
+            // This is because we want to keep our DockSpace() active. If a DockSpace() is inactive, 
+            // all active windows docked into it will lose their parent and become undocked.
+            // We cannot preserve the docking relationship between an active window and an inactive docking, otherwise 
+            // any change of dockspace/settings would lead to windows being stuck in limbo and never being visible.
+            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
+            ImGui::Begin("DockingWindow", nullptr, window_flags);
+            ImGui::PopStyleVar();
+
+            // DockSpace
+            if (io.ConfigFlags & ImGuiConfigFlags_DockingEnable)
+            {
+                ImGuiID dockspace_id = ImGui::GetID("DockingSpace");
+                ImGui::DockSpace(dockspace_id, ImVec2(0.0f, 0.0f), dockspace_flags);
+
+                if (gui.refresh_dock_space)
+                {
+                    gui.refresh_dock_space = false;
+
+                    ImGui::DockBuilderRemoveNode(dockspace_id); // clear previous layout
+                    ImGui::DockBuilderAddNode(dockspace_id, dockspace_flags | ImGuiDockNodeFlags_DockSpace);
+                    ImGui::DockBuilderSetNodeSize(dockspace_id, viewport->Size);
+
+                    ImGuiID left, right;
+                    ImGui::DockBuilderSplitNode(dockspace_id, ImGuiDir_Left,
+                                                0.6f, &left, &right);
+
+                    ImGuiID left_top = 0;
+                    ImGuiID left_bottom = 0;
+                    ImGui::DockBuilderSplitNode(left, ImGuiDir_Down,
+                                                0.4f, &left_bottom, &left_top);
+
+                    ImGuiID right_top = 0;
+                    ImGuiID right_bottom = 0;
+                    ImGui::DockBuilderSplitNode(right, ImGuiDir_Down,
+                                                0.4f, &right_bottom, &right_top);
+
+                    ImGuiID top_right_upper, top_right_lower;
+                    ImGui::DockBuilderSplitNode(right_top, ImGuiDir_Down,
+                                                0.5, &top_right_lower, &top_right_upper);
+
+                    // we now dock our windows into the docking node we made above
+                    ImGui::DockBuilderDockWindow("Source", left_top);
+                    ImGui::DockBuilderDockWindow("Control", left_bottom);
+
+                    ImGui::DockBuilderDockWindow("Locals", top_right_upper);
+                    ImGui::DockBuilderDockWindow("Callstack", top_right_lower);
+                    ImGui::DockBuilderDockWindow("Watch", right_bottom);
+                    ImGui::DockBuilderDockWindow("Registers", right_bottom);
+
+                    ImGui::DockBuilderFinish(ImGui::GetID("DockingSpace"));
+                }
+            }
+
+            ImGui::End();
+        }
 
         if (ImGui_IsKeyClicked(ImGuiKey_F12))
             Assert(false);
