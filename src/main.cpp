@@ -2390,6 +2390,34 @@ void Draw(GLFWwindow * /* window */)
         }
 
         {
+            ImGui::Begin("Registers");
+            if (ImGui::BeginTable("##RegistersTable", 2, flags))
+            {
+                ImGui::TableSetupColumn("Register");
+                ImGui::TableSetupColumn("Value");
+                ImGui::TableHeadersRow();
+
+                for (size_t i = 0; i < prog.global_vars.size(); i++)
+                {
+                    const VarObj &iter = prog.global_vars[i];
+                    ImGui::TableNextRow();
+
+                    ImGui::TableNextColumn();
+                    ImGui::Text("%s", iter.name.c_str());
+
+                    ImGui::TableNextColumn();
+                    ImColor color = (iter.changed)
+                        ? IM_COL32_WIN_RED
+                        : ImGui::GetStyleColorVec4(ImGuiCol_Text);
+                    ImGui::TextColored(color, "%s", iter.value.c_str());
+                }
+
+                ImGui::EndTable();
+            }
+            ImGui::End();
+        }
+
+        {
             ImGui::Begin("Watch");
             if (ImGui::BeginTable("##WatchTable", 2, flags))
             {
@@ -2544,33 +2572,6 @@ void Draw(GLFWwindow * /* window */)
             ImGui::End();
         }
 
-        {
-            ImGui::Begin("Registers");
-            if (ImGui::BeginTable("##RegistersTable", 2, flags))
-            {
-                ImGui::TableSetupColumn("Register");
-                ImGui::TableSetupColumn("Value");
-                ImGui::TableHeadersRow();
-
-                for (size_t i = 0; i < prog.global_vars.size(); i++)
-                {
-                    const VarObj &iter = prog.global_vars[i];
-                    ImGui::TableNextRow();
-
-                    ImGui::TableNextColumn();
-                    ImGui::Text("%s", iter.name.c_str());
-
-                    ImGui::TableNextColumn();
-                    ImColor color = (iter.changed)
-                        ? IM_COL32_WIN_RED
-                        : ImGui::GetStyleColorVec4(ImGuiCol_Text);
-                    ImGui::TextColored(color, "%s", iter.value.c_str());
-                }
-
-                ImGui::EndTable();
-            }
-            ImGui::End();
-        }
     }
 }
 

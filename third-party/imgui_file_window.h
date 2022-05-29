@@ -286,6 +286,7 @@ inline bool ImGuiFileWindow(FileWindowContext &ctx, ImGuiFileWindowMode mode,
 
     bool close_window = false;
     char tmp[MAX_PATH]; // scratch for getting strings
+    int uid = 0; // prevent duplicate names from messing up ImGui objects
 
     const char *window_name =
         (mode == ImGuiFileWindowMode_WriteFile) ? "Write File" :
@@ -295,17 +296,16 @@ inline bool ImGuiFileWindow(FileWindowContext &ctx, ImGuiFileWindowMode mode,
     if (mode == ImGuiFileWindowMode_SelectDirectory) 
         filters = "";
 
-    ImGui::Begin(window_name);
-
-    int uid = 0; // prevent duplicate names from messing up ImGui objects
-
     if (ctx.window_opened) 
     {
         ctx.window_opened = false;
         ctx.query_directory = true;
         OS_GetAbsolutePath(directory, tmp);
         ctx.path = std::string(tmp);
+        ImGui::SetNextWindowSize( ImVec2(700, 400) );
     }
+
+    ImGui::Begin(window_name);
 
     bool submit_disabled;
     if (mode == ImGuiFileWindowMode_WriteFile)
