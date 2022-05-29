@@ -22,6 +22,7 @@
 //
 
 // third party
+#include <imgui/imconfig.h>
 #include <imgui/imgui.h>
 #include <imgui/imgui_internal.h>
 #include <imgui/imgui_impl_glfw.h>
@@ -2344,7 +2345,9 @@ void Draw(GLFWwindow * /* window */)
         ImGui::SetNextWindowBgAlpha(1.0);   // @Imgui: bug where GetStyleColor doesn't respect window opacity
         ImGuiTableFlags flags = ImGuiTableFlags_ScrollX |
                                 ImGuiTableFlags_ScrollY |
-                                ImGuiTableFlags_BordersInner;
+                                ImGuiTableFlags_BordersInner |
+                                ImGuiTableFlags_SizingFixedFit |
+                                ImGuiTableFlags_Resizable;
 
         // @Imgui: can't figure out the right combo of table/column flags corresponding to 
         //         a table with initial column widths that expands column width on elem width increase
@@ -2357,8 +2360,8 @@ void Draw(GLFWwindow * /* window */)
             ImGui::Begin("Locals");
             if (ImGui::BeginTable("##LocalsTable", 2, flags))
             {
-                ImGui::TableSetupColumn("Name");
-                ImGui::TableSetupColumn("Value");
+                ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthStretch, 100.0f);
+                ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthStretch, 100.0f);
                 ImGui::TableHeadersRow();
 
                 Vector<VarObj> &frame_vars = (prog.frame_idx == 0) ? prog.local_vars : prog.other_frame_vars;
@@ -2452,8 +2455,8 @@ void Draw(GLFWwindow * /* window */)
             ImGui::Begin("Registers");
             if (ImGui::BeginTable("##RegistersTable", 2, flags))
             {
-                ImGui::TableSetupColumn("Register");
-                ImGui::TableSetupColumn("Value");
+                ImGui::TableSetupColumn("Register", ImGuiTableColumnFlags_WidthStretch, 100.0f);
+                ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthStretch, 100.0f);
                 ImGui::TableHeadersRow();
 
                 for (size_t i = 0; i < prog.global_vars.size(); i++)
@@ -2481,20 +2484,14 @@ void Draw(GLFWwindow * /* window */)
             if (ImGui::BeginTable("##WatchTable", 2, flags))
             {
                 static size_t edit_var_name_idx = -1;
-                static size_t max_name_length = 0;
                 static bool focus_name_input = false;
-                ImGui::TableSetupColumn("Name");
-                ImGui::TableSetupColumn("Value");
+                ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthStretch, 100.0f);
+                ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthStretch, 100.0f);
                 ImGui::TableHeadersRow();
 
                 ImGui::PushStyleColor(ImGuiCol_FrameBg,
                                       IM_COL32(255,255,255,16));
 
-                // @Imgui: how to see if an empty column cell has been clicked
-                // @VisualBug: after resizing a name column with a long name 
-                //             then clicking on a shorter name, the column will 
-                //             appear empty until arrow left or clicking
-                size_t this_max_name_length = MIN_TABLE_WIDTH_CHARS;
                 for (size_t i = 0; i < prog.watch_vars.size(); i++)
                 {
                     VarObj &iter = prog.watch_vars[i];
@@ -2562,16 +2559,11 @@ void Draw(GLFWwindow * /* window */)
                     }
                     else
                     {
-                        if (iter.name.size() > this_max_name_length) 
-                            this_max_name_length = iter.name.size();
-
-                        // make a clickable region for the empty column space
-                        size_t padsize = (iter.name.size() < max_name_length)
-                            ? max_name_length - iter.name.size() : 0;
-                        String pad(padsize, ' ');
-
-                        ImGui::Text("%s%s", iter.name.c_str(), pad.c_str());
-                        if (ImGui::IsItemClicked())
+                        ImVec2 p0 = ImGui::GetCursorScreenPos();
+                        ImGui::Text("%s", iter.name.c_str());
+                        ImVec2 sz = ImVec2(ImGui::GetColumnWidth(), ImGui::GetCursorScreenPos().y - p0.y);
+                        if (ImGui::IsMouseHoveringRect(p0, p0 + sz) && 
+                            ImGui::IsMouseClicked(ImGuiMouseButton_Left))
                             column_clicked = true;
                     }
 
@@ -2596,8 +2588,6 @@ void Draw(GLFWwindow * /* window */)
 
                 }
 
-                max_name_length = this_max_name_length;
-
                 ImGui::TableNextRow();
                 ImGui::TableNextColumn();
                 static char watch[256];
@@ -2617,14 +2607,6 @@ void Draw(GLFWwindow * /* window */)
 
                 ImGui::TableNextColumn();
                 ImGui::Text("%s", "");
-
-                // empty columns to pad width
-                ImGui::TableNextRow();
-                ImGui::TableNextColumn();
-                ImGui::Text("%s", table_pad);
-                ImGui::TableNextColumn();
-                ImGui::Text("%s", table_pad);
-
                 ImGui::EndTable();
             }
 
@@ -2662,6 +2644,90 @@ bool VerifyFileExecutable(const char *filename)
 static void glfw_error_callback(int error, const char* description)
 {
     PrintErrorf("Glfw Error %d: %s\n", error, description);
+}
+
+void DrawDebugOverlay()
+{
+    const ImGuiIO &io = ImGui::GetIO();
+    static bool debug_window_toggled;
+    if (ImGui_IsKeyClicked(ImGuiKey_F1))
+        debug_window_toggled = !debug_window_toggled;
+
+    if (debug_window_toggled)
+    {
+        char tmp[4096];
+        ImDrawList *drawlist = ImGui::GetForegroundDrawList();
+        snprintf(tmp, sizeof(tmp), "Mouse Position: (%.1f,%.1f)", io.MousePos.x, io.MousePos.y);
+        ImVec2 BR = ImGui::CalcTextSize(tmp);
+        ImVec2 TL = { 0, 0 };
+
+        drawlist->AddRectFilled(TL, BR, 0xFFFFFFFF);
+        drawlist->AddText(TL, 0xFF000000, tmp);
+
+        snprintf(tmp, sizeof(tmp), "Application average %.3f ms/frame (%.1f FPS)",
+                 1000.0f / ImGui::GetIO().Framerate, 
+                 ImGui::GetIO().Framerate);
+
+        TL.y = BR.y;
+        BR = ImGui::CalcTextSize(tmp);
+        BR.x += TL.x;
+        BR.y += TL.y;
+        drawlist->AddRectFilled(TL, BR, 0xFFFFFFFF);
+        drawlist->AddText(TL, 0xFF000000, tmp);
+
+        static bool pinned_point_toggled;
+        static ImVec2 pinned_point;
+        static ImVec2 pinned_window;
+
+        ImVec2 mousepos = ImGui::GetMousePos();
+        if (ImGui::IsMouseClicked(ImGuiMouseButton_Right))
+        {
+            pinned_point_toggled = !pinned_point_toggled;
+            if (pinned_point_toggled)
+            {
+                // get relative window position
+                ImGuiContext *ctx = ImGui::GetCurrentContext();
+
+                // windows are stored back to front
+                for (ImGuiWindow *iter : ctx->Windows)
+                {
+                    const ImVec2 WINDOW_BR = ImVec2(iter->Pos.x + iter->Size.x,
+                                                    iter->Pos.y + iter->Size.y);
+                    if ((!iter->Hidden && !iter->Collapsed) &&
+                        (iter->Pos.x <= mousepos.x && iter->Pos.y <= mousepos.y) &&
+                        (WINDOW_BR.x >= mousepos.x && WINDOW_BR.y >= mousepos.y) )
+                    {
+                        pinned_window = iter->Pos;
+                    }
+                }
+                pinned_point = mousepos;
+            }
+        }
+
+        if (pinned_point_toggled)
+        {
+            // draw a rect in the selected window
+            const ImVec2 PIN_BR = ImVec2(mousepos.x - pinned_window.x,
+                                         mousepos.y - pinned_window.y);
+            const ImVec2 PIN_TL = ImVec2(pinned_point.x - pinned_window.x,
+                                         pinned_point.y - pinned_window.y);
+
+            uint32_t col = IM_COL32(0, 255, 0, 32);
+            drawlist->AddRectFilled(pinned_point, mousepos, col);
+
+            snprintf(tmp, sizeof(tmp), "window rect:\n  pos: (%d, %d)\n  size: (%d, %d)",
+                     (int)PIN_TL.x, (int)PIN_TL.y,
+                     (int)(PIN_BR.x - PIN_TL.x), (int)(PIN_BR.y - PIN_TL.y));
+            BR = ImGui::CalcTextSize(tmp);
+            TL = ImVec2(pinned_point.x, pinned_point.y - BR.y);
+            BR.x += TL.x;
+            BR.y += TL.y;
+
+            drawlist->AddRectFilled(TL, BR, IM_COL32_WHITE);
+            drawlist->AddText(TL, IM_COL32_BLACK, tmp);
+        }
+    }
+
 }
 
 int main(int argc, char **argv)
@@ -2956,85 +3022,6 @@ int main(int argc, char **argv)
 
         if (ImGui_IsKeyClicked(ImGuiKey_F12))
             Assert(false);
-
-        static bool debug_window_toggled;
-        if (ImGui_IsKeyClicked(ImGuiKey_F1))
-            debug_window_toggled = !debug_window_toggled;
-
-        if (debug_window_toggled)
-        {
-            char tmp[4096];
-            ImDrawList *drawlist = ImGui::GetForegroundDrawList();
-            snprintf(tmp, sizeof(tmp), "Mouse Position: (%.1f,%.1f)", io.MousePos.x, io.MousePos.y);
-            ImVec2 BR = ImGui::CalcTextSize(tmp);
-            ImVec2 TL = { 0, 0 };
-
-            drawlist->AddRectFilled(TL, BR, 0xFFFFFFFF);
-            drawlist->AddText(TL, 0xFF000000, tmp);
-
-            snprintf(tmp, sizeof(tmp), "Application average %.3f ms/frame (%.1f FPS)",
-                     1000.0f / ImGui::GetIO().Framerate, 
-                     ImGui::GetIO().Framerate);
-
-            TL.y = BR.y;
-            BR = ImGui::CalcTextSize(tmp);
-            BR.x += TL.x;
-            BR.y += TL.y;
-            drawlist->AddRectFilled(TL, BR, 0xFFFFFFFF);
-            drawlist->AddText(TL, 0xFF000000, tmp);
-
-            static bool pinned_point_toggled;
-            static ImVec2 pinned_point;
-            static ImVec2 pinned_window;
-
-            ImVec2 mousepos = ImGui::GetMousePos();
-            if (ImGui::IsMouseClicked(ImGuiMouseButton_Right))
-            {
-                pinned_point_toggled = !pinned_point_toggled;
-                if (pinned_point_toggled)
-                {
-                    // get relative window position
-                    ImGuiContext *ctx = ImGui::GetCurrentContext();
-
-                    // windows are stored back to front
-                    for (ImGuiWindow *iter : ctx->Windows)
-                    {
-                        const ImVec2 WINDOW_BR = ImVec2(iter->Pos.x + iter->Size.x,
-                                                        iter->Pos.y + iter->Size.y);
-                        if ((!iter->Hidden && !iter->Collapsed) &&
-                            (iter->Pos.x <= mousepos.x && iter->Pos.y <= mousepos.y) &&
-                            (WINDOW_BR.x >= mousepos.x && WINDOW_BR.y >= mousepos.y) )
-                        {
-                            pinned_window = iter->Pos;
-                        }
-                    }
-                    pinned_point = mousepos;
-                }
-            }
-
-            if (pinned_point_toggled)
-            {
-                // draw a rect in the selected window
-                const ImVec2 PIN_BR = ImVec2(mousepos.x - pinned_window.x,
-                                             mousepos.y - pinned_window.y);
-                const ImVec2 PIN_TL = ImVec2(pinned_point.x - pinned_window.x,
-                                             pinned_point.y - pinned_window.y);
-
-                uint32_t col = IM_COL32(0, 255, 0, 32);
-                drawlist->AddRectFilled(pinned_point, mousepos, col);
-
-                snprintf(tmp, sizeof(tmp), "window rect:\n  pos: (%d, %d)\n  size: (%d, %d)",
-                         (int)PIN_TL.x, (int)PIN_TL.y,
-                         (int)(PIN_BR.x - PIN_TL.x), (int)(PIN_BR.y - PIN_TL.y));
-                BR = ImGui::CalcTextSize(tmp);
-                TL = ImVec2(pinned_point.x, pinned_point.y - BR.y);
-                BR.x += TL.x;
-                BR.y += TL.y;
-
-                drawlist->AddRectFilled(TL, BR, IM_COL32_WHITE);
-                drawlist->AddText(TL, IM_COL32_BLACK, tmp);
-            }
-        }
 
         //
         // global styles
