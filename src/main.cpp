@@ -2280,7 +2280,7 @@ void Draw(GLFWwindow * /* window */)
         ImGui::SetNextWindowBgAlpha(1.0);   // @Imgui: bug where GetStyleColor doesn't respect window opacity
         ImGuiTableFlags flags = ImGuiTableFlags_ScrollX |
                                 ImGuiTableFlags_ScrollY |
-                                ImGuiTableFlags_Borders;
+                                ImGuiTableFlags_BordersInner;
 
         // @Imgui: can't figure out the right combo of table/column flags corresponding to 
         //         a table with initial column widths that expands column width on elem width increase
