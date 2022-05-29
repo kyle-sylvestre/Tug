@@ -106,10 +106,25 @@ String _StringPrintf(int /* vargs_check */, const char *fmt, ...)
     return result;
 }
 
-bool DoesProcessExist(pid_t p)
+bool DoesFileExist(const char *filename)
 {
     struct stat st = {};
-    return (0 == stat( StringPrintf("/proc/%d", (int)p).c_str(), &st));
+    bool result = false;
+    if (0 > stat(filename, &st))
+    {
+        PrintErrorf("stat: %s\n", strerror(errno));
+    }
+    else
+    {
+        result = true;
+    }
+
+    return result;
+}
+
+bool DoesProcessExist(pid_t p)
+{
+    return DoesFileExist(StringPrintf("/proc/%d", (int)p).c_str());
 }
 
 void EndProcess(pid_t p)
@@ -182,6 +197,11 @@ struct GUI
     char source_search_keyword[256];
     size_t source_found_line_idx;
     bool refresh_dock_space = true;
+
+    bool use_default_font = true;
+    bool change_font = true;
+    float font_size = 13.0f;
+    String font_filename;
 };
 
 Program prog;
@@ -1293,7 +1313,6 @@ void Draw(GLFWwindow * /* window */)
                 }
 
                 // line display: how to present the debugged executable: 
-                // source, disassembly, or source-and-disassembly
                 LineDisplay last_line_display = gui.line_display;
                 ImGui::SetNextItemWidth(160.0f);
                 ImGui::Combo("View Files As...##Settings", 
@@ -1310,6 +1329,42 @@ void Draw(GLFWwindow * /* window */)
                 }
 
                 ImGui::Checkbox("Show MI Records", &gui.show_machine_interpreter_commands);
+                if (ImGui::Checkbox("Use Default Font (Proggy Clean.ttf)", &gui.use_default_font))
+                {
+                    if (gui.use_default_font || DoesFileExist(gui.font_filename.c_str()))
+                    {
+                        gui.change_font = true;
+                    }
+                }
+
+                float fsz = gui.font_size;
+                bool changed_font_point = false;
+                ImGuiDisabled(!gui.use_default_font && gui.font_filename == "",
+                              changed_font_point = ImGui::InputFloat("Font Point", &fsz, 1.0f, 0.0f, "%.0f", ImGuiInputTextFlags_EnterReturnsTrue));
+                if (changed_font_point) 
+                {
+                    gui.font_size = GetMin(GetMax(fsz, 8.0f), 72.0f);
+                    gui.change_font = true;
+                }
+
+                static FileWindowContext ctx;
+                static char buf[PATH_MAX];
+                static bool show_font_picker = false;
+                ImGuiDisabled(gui.use_default_font, ImGui::InputText("Font Filename", buf, sizeof(buf)));
+                ImGui::SameLine();
+                ImGuiDisabled(gui.use_default_font, show_font_picker |= ImGui::Button("...##font"));
+
+                if (show_font_picker && ImGuiFileWindow(ctx, ImGuiFileWindowMode_SelectFile, ".", "ttf,otf"))
+                {
+                    show_font_picker = false;
+                    if (ctx.selected)
+                    {
+                        gui.font_filename = ctx.path.c_str();
+                        gui.change_font = true;
+                        tsnprintf(buf, "%s", gui.font_filename.c_str());
+                    }
+                }
+
 
                 ImGui::EndMenu();
             }
@@ -2758,7 +2813,7 @@ int main(int argc, char **argv)
     // - The fonts will be rasterized at a given size (w/ oversampling) and stored into a texture when calling ImFontAtlas::Build()/GetTexDataAsXXXX(), which ImGui_ImplXXXX_NewFrame below will call.
     // - Read 'docs/FONTS.md' for more instructions and details.
     // - Remember that in C/C++ if you want to include a backslash \ in a string literal you need to write a double backslash \\ !
-    io.Fonts->AddFontDefault();
+    //io.FontAllowUserScaling = true;
 
     //io.Fonts->AddFontFromFileTTF("../../misc/fonts/Cousine-Regular.ttf", 15.0f);
     //io.Fonts->AddFontFromFileTTF("../../misc/fonts/DroidSans.ttf", 16.0f);
@@ -2775,6 +2830,40 @@ int main(int argc, char **argv)
         // - When io.WantCaptureKeyboard is true, do not dispatch keyboard input data to your main application.
         // Generally you may always pass all inputs to dear imgui, and hide them from your application based on those two flags.
         glfwPollEvents();
+
+        if (gui.change_font)
+        {
+            // change font data before it gets locked with NewFrame
+            gui.change_font = false;
+            io.Fonts->Clear();
+            ImGui_ImplOpenGL2_DestroyFontsTexture();
+
+            if (!gui.use_default_font)
+            {
+                if (NULL == io.Fonts->AddFontFromFileTTF(gui.font_filename.c_str(), gui.font_size))
+                {
+                    // fallback to default
+                    gui.use_default_font = true;
+                    gui.font_size = 13.0f;
+                    PrintErrorf("error loading font %s\n", gui.font_filename.c_str());
+                }
+            }
+
+            if (gui.use_default_font)
+            {
+                ImFontConfig tmp = ImFontConfig();
+                tmp.SizePixels = gui.font_size;
+                tmp.OversampleH = tmp.OversampleV = 1;
+                tmp.PixelSnapH = true;
+                if (NULL == io.Fonts->AddFontDefault(&tmp))
+                {
+                    PrintError("error loading default font?!?!?");
+                    break;
+                }
+            }
+
+            ImGui_ImplOpenGL2_CreateFontsTexture();
+        }
 
         // Start the Dear ImGui frame
         ImGui_ImplOpenGL2_NewFrame();

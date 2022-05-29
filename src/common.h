@@ -402,4 +402,5 @@ extern GDB gdb;
 
 void WriteToConsoleBuffer(const char *raw, size_t rawsize);
 bool VerifyFileExecutable(const char *filename);
+bool DoesFileExist(const char *filename);
 bool DoesProcessExist(pid_t p);
