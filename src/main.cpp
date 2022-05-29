@@ -113,7 +113,8 @@ bool DoesFileExist(const char *filename)
     bool result = false;
     if (0 > stat(filename, &st))
     {
-        PrintErrorf("stat: %s\n", strerror(errno));
+        // print when errno isn't file not found
+        PrintErrorf("stat \"%s\": %s\n", filename, strerror(errno));
     }
     else
     {
@@ -1329,10 +1330,15 @@ void Draw(GLFWwindow * /* window */)
                     GetFunctionDisassembly(prog.frames[ prog.frame_idx ]);
                 }
 
+                static FileWindowContext ctx;
+                static char font_filename[PATH_MAX];
+                static bool show_font_picker = false;
+                bool changed_font_filename = false;
+
                 ImGui::Checkbox("Show MI Records", &gui.show_machine_interpreter_commands);
                 if (ImGui::Checkbox("Use Default Font (Proggy Clean.ttf)", &gui.use_default_font))
                 {
-                    if (gui.use_default_font || DoesFileExist(gui.font_filename.c_str()))
+                    if (gui.use_default_font || (gui.font_filename != "" && DoesFileExist(gui.font_filename.c_str())))
                     {
                         gui.change_font = true;
                     }
@@ -1348,10 +1354,7 @@ void Draw(GLFWwindow * /* window */)
                     gui.change_font = true;
                 }
 
-                static FileWindowContext ctx;
-                static char buf[PATH_MAX];
-                static bool show_font_picker = false;
-                ImGuiDisabled(gui.use_default_font, ImGui::InputText("Font Filename", buf, sizeof(buf)));
+                ImGuiDisabled(gui.use_default_font, changed_font_filename = ImGui::InputText("Font Filename", font_filename, sizeof(font_filename), ImGuiInputTextFlags_EnterReturnsTrue));
                 ImGui::SameLine();
                 ImGuiDisabled(gui.use_default_font, show_font_picker |= ImGui::Button("...##font"));
 
@@ -1360,11 +1363,33 @@ void Draw(GLFWwindow * /* window */)
                     show_font_picker = false;
                     if (ctx.selected)
                     {
-                        gui.font_filename = ctx.path.c_str();
-                        gui.change_font = true;
-                        tsnprintf(buf, "%s", gui.font_filename.c_str());
+                        changed_font_filename = true;
+                        tsnprintf(font_filename, "%s", ctx.path.c_str());
                     }
                 }
+
+                if (changed_font_filename)
+                {
+                    bool good_font = false;
+                    if (DoesFileExist(font_filename))
+                    {
+                        const char *ext = strrchr(font_filename, '.');
+                        if(ext == NULL || (0 == strcmp(ext, ".otf") && 0 == strcmp(ext, ".ttf")))
+                        {
+                            PrintError("invalid font, choose .otf or .ttf\n");
+                        }
+                        else
+                        {
+                            good_font = true;
+                            gui.font_filename = font_filename;
+                            gui.change_font = true;
+                        }
+                    }
+
+                    if (!good_font)
+                        font_filename[0] = '\0';
+                }
+
 
 
                 ImGui::EndMenu();
