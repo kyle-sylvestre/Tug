@@ -208,7 +208,7 @@ struct GUI
     bool show_source = true;
     bool show_control = true;
     bool show_callstack = true;
-    bool show_registers = true;
+    bool show_registers = false;
     bool show_locals = true;
     bool show_watch = true;
 };
@@ -2394,17 +2394,16 @@ void Draw(GLFWwindow * /* window */)
         ImGui::SetNextWindowBgAlpha(1.0);   // @Imgui: bug where GetStyleColor doesn't respect window opacity
         ImGuiTableFlags flags = ImGuiTableFlags_ScrollX |
                                 ImGuiTableFlags_ScrollY |
-                                ImGuiTableFlags_BordersInner |
-                                ImGuiTableFlags_SizingFixedFit |
-                                ImGuiTableFlags_Resizable;
+                                ImGuiTableFlags_Resizable |
+                                ImGuiTableFlags_BordersInner;
 
         if (gui.show_locals)
         {
             ImGui::Begin("Locals", &gui.show_locals);
             if (ImGui::BeginTable("##LocalsTable", 2, flags))
             {
-                ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthStretch, 100.0f);
-                ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthStretch, 100.0f);
+                ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthFixed, 125.0f);
+                ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_NoResize);
                 ImGui::TableHeadersRow();
 
                 Vector<VarObj> &frame_vars = (prog.frame_idx == 0) ? prog.local_vars : prog.other_frame_vars;
@@ -2493,8 +2492,8 @@ void Draw(GLFWwindow * /* window */)
             ImGui::Begin("Registers", &gui.show_registers);
             if (ImGui::BeginTable("##RegistersTable", 2, flags))
             {
-                ImGui::TableSetupColumn("Register", ImGuiTableColumnFlags_WidthStretch, 100.0f);
-                ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthStretch, 100.0f);
+                ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthFixed, 125.0f);
+                ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_NoResize);
                 ImGui::TableHeadersRow();
 
                 for (size_t i = 0; i < prog.global_vars.size(); i++)
@@ -2524,8 +2523,8 @@ void Draw(GLFWwindow * /* window */)
             {
                 static size_t edit_var_name_idx = -1;
                 static bool focus_name_input = false;
-                ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthStretch, 100.0f);
-                ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_WidthStretch, 100.0f);
+                ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthFixed, 125.0f);
+                ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_NoResize);
                 ImGui::TableHeadersRow();
 
                 ImGui::PushStyleColor(ImGuiCol_FrameBg,
@@ -2899,7 +2898,12 @@ int main(int argc, char **argv)
         return 1;
 
     ImGuiIO& io = ImGui::GetIO();
-    //io.IniFilename = NULL;
+
+#ifdef DEBUG
+    // disable ini so designing default sizes/positions won't clash with loaded values
+    io.IniFilename = NULL;
+#endif
+
     //io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;     // Enable Keyboard Controls
     //io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;      // Enable Gamepad Controls
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;           // Enable Docking
