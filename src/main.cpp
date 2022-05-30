@@ -204,6 +204,13 @@ struct GUI
     bool change_font = true;
     float font_size = 13.0f;
     String font_filename;
+
+    bool show_source = true;
+    bool show_control = true;
+    bool show_callstack = true;
+    bool show_registers = true;
+    bool show_locals = true;
+    bool show_watch = true;
 };
 
 Program prog;
@@ -1196,206 +1203,210 @@ void Draw(GLFWwindow * /* window */)
         }
     }
 
-    // 
-    // source code window
     //
+    // main menu bar at top of screen
+    //
+    if ( ImGui::BeginMainMenuBar() )
     {
-        ImGui::SetNextWindowBgAlpha(1.0);   // @Imgui: bug where GetStyleColor doesn't respect window opacity
-        ImGui::Begin("Source");
-
         struct RegisterName
         {
             String text;
             bool registered;
         };
+
         static Vector<RegisterName> all_registers;
         static bool show_register_window = false;
+        static bool just_opened_debug_program = true;
 
-        if ( ImGui::BeginMainMenuBar() )
+        if (ImGui::BeginMenu("Debug Program"))
         {
-            static bool just_opened_debug_program = true;
-            if (ImGui::BeginMenu("Debug Program"))
+            static FileWindowContext ctx;
+            static char gdb_filename[PATH_MAX];
+            static char gdb_args[1024];
+            static bool pick_gdb_file = false;
+            static char debug_filename[PATH_MAX];
+            static char debug_args[1024];
+            static bool pick_debug_file = false;
+
+            if (just_opened_debug_program)
             {
-                static FileWindowContext ctx;
-                static char gdb_filename[PATH_MAX];
-                static char gdb_args[1024];
-                static bool pick_gdb_file = false;
-                static char debug_filename[PATH_MAX];
-                static char debug_args[1024];
-                static bool pick_debug_file = false;
-
-                if (just_opened_debug_program)
-                {
-                    tsnprintf(debug_filename, "%s", gdb.debug_filename.c_str());
-                    tsnprintf(debug_args, "%s", gdb.debug_args.c_str());
-                    tsnprintf(gdb_filename, "%s", gdb.filename.c_str());
-                    tsnprintf(gdb_args, "%s", gdb.args.c_str());
-                    just_opened_debug_program = false;
-                }
-
-                ImGui::InputText("GDB filename", gdb_filename, sizeof(gdb_filename));
-                ImGui::SameLine();
-                if (ImGui::Button("...##gdb_filename")) 
-                    pick_gdb_file = true;
-                ImGui::InputText("GDB arguments", gdb_args, sizeof(gdb_args));
-
-                ImGui::InputText("debug filename", debug_filename, sizeof(debug_filename));
-                ImGui::SameLine();
-                if (ImGui::Button("...##debug_filename")) 
-                    pick_debug_file = true;
-                ImGui::InputText("debug arguments", debug_args, sizeof(debug_args));
-
-                if ( (pick_gdb_file || pick_debug_file) &&
-                    ImGuiFileWindow(ctx, ImGuiFileWindowMode_SelectFile))
-                {
-                   if (ctx.selected)
-                   {
-                       if (pick_gdb_file) tsnprintf(gdb_filename, "%s", ctx.path.c_str());
-                       if (pick_debug_file) tsnprintf(debug_filename, "%s", ctx.path.c_str());
-                   } 
-
-                   pick_debug_file = false;
-                   pick_gdb_file = false;
-                }
-
-                if (ImGui::Button("Start##Debug Program Menu"))
-                {
-                    if (gdb.filename != gdb_filename)
-                    {
-                        if (gdb.spawned_pid != 0)
-                        {
-                            PrintMessagef("ending %s...", gdb.filename.c_str());
-                            gdb.filename = "";
-                            EndProcess(gdb.spawned_pid);
-                            ResetProgramState();
-                            gdb.spawned_pid = 0;
-                        }
-
-                        GDB_StartProcess(gdb_filename, gdb_args);
-                    }
-
-                    if (gdb.spawned_pid != 0 && GDB_LoadInferior(debug_filename, debug_args))
-                    {
-                        just_opened_debug_program = true; // reset for next open
-                        ImGui::CloseCurrentPopup(); 
-                    }
-                }
-
-                ImGui::EndMenu();
+                tsnprintf(debug_filename, "%s", gdb.debug_filename.c_str());
+                tsnprintf(debug_args, "%s", gdb.debug_args.c_str());
+                tsnprintf(gdb_filename, "%s", gdb.filename.c_str());
+                tsnprintf(gdb_args, "%s", gdb.args.c_str());
+                just_opened_debug_program = false;
             }
 
-            if (ImGui::BeginMenu("Settings"))
-            {
-                if (ImGui::Button("Configure Registers##Button"))
-                {
-                    show_register_window = true;
-                    all_registers.clear();
-                    GDB_SendBlocking("-data-list-register-names", rec);
-                    const RecordAtom *regs = GDB_ExtractAtom("register-names", rec);
+            ImGui::InputText("GDB filename", gdb_filename, sizeof(gdb_filename));
+            ImGui::SameLine();
+            if (ImGui::Button("...##gdb_filename")) 
+                pick_gdb_file = true;
+            ImGui::InputText("GDB arguments", gdb_args, sizeof(gdb_args));
 
-                    for (const RecordAtom &reg : GDB_IterChild(rec, regs))
+            ImGui::InputText("debug filename", debug_filename, sizeof(debug_filename));
+            ImGui::SameLine();
+            if (ImGui::Button("...##debug_filename")) 
+                pick_debug_file = true;
+            ImGui::InputText("debug arguments", debug_args, sizeof(debug_args));
+
+            if ( (pick_gdb_file || pick_debug_file) &&
+                ImGuiFileWindow(ctx, ImGuiFileWindowMode_SelectFile))
+            {
+               if (ctx.selected)
+               {
+                   if (pick_gdb_file) tsnprintf(gdb_filename, "%s", ctx.path.c_str());
+                   if (pick_debug_file) tsnprintf(debug_filename, "%s", ctx.path.c_str());
+               } 
+
+               pick_debug_file = false;
+               pick_gdb_file = false;
+            }
+
+            if (ImGui::Button("Start##Debug Program Menu"))
+            {
+                if (gdb.filename != gdb_filename)
+                {
+                    if (gdb.spawned_pid != 0)
                     {
-                        RegisterName add = {};
-                        add.text = GetAtomString(reg.value, rec);
-                        if (add.text != "") 
+                        PrintMessagef("ending %s...", gdb.filename.c_str());
+                        gdb.filename = "";
+                        EndProcess(gdb.spawned_pid);
+                        ResetProgramState();
+                        gdb.spawned_pid = 0;
+                    }
+
+                    GDB_StartProcess(gdb_filename, gdb_args);
+                }
+
+                if (gdb.spawned_pid != 0 && GDB_LoadInferior(debug_filename, debug_args))
+                {
+                    just_opened_debug_program = true; // reset for next open
+                    ImGui::CloseCurrentPopup(); 
+                }
+            }
+
+            ImGui::EndMenu();
+        }
+
+        if (ImGui::BeginMenu("View"))
+        {
+            ImGui::MenuItem("Source##Checkbox", "", &gui.show_source);
+            ImGui::MenuItem("Control##Checkbox", "", &gui.show_control);
+            ImGui::MenuItem("Callstack##Checkbox", "", &gui.show_callstack);
+            ImGui::MenuItem("Registers##Checkbox", "", &gui.show_registers);
+            ImGui::MenuItem("Locals##Checkbox", "", &gui.show_locals);
+            ImGui::MenuItem("Watch##Checkbox", "", &gui.show_watch);
+
+            ImGui::EndMenu();
+        }
+
+        if (ImGui::BeginMenu("Settings"))
+        {
+            if (ImGui::Button("Configure Registers##Button"))
+            {
+                show_register_window = true;
+                all_registers.clear();
+                GDB_SendBlocking("-data-list-register-names", rec);
+                const RecordAtom *regs = GDB_ExtractAtom("register-names", rec);
+
+                for (const RecordAtom &reg : GDB_IterChild(rec, regs))
+                {
+                    RegisterName add = {};
+                    add.text = GetAtomString(reg.value, rec);
+                    if (add.text != "") 
+                    {
+                        String to_find = GLOBAL_NAME_PREFIX + add.text;
+                        add.registered = false;
+                        for (const VarObj &iter : prog.global_vars)
                         {
-                            String to_find = GLOBAL_NAME_PREFIX + add.text;
-                            add.registered = false;
-                            for (const VarObj &iter : prog.global_vars)
+                            if (iter.name == add.text) 
                             {
-                                if (iter.name == add.text) 
-                                {
-                                    add.registered = true;
-                                    break;
-                                }
+                                add.registered = true;
+                                break;
                             }
-                            all_registers.emplace_back(add);
                         }
+                        all_registers.emplace_back(add);
                     }
                 }
+            }
 
-                // line display: how to present the debugged executable: 
-                LineDisplay last_line_display = gui.line_display;
-                ImGui::SetNextItemWidth(160.0f);
-                ImGui::Combo("View Files As...##Settings", 
-                             reinterpret_cast<int *>(&gui.line_display),
-                             "Source\0Disassembly\0Source And Disassembly\0");
+            // line display: how to present the debugged executable: 
+            LineDisplay last_line_display = gui.line_display;
+            ImGui::SetNextItemWidth(160.0f);
+            ImGui::Combo("View Files As...##Settings", 
+                         reinterpret_cast<int *>(&gui.line_display),
+                         "Source\0Disassembly\0Source And Disassembly\0");
 
 
-                if (last_line_display == LineDisplay_Source && 
-                    gui.line_display != LineDisplay_Source &&
-                    prog.frame_idx < prog.frames.size())
+            if (last_line_display == LineDisplay_Source && 
+                gui.line_display != LineDisplay_Source &&
+                prog.frame_idx < prog.frames.size())
+            {
+                // query the disassembly for this function
+                GetFunctionDisassembly(prog.frames[ prog.frame_idx ]);
+            }
+
+            static FileWindowContext ctx;
+            static char font_filename[PATH_MAX];
+            static bool show_font_picker = false;
+            bool changed_font_filename = false;
+
+            ImGui::Checkbox("Show MI Records", &gui.show_machine_interpreter_commands);
+            if (ImGui::Checkbox("Use Default Font (Proggy Clean.ttf)", &gui.use_default_font))
+            {
+                if (gui.use_default_font || (gui.font_filename != "" && DoesFileExist(gui.font_filename.c_str())))
                 {
-                    // query the disassembly for this function
-                    GetFunctionDisassembly(prog.frames[ prog.frame_idx ]);
+                    gui.change_font = true;
                 }
+            }
 
-                static FileWindowContext ctx;
-                static char font_filename[PATH_MAX];
-                static bool show_font_picker = false;
-                bool changed_font_filename = false;
+            float fsz = gui.font_size;
+            bool changed_font_point = false;
+            ImGuiDisabled(!gui.use_default_font && gui.font_filename == "",
+                          changed_font_point = ImGui::InputFloat("Font Point", &fsz, 1.0f, 0.0f, "%.0f", ImGuiInputTextFlags_EnterReturnsTrue));
+            if (changed_font_point) 
+            {
+                gui.font_size = GetMin(GetMax(fsz, 8.0f), 72.0f);
+                gui.change_font = true;
+            }
 
-                ImGui::Checkbox("Show MI Records", &gui.show_machine_interpreter_commands);
-                if (ImGui::Checkbox("Use Default Font (Proggy Clean.ttf)", &gui.use_default_font))
+            ImGuiDisabled(gui.use_default_font, changed_font_filename = ImGui::InputText("Font Filename", font_filename, sizeof(font_filename), ImGuiInputTextFlags_EnterReturnsTrue));
+            ImGui::SameLine();
+            ImGuiDisabled(gui.use_default_font, show_font_picker |= ImGui::Button("...##font"));
+
+            if (show_font_picker && ImGuiFileWindow(ctx, ImGuiFileWindowMode_SelectFile, ".", "ttf,otf"))
+            {
+                show_font_picker = false;
+                if (ctx.selected)
                 {
-                    if (gui.use_default_font || (gui.font_filename != "" && DoesFileExist(gui.font_filename.c_str())))
+                    changed_font_filename = true;
+                    tsnprintf(font_filename, "%s", ctx.path.c_str());
+                }
+            }
+
+            if (changed_font_filename)
+            {
+                bool good_font = false;
+                if (DoesFileExist(font_filename))
+                {
+                    const char *ext = strrchr(font_filename, '.');
+                    if(ext == NULL || (0 == strcmp(ext, ".otf") && 0 == strcmp(ext, ".ttf")))
                     {
+                        PrintError("invalid font, choose .otf or .ttf\n");
+                    }
+                    else
+                    {
+                        good_font = true;
+                        gui.font_filename = font_filename;
                         gui.change_font = true;
                     }
                 }
 
-                float fsz = gui.font_size;
-                bool changed_font_point = false;
-                ImGuiDisabled(!gui.use_default_font && gui.font_filename == "",
-                              changed_font_point = ImGui::InputFloat("Font Point", &fsz, 1.0f, 0.0f, "%.0f", ImGuiInputTextFlags_EnterReturnsTrue));
-                if (changed_font_point) 
-                {
-                    gui.font_size = GetMin(GetMax(fsz, 8.0f), 72.0f);
-                    gui.change_font = true;
-                }
-
-                ImGuiDisabled(gui.use_default_font, changed_font_filename = ImGui::InputText("Font Filename", font_filename, sizeof(font_filename), ImGuiInputTextFlags_EnterReturnsTrue));
-                ImGui::SameLine();
-                ImGuiDisabled(gui.use_default_font, show_font_picker |= ImGui::Button("...##font"));
-
-                if (show_font_picker && ImGuiFileWindow(ctx, ImGuiFileWindowMode_SelectFile, ".", "ttf,otf"))
-                {
-                    show_font_picker = false;
-                    if (ctx.selected)
-                    {
-                        changed_font_filename = true;
-                        tsnprintf(font_filename, "%s", ctx.path.c_str());
-                    }
-                }
-
-                if (changed_font_filename)
-                {
-                    bool good_font = false;
-                    if (DoesFileExist(font_filename))
-                    {
-                        const char *ext = strrchr(font_filename, '.');
-                        if(ext == NULL || (0 == strcmp(ext, ".otf") && 0 == strcmp(ext, ".ttf")))
-                        {
-                            PrintError("invalid font, choose .otf or .ttf\n");
-                        }
-                        else
-                        {
-                            good_font = true;
-                            gui.font_filename = font_filename;
-                            gui.change_font = true;
-                        }
-                    }
-
-                    if (!good_font)
-                        font_filename[0] = '\0';
-                }
-
-
-
-                ImGui::EndMenu();
+                if (!good_font)
+                    font_filename[0] = '\0';
             }
 
-            ImGui::EndMainMenuBar();
+            ImGui::EndMenu();
         }
 
         // modify register window: query GDB for the list of register
@@ -1443,6 +1454,18 @@ void Draw(GLFWwindow * /* window */)
 
             ImGui::End();
         }
+
+
+        ImGui::EndMainMenuBar();
+    }
+
+    // 
+    // source code window
+    //
+    if (gui.show_source)
+    {
+        ImGui::SetNextWindowBgAlpha(1.0);   // @Imgui: bug where GetStyleColor doesn't respect window opacity
+        ImGui::Begin("Source", &gui.show_source);
 
 
         if ( ImGui_IsKeyClicked(ImGuiKey_F, ImGuiMod_Ctrl) )
@@ -2037,9 +2060,10 @@ void Draw(GLFWwindow * /* window */)
     //
     // program control / gdb console
     //
+    if (gui.show_control)
     {
         ImGui::SetNextWindowBgAlpha(1.0);   // @Imgui: bug where GetStyleColor doesn't respect window opacity
-        ImGui::Begin("Control");
+        ImGui::Begin("Control", &gui.show_control);
 
         // continue
         bool clicked;
@@ -2374,15 +2398,9 @@ void Draw(GLFWwindow * /* window */)
                                 ImGuiTableFlags_SizingFixedFit |
                                 ImGuiTableFlags_Resizable;
 
-        // @Imgui: can't figure out the right combo of table/column flags corresponding to 
-        //         a table with initial column widths that expands column width on elem width increase
-        char table_pad[128];
-        memset(table_pad, ' ', sizeof(table_pad));
-        const int MIN_TABLE_WIDTH_CHARS = 22;
-        table_pad[ MIN_TABLE_WIDTH_CHARS ] = '\0';
-
+        if (gui.show_locals)
         {
-            ImGui::Begin("Locals");
+            ImGui::Begin("Locals", &gui.show_locals);
             if (ImGui::BeginTable("##LocalsTable", 2, flags))
             {
                 ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthStretch, 100.0f);
@@ -2418,8 +2436,9 @@ void Draw(GLFWwindow * /* window */)
             ImGui::End();
         }
 
+        if (gui.show_callstack)
         {
-            ImGui::Begin("Callstack");
+            ImGui::Begin("Callstack", &gui.show_callstack);
             for (size_t i = 0; i < prog.frames.size(); i++)
             {
                 const Frame &iter = prog.frames[i];
@@ -2469,8 +2488,9 @@ void Draw(GLFWwindow * /* window */)
             ImGui::End();
         }
 
+        if (gui.show_registers)
         {
-            ImGui::Begin("Registers");
+            ImGui::Begin("Registers", &gui.show_registers);
             if (ImGui::BeginTable("##RegistersTable", 2, flags))
             {
                 ImGui::TableSetupColumn("Register", ImGuiTableColumnFlags_WidthStretch, 100.0f);
@@ -2497,8 +2517,9 @@ void Draw(GLFWwindow * /* window */)
             ImGui::End();
         }
 
+        if (gui.show_watch)
         {
-            ImGui::Begin("Watch");
+            ImGui::Begin("Watch", &gui.show_watch);
             if (ImGui::BeginTable("##WatchTable", 2, flags))
             {
                 static size_t edit_var_name_idx = -1;
