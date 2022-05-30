@@ -165,6 +165,13 @@ void ResetProgramState()
 {
     prog.other_frame_vars.clear();
     prog.local_vars.clear();
+    for (VarObj &iter : prog.watch_vars)
+    {
+        String name = iter.name;
+        iter = {};
+        iter.name = name;
+        iter.value = "???";
+    }
     //prog.breakpoints.clear(); TODO: requery breakpoints at start
 
     prog.running = false;
@@ -187,8 +194,18 @@ enum LineDisplay
     //LineDisplay_Source_And_Disassembly_With_Opcodes,
 };
 
+#define DEFAULT_FONT_SIZE 13.0f
+#define MIN_FONT_SIZE 8.0f
+#define MAX_FONT_SIZE 72.0f
 struct GUI
 {
+    // GLFW data set through custom callbacks
+    struct 
+    {
+        float vert_scroll_increments;
+    } this_frame;
+
+    GLFWwindow *window;
     LineDisplay line_display = LineDisplay_Source;
     Vector<DisassemblyLine> line_disasm;
     Vector<DisassemblySourceLine> line_disasm_source;
@@ -200,10 +217,15 @@ struct GUI
     size_t source_found_line_idx;
     bool refresh_dock_space = true;
 
+    // use two font sizes: global and source window
+    // change source window size with CTRL+Scroll or settings option
     bool use_default_font = true;
     bool change_font = true;
-    float font_size = 13.0f;
+    ImFont *default_font;
+    float font_size = DEFAULT_FONT_SIZE;
     String font_filename;
+    ImFont *source_font;
+    float source_font_size = DEFAULT_FONT_SIZE;
 
     bool show_source = true;
     bool show_control = true;
@@ -917,7 +939,7 @@ void RecurseExpressionTreeNodes(const VarObj &var, size_t atom_idx,
     }
 }
  
-void Draw(GLFWwindow * /* window */)
+void Draw()
 {
     // process async events
     static Record rec;                  // scratch record 
@@ -1364,9 +1386,20 @@ void Draw(GLFWwindow * /* window */)
             bool changed_font_point = false;
             ImGuiDisabled(!gui.use_default_font && gui.font_filename == "",
                           changed_font_point = ImGui::InputFloat("Font Point", &fsz, 1.0f, 0.0f, "%.0f", ImGuiInputTextFlags_EnterReturnsTrue));
-            if (changed_font_point) 
+            if (changed_font_point)
             {
-                gui.font_size = GetMin(GetMax(fsz, 8.0f), 72.0f);
+                gui.font_size = GetPinned(fsz, MIN_FONT_SIZE, MAX_FONT_SIZE);
+                gui.source_font_size = gui.font_size;
+                gui.change_font = true;
+            }
+
+            float sfsz = gui.source_font_size;
+            bool changed_source_font_point = false;
+            ImGuiDisabled(!gui.use_default_font && gui.font_filename == "",
+                          changed_source_font_point = ImGui::InputFloat("Source Font Point", &sfsz, 1.0f, 0.0f, "%.0f", ImGuiInputTextFlags_EnterReturnsTrue));
+            if (changed_source_font_point) 
+            {
+                gui.source_font_size = GetPinned(sfsz, MIN_FONT_SIZE, MAX_FONT_SIZE);
                 gui.change_font = true;
             }
 
@@ -1464,8 +1497,20 @@ void Draw(GLFWwindow * /* window */)
     //
     if (gui.show_source)
     {
+        ImGui::PushFont(gui.source_font);
         ImGui::SetNextWindowBgAlpha(1.0);   // @Imgui: bug where GetStyleColor doesn't respect window opacity
         ImGui::Begin("Source", &gui.show_source);
+
+        if (ImGui::IsWindowFocused() && gui.this_frame.vert_scroll_increments != 0.0f)
+        {
+            // increase/decrease the font
+            float tmp = GetPinned(gui.source_font_size + gui.this_frame.vert_scroll_increments, 8.0f, 72.0f);
+            if (gui.source_font_size != tmp)
+            {
+                gui.change_font = true;
+                gui.source_font_size = tmp;
+            }
+        }
 
 
         if ( ImGui_IsKeyClicked(ImGuiKey_F, ImGuiMod_Ctrl) )
@@ -1809,9 +1854,11 @@ void Draw(GLFWwindow * /* window */)
                                         }
                                         else
                                         {
+                                            ImGui::PushFont(gui.default_font);
                                             ImGui::BeginTooltip();
                                             ImGui::Text("%s", hover_value.c_str());
                                             ImGui::EndTooltip();
+                                            ImGui::PopFont();
                                         }
 
                                         break;
@@ -2054,6 +2101,7 @@ void Draw(GLFWwindow * /* window */)
             ImGui::EndChild();
 
         ImGui::End();
+        ImGui::PopFont();
     }
 
 
@@ -2874,24 +2922,45 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    // Setup window
-    glfwSetErrorCallback(glfw_error_callback);
-    if (!glfwInit())
-        return 1;
+    {
+        // GLFW init
+        glfwSetErrorCallback(glfw_error_callback);
+        if (!glfwInit())
+            return 1;
 
-    GLFWwindow* window = glfwCreateWindow(1280, 720, "Tug", NULL, NULL);
-    if (window == NULL)
-        return 1;
+        gui.window = glfwCreateWindow(1280, 720, "Tug", NULL, NULL);
+        if (gui.window == NULL)
+            return 1;
 
-    glfwMakeContextCurrent(window);
-    glfwSwapInterval(1); // Enable vsync
-    glfwSetFramebufferSizeCallback(window, [](GLFWwindow*,int,int) { gui.refresh_dock_space = true; prog.log_scroll_to_bottom = true; });
+        glfwMakeContextCurrent(gui.window);
+        glfwSwapInterval(1); // Enable vsync
+
+        // install custom hooks, relies on install_callback true in ImplGlfw init 
+        const auto OnFramebufferResize = [](GLFWwindow * /*window*/, int /*width*/, int /*height*/) 
+        {
+            gui.refresh_dock_space = true; 
+            prog.log_scroll_to_bottom = true; 
+        };
+        glfwSetFramebufferSizeCallback(gui.window, OnFramebufferResize);
+
+
+        const auto OnScroll = [](GLFWwindow *window, double /*xoffset*/, double yoffset)
+        {
+            if (GLFW_PRESS == glfwGetKey(window, GLFW_KEY_LEFT_CONTROL) ||
+                GLFW_PRESS == glfwGetKey(window, GLFW_KEY_RIGHT_CONTROL))
+            {
+                gui.this_frame.vert_scroll_increments = yoffset;
+                printf("vert scroll %f\n", yoffset);
+            }
+        };
+        glfwSetScrollCallback(gui.window, OnScroll);
+    }
 
 
     // Setup Dear ImGui context
     bool imgui_started = IMGUI_CHECKVERSION() &&
                          NULL != ImGui::CreateContext() &&
-                         ImGui_ImplGlfw_InitForOpenGL(window, true) &&
+                         ImGui_ImplGlfw_InitForOpenGL(gui.window, true) &&
                          ImGui_ImplOpenGL2_Init();
 
     if (!imgui_started)
@@ -2931,45 +3000,60 @@ int main(int argc, char **argv)
 
 
     // Main loop
-    while (!glfwWindowShouldClose(window))
+    while (!glfwWindowShouldClose(gui.window))
     {
         // Poll and handle events (inputs, window resize, etc.)
         // You can read the io.WantCaptureMouse, io.WantCaptureKeyboard flags to tell if dear imgui wants to use your inputs.
         // - When io.WantCaptureMouse is true, do not dispatch mouse input data to your main application.
         // - When io.WantCaptureKeyboard is true, do not dispatch keyboard input data to your main application.
         // Generally you may always pass all inputs to dear imgui, and hide them from your application based on those two flags.
+        gui.this_frame = {};    // clear old frame data
         glfwPollEvents();
 
         if (gui.change_font)
         {
             // change font data before it gets locked with NewFrame
+            // TODO: reloading both fonts when source font changes, might change to font scaling instead
             gui.change_font = false;
             io.Fonts->Clear();
             ImGui_ImplOpenGL2_DestroyFontsTexture();
 
-            if (!gui.use_default_font)
+            const auto LoadFont = [&io](bool use_default_font, float font_size) -> ImFont *
             {
-                if (NULL == io.Fonts->AddFontFromFileTTF(gui.font_filename.c_str(), gui.font_size))
+                ImFont *result = NULL;
+                if (!use_default_font)
                 {
-                    // fallback to default
-                    gui.use_default_font = true;
-                    gui.font_size = 13.0f;
-                    PrintErrorf("error loading font %s\n", gui.font_filename.c_str());
+                    result = io.Fonts->AddFontFromFileTTF(gui.font_filename.c_str(), font_size);
+                    if (result == NULL)
+                    {
+                        // fallback to default
+                        use_default_font = true;
+                        font_size = DEFAULT_FONT_SIZE;
+                        PrintErrorf("error loading font %s, reverting to default...\n", gui.font_filename.c_str());
+                    }
                 }
-            }
 
-            if (gui.use_default_font)
-            {
-                ImFontConfig tmp = ImFontConfig();
-                tmp.SizePixels = gui.font_size;
-                tmp.OversampleH = tmp.OversampleV = 1;
-                tmp.PixelSnapH = true;
-                if (NULL == io.Fonts->AddFontDefault(&tmp))
+                if (use_default_font)
                 {
-                    PrintError("error loading default font?!?!?");
-                    break;
+                    ImFontConfig tmp = ImFontConfig();
+                    tmp.SizePixels = font_size;
+                    tmp.OversampleH = tmp.OversampleV = 1;
+                    tmp.PixelSnapH = true;
+                    result = io.Fonts->AddFontDefault(&tmp);
+                    if (result == NULL)
+                    {
+                        PrintError("error loading default font?!?!?");
+                    }
                 }
-            }
+
+                return result;
+            };
+
+            gui.default_font = LoadFont(gui.use_default_font, gui.font_size);
+            gui.source_font = LoadFont(gui.use_default_font, gui.source_font_size);
+
+            if (gui.default_font == NULL || gui.source_font == NULL)
+                break;
 
             ImGui_ImplOpenGL2_CreateFontsTexture();
         }
@@ -3105,7 +3189,7 @@ int main(int argc, char **argv)
         ImGui::PushStyleColor(ImGuiCol_ButtonActive, btn_active);
 
         DrawDebugOverlay();
-        Draw(window);
+        Draw();
 
         ImGui::PopStyleColor(4);
 
@@ -3114,7 +3198,7 @@ int main(int argc, char **argv)
         ImVec4 clear_color = ImVec4(0.45f, 0.55f, 0.60f, 1.00f);
 
         ImGui::Render();
-        glfwGetFramebufferSize(window, &display_w, &display_h);
+        glfwGetFramebufferSize(gui.window, &display_w, &display_h);
         glViewport(0, 0, display_w, display_h);
         glClearColor(clear_color.x * clear_color.w, clear_color.y * clear_color.w, clear_color.z * clear_color.w, clear_color.w);
         glClear(GL_COLOR_BUFFER_BIT);
@@ -3127,8 +3211,8 @@ int main(int argc, char **argv)
         ImGui_ImplOpenGL2_RenderDrawData(ImGui::GetDrawData());
         //glUseProgram(last_program);
 
-        glfwMakeContextCurrent(window);
-        glfwSwapBuffers(window);
+        glfwMakeContextCurrent(gui.window);
+        glfwSwapBuffers(gui.window);
     }
 
     {
@@ -3148,7 +3232,7 @@ int main(int argc, char **argv)
     ImGui_ImplGlfw_Shutdown();
     ImGui::DestroyContext();
 
-    glfwDestroyWindow(window);
+    glfwDestroyWindow(gui.window);
     glfwTerminate();
 
     return 0;

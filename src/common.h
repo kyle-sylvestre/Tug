@@ -92,6 +92,7 @@ String _StringPrintf(int vargs_check, const char *fmt, ...);
 #define DefaultInvalid default: PrintError("hit invalid default switch"); break;
 #define GetMax(a, b) (a > b) ? a : b
 #define GetMin(a, b) (a < b) ? a : b
+#define GetPinned(v, min, max) GetMin(GetMax(v, min), max)
 #define GetAbs(a, b) (a > b) ? a - b : b - a
 
 template <typename T>
