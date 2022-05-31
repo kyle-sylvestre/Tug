@@ -194,6 +194,13 @@ enum LineDisplay
     //LineDisplay_Source_And_Disassembly_With_Opcodes,
 };
 
+enum WindowTheme
+{
+    WindowTheme_Light,
+    WindowTheme_DarkPurple,
+    WindowTheme_DarkBlue,
+};
+
 #define DEFAULT_FONT_SIZE 13.0f
 #define MIN_FONT_SIZE 8.0f
 #define MAX_FONT_SIZE 72.0f
@@ -233,6 +240,7 @@ struct GUI
     bool show_registers = false;
     bool show_locals = true;
     bool show_watch = true;
+    WindowTheme window_theme = WindowTheme_DarkBlue;
 };
 
 Program prog;
@@ -269,6 +277,60 @@ static uint64_t ParseHex(const String &str)
         pow *= 16;
     }
     return result;
+}
+
+static void SetWindowTheme(WindowTheme theme)
+{
+    static const auto GetLuminance01 = [](ImColor col) -> float
+    {
+        return (0.2126*col.Value.x) +
+               (0.7152*col.Value.y) +
+               (0.0722*col.Value.z);
+    };
+    float lum = GetLuminance01( ImGui::GetStyleColorVec4(ImGuiCol_WindowBg) );
+    IM_COL32_WIN_RED = ImColor(1.0f, 0.5f - 0.5f*lum, 0.5f - 0.5f*lum, 1.0f);
+    ImGuiStyle &style = ImGui::GetStyle();
+
+    switch (theme)
+    {
+        case WindowTheme_Light:
+        {
+            ImGui::StyleColorsLight();
+            style.FrameBorderSize = 1.0f; 
+
+            // make popups grey background
+            style.Colors[ImGuiCol_PopupBg] = style.Colors[ImGuiCol_WindowBg];
+        } break;
+
+        case WindowTheme_DarkPurple:
+        {
+            ImGui::StyleColorsClassic();
+            style.FrameBorderSize = 0.0f; 
+        } break;
+
+        case WindowTheme_DarkBlue:
+        {
+            ImGui::StyleColorsDark();
+            style.FrameBorderSize = 0.0f; 
+        } break;
+
+        DefaultInvalid
+    }
+
+    // defaults are too damn bright!
+    ImVec4 hdr = ImGui::GetStyleColorVec4(ImGuiCol_Header);
+    ImVec4 hdr_hovered = ImVec4(hdr.x, hdr.y, hdr.z, GetMin(1.0f, hdr.w + 0.2));
+    ImVec4 hdr_active = ImVec4(hdr.x, hdr.y, hdr.z, GetMin(1.0f, hdr.w + 0.4));
+    style.Colors[ImGuiCol_HeaderHovered] = hdr_hovered;
+    style.Colors[ImGuiCol_HeaderActive] = hdr_active;
+
+    ImVec4 btn = ImGui::GetStyleColorVec4(ImGuiCol_Button);
+    ImVec4 btn_hovered = ImVec4(btn.x, btn.y, btn.z, GetMin(1.0f, btn.w + 0.2));
+    ImVec4 btn_active = ImVec4(btn.x, btn.y, btn.z, GetMin(1.0f, btn.w + 0.4));
+    style.Colors[ImGuiCol_ButtonHovered] = btn_hovered;
+    style.Colors[ImGuiCol_ButtonActive] = btn_active;
+
+    gui.window_theme = theme;
 }
 
 static bool CreateFile(const char *fullpath, File &result)
@@ -1439,6 +1501,10 @@ void Draw()
                     font_filename[0] = '\0';
             }
 
+            int temp_theme = gui.window_theme;
+            if (ImGui::Combo("Window Theme##Settings", &temp_theme, "Light\0Dark Purple\0Dark Blue\0"))
+                SetWindowTheme((WindowTheme)temp_theme);
+
             ImGui::EndMenu();
         }
 
@@ -1497,6 +1563,8 @@ void Draw()
     //
     if (gui.show_source)
     {
+        float saved_frame_border_size = ImGui::GetStyle().FrameBorderSize;
+        ImGui::GetStyle().FrameBorderSize = 0.0f; // disable line border around breakpoints
         ImGui::PushFont(gui.source_font);
         ImGui::SetNextWindowBgAlpha(1.0);   // @Imgui: bug where GetStyleColor doesn't respect window opacity
         ImGui::Begin("Source", &gui.show_source);
@@ -2102,6 +2170,7 @@ void Draw()
 
         ImGui::End();
         ImGui::PopFont();
+        ImGui::GetStyle().FrameBorderSize = saved_frame_border_size; // restore saved size
     }
 
 
@@ -3053,9 +3122,7 @@ int main(int argc, char **argv)
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;           // Enable Docking
 
     // Setup Dear ImGui style
-    ImGui::StyleColorsDark();
-    //ImGui::StyleColorsClassic();
-    //ImGui::StyleColorsLight();
+    SetWindowTheme(gui.window_theme);
 
     // Setup Platform/Renderer backends
 
@@ -3152,7 +3219,7 @@ int main(int argc, char **argv)
             // because it would be confusing to have two docking targets within each others.
             ImGuiWindowFlags window_flags = ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoDocking;
 
-            ImGuiViewportP &viewport = (ImGuiViewportP &)*ImGui::GetMainViewport();
+            ImGuiViewport &viewport = *ImGui::GetMainViewport();
             ImGui::SetNextWindowPos(viewport.Pos);
             ImGui::SetNextWindowSize(viewport.Size);
             ImGui::SetNextWindowViewport(viewport.ID);
@@ -3178,6 +3245,7 @@ int main(int argc, char **argv)
             ImGui::Begin("DockingWindow", nullptr, window_flags);
             ImGui::PopStyleVar();
 
+            // remake the docking space once the user resizes the framebuffer (main window)
             ImGuiDockNode* root = ImGui::DockBuilderGetNode(ImGui::GetID("DockingSpace"));
             static SplitParams *params = NULL;
             if (has_framebuffer_resized)
@@ -3239,48 +3307,8 @@ int main(int argc, char **argv)
             ImGui::End();
         }
 
-        //
-        // global styles
-        //
-
-        // lessen the intensity of selectable hover color
-        //ImVec4 active_col = ImGui::GetStyleColorVec4(ImGuiCol_HeaderActive);
-        //active_col.x *= (1.0/2.0);
-        //active_col.y *= (1.0/2.0);
-        //active_col.z *= (1.0/2.0);
-
-        //ImGui::PushStyleColor(ImGuiCol_HeaderHovered, active_col);
-        //ImGui::PushStyleColor(ImGuiCol_HeaderActive, active_col);
-
-        // set global colors that change based 
-        // upon the luminance of the window background
-        static const auto GetLuminance01 = [](ImColor col) -> float
-        {
-            return (0.2126*col.Value.x) +
-                   (0.7152*col.Value.y) +
-                   (0.0722*col.Value.z);
-        };
-        float lum = GetLuminance01( ImGui::GetStyleColorVec4(ImGuiCol_WindowBg) );
-        IM_COL32_WIN_RED = ImColor(1.0f, 0.5f - 0.5f*lum, 0.5f - 0.5f*lum, 1.0f);
-        //IM_COL32_WIN_GDB_USER_INPUT = ImColor(1.0f, 0.8f, 0.5f - 0.5f*lum);
-
-        // defaults are too damn bright!
-        ImVec4 hdr = ImGui::GetStyleColorVec4(ImGuiCol_Header);
-        ImVec4 hdr_hovered = ImVec4(hdr.x, hdr.y, hdr.z, GetMin(1.0f, hdr.w + 0.2));
-        ImVec4 hdr_active = ImVec4(hdr.x, hdr.y, hdr.z, GetMin(1.0f, hdr.w + 0.4));
-        ImGui::PushStyleColor(ImGuiCol_HeaderHovered, hdr_hovered);
-        ImGui::PushStyleColor(ImGuiCol_HeaderActive, hdr_active);
-
-        ImVec4 btn = ImGui::GetStyleColorVec4(ImGuiCol_Button);
-        ImVec4 btn_hovered = ImVec4(btn.x, btn.y, btn.z, GetMin(1.0f, btn.w + 0.2));
-        ImVec4 btn_active = ImVec4(btn.x, btn.y, btn.z, GetMin(1.0f, btn.w + 0.4));
-        ImGui::PushStyleColor(ImGuiCol_ButtonHovered, btn_hovered);
-        ImGui::PushStyleColor(ImGuiCol_ButtonActive, btn_active);
-
         DrawDebugOverlay();
         Draw();
-
-        ImGui::PopStyleColor(4);
 
         // Rendering
         int display_w = 0, display_h = 0;
