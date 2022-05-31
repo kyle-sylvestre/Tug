@@ -1108,6 +1108,10 @@ void Draw()
                     }
                 }
             }
+            else if (prefix_word == "running")
+            {
+                prog.running = true;
+            }
             else if (prefix_word == "stopped")
             {
                 prog.frame_idx = 0;
@@ -1827,7 +1831,7 @@ void Draw()
                     ImVec2 textstart = ImGui::GetCursorPos();
                     if (i == frame.line)
                     {
-                        ImGui::Selectable(line.c_str(), true);
+                        ImGui::Selectable(line.c_str(), !prog.running);
                     }
                     else
                     {
@@ -2183,9 +2187,7 @@ void Draw()
         ImGui::Begin("Control", &gui.show_control);
 
         // continue
-        bool clicked;
-        bool resume_execution = false;
-
+        bool clicked = false;
         ImGuiDisabled(prog.running, clicked = ImGui::Button("---"));
         if (clicked)
         {
@@ -2205,8 +2207,7 @@ void Draw()
             }
             else
             {
-                if (GDB_SendBlocking("-exec-continue"))
-                    resume_execution = true;
+                GDB_SendBlocking("-exec-continue");
             }
         }
 
@@ -2223,8 +2224,7 @@ void Draw()
         ImGuiDisabled(prog.running, clicked = ImGui::Button("-->"));
         if (clicked)
         {
-            if (GDB_SendBlocking("-exec-step", false))
-                resume_execution = true;
+            GDB_SendBlocking("-exec-step", false);
         }
 
         // step over
@@ -2232,8 +2232,7 @@ void Draw()
         ImGuiDisabled(prog.running, clicked = ImGui::Button("/\\>"));
         if (clicked)
         {
-            if (GDB_SendBlocking("-exec-next", false))
-                resume_execution = true;
+            GDB_SendBlocking("-exec-next", false);
         }
 
         // step out
@@ -2245,13 +2244,11 @@ void Draw()
             {
                 // GDB error in top frame: "finish" not meaningful in the outermost frame.
                 // emulate visual studios by just running the program  
-                if (GDB_SendBlocking("-exec-continue"))
-                    resume_execution = true;
+                GDB_SendBlocking("-exec-continue");
             }
             else
             {
-                if (GDB_SendBlocking("-exec-finish", false))
-                    resume_execution = true;
+                GDB_SendBlocking("-exec-finish", false);
             }
         }
 
@@ -2368,7 +2365,9 @@ void Draw()
             if (modified != "")
             {
                 if (GDB_SendBlocking(modified.c_str(), false))
+                {
                     prog.running = true;
+                }
             }
             else
             {
@@ -2496,10 +2495,12 @@ void Draw()
 
 
         // don't set prog.running directly to prevent button flickering 
-        if (resume_execution)
-        {
-            prog.running = true;
-        }
+        //if (resume_execution)
+        //{
+        //    prog.running = true;
+        //    if (prog.frame_idx < prog.frames.size())
+        //        prog.frames[prog.frame_idx].line = 0; // clear source highlighted line
+        //}
 
         ImGui::End();
     }
@@ -2570,7 +2571,7 @@ void Draw()
 
                 tsnprintf(tmpbuf, "%4zu %s##%zu", iter.line, filename, i);
 
-                if ( ImGui::Selectable(tmpbuf, i == prog.frame_idx) )
+                if (ImGui::Selectable(tmpbuf, i == prog.frame_idx))
                 {
                     prog.frame_idx = i;
                     gui.jump_to_exec_line = true;
