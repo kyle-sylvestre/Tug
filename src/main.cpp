@@ -215,7 +215,7 @@ struct GUI
     bool source_search_bar_open = false;
     char source_search_keyword[256];
     size_t source_found_line_idx;
-    bool refresh_dock_space = true;
+    bool refresh_docking_space = true;
 
     // use two font sizes: global and source window
     // change source window size with CTRL+Scroll or settings option
@@ -2816,6 +2816,80 @@ void DrawDebugOverlay()
 
 }
 
+struct SplitParams
+{
+    bool has_split = false;
+    float ratio = 0.0f;
+    ImGuiDir split_dir = 0;
+    SplitParams *a = NULL, *b = NULL;
+    std::vector<std::string> names;
+
+    ~SplitParams()
+    {
+        if (a) { delete a; a = NULL; }
+        if (b) { delete b; b = NULL; }
+    }
+};
+
+void ApplySplit(SplitParams &params, ImGuiID src)
+{
+    if (params.has_split)
+    {
+        ImGuiID id_a, id_b;
+        ImGui::DockBuilderSplitNode(src, params.split_dir, params.ratio, &id_a, &id_b);
+        if (params.a)
+        {
+            for (std::string &name : params.a->names)
+                ImGui::DockBuilderDockWindow(name.c_str(), id_a);
+
+            ApplySplit(*params.a, id_a);
+        }
+
+        if (params.b)
+        {
+            for (std::string &name : params.b->names)
+                ImGui::DockBuilderDockWindow(name.c_str(), id_b);
+
+            ApplySplit(*params.b, id_b);
+        }
+    }
+}
+
+SplitParams *CreateSplitParams(ImGuiDockNode *node, int tabs)
+{
+    // recreate the dock nodes proportional to framebuffer size
+    // there's probably a more elegant way to do this but I'm not
+    // familiar enough with imgui internals.
+    if (node == NULL)
+        return NULL;
+
+    SplitParams *result = new SplitParams;
+    result->has_split = !(node->ChildNodes[0] == NULL || node->ChildNodes[1] == NULL);
+    for (ImGuiWindow *win : node->Windows)
+    {
+        std::string name;
+        name.assign(win->Name, win->NameBufLen);
+        result->names.push_back(name);
+    }
+
+    if (result->has_split)
+    {
+        ImGuiDockNode &a = *node->ChildNodes[0];
+        ImGuiDockNode &b = *node->ChildNodes[1];
+        result->split_dir = (node->SplitAxis == ImGuiAxis_X) ? ImGuiDir_Left : ImGuiDir_Up;
+
+        ImVec2 srs = a.SizeRef + b.SizeRef;
+        float srx = a.SizeRef.x / srs.x;
+        float sry = a.SizeRef.y / srs.y;
+        result->ratio = (result->split_dir == ImGuiDir_Left) ? srx : sry;
+
+        result->a = CreateSplitParams(node->ChildNodes[0], tabs + 1);
+        result->b = CreateSplitParams(node->ChildNodes[1], tabs + 1);
+    }
+
+    return result;
+}
+
 int main(int argc, char **argv)
 {
     {
@@ -2922,6 +2996,7 @@ int main(int argc, char **argv)
         return 1;
     }
 
+    static bool has_framebuffer_resized = false;
     {
         // GLFW init
         glfwSetErrorCallback(glfw_error_callback);
@@ -2938,8 +3013,13 @@ int main(int argc, char **argv)
         // install custom hooks, relies on install_callback true in ImplGlfw init 
         const auto OnFramebufferResize = [](GLFWwindow * /*window*/, int /*width*/, int /*height*/) 
         {
-            gui.refresh_dock_space = true; 
+            // TODO: this is clobbering current layout with default one,
+            // figure out how to scale current layout proportionally to framebuffer size
+            //gui.refresh_docking_space = true; 
+            static int counter;
+            has_framebuffer_resized = true;
             prog.log_scroll_to_bottom = true; 
+            printf("resize %d\n", counter++);
         };
         glfwSetFramebufferSizeCallback(gui.window, OnFramebufferResize);
 
@@ -2967,12 +3047,7 @@ int main(int argc, char **argv)
         return 1;
 
     ImGuiIO& io = ImGui::GetIO();
-
-#ifdef DEBUG
-    // disable ini so designing default sizes/positions won't clash with loaded values
-    io.IniFilename = NULL;
-#endif
-
+    io.IniFilename = NULL; // manually load/save imgui.ini file
     //io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;     // Enable Keyboard Controls
     //io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;      // Enable Gamepad Controls
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;           // Enable Docking
@@ -2998,6 +3073,10 @@ int main(int argc, char **argv)
     //io.Fonts->AddFontFromFileTTF("../../misc/fonts/ProggyTiny.ttf", 10.0f);
     //ImFont* font = io.Fonts->AddFontFromFileTTF("c:\\Windows\\Fonts\\ArialUni.ttf", 18.0f, NULL, io.Fonts->GetGlyphRangesJapanese());
 
+    // don't clobber saved docking space with default
+    ImGui::LoadIniSettingsFromDisk("imgui.ini");
+    if (NULL != ImGui::FindWindowSettings(ImHashStr("DockingWindow")))
+        gui.refresh_docking_space = false;
 
     // Main loop
     while (!glfwWindowShouldClose(gui.window))
@@ -3007,6 +3086,7 @@ int main(int argc, char **argv)
         // - When io.WantCaptureMouse is true, do not dispatch mouse input data to your main application.
         // - When io.WantCaptureKeyboard is true, do not dispatch keyboard input data to your main application.
         // Generally you may always pass all inputs to dear imgui, and hide them from your application based on those two flags.
+        has_framebuffer_resized = false;
         gui.this_frame = {};    // clear old frame data
         glfwPollEvents();
 
@@ -3072,10 +3152,10 @@ int main(int argc, char **argv)
             // because it would be confusing to have two docking targets within each others.
             ImGuiWindowFlags window_flags = ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoDocking;
 
-            ImGuiViewport* viewport = ImGui::GetMainViewport();
-            ImGui::SetNextWindowPos(viewport->Pos);
-            ImGui::SetNextWindowSize(viewport->Size);
-            ImGui::SetNextWindowViewport(viewport->ID);
+            ImGuiViewportP &viewport = (ImGuiViewportP &)*ImGui::GetMainViewport();
+            ImGui::SetNextWindowPos(viewport.Pos);
+            ImGui::SetNextWindowSize(viewport.Size);
+            ImGui::SetNextWindowViewport(viewport.ID);
 
             window_flags |= ImGuiWindowFlags_NoTitleBar |
                             ImGuiWindowFlags_NoCollapse |
@@ -3083,7 +3163,6 @@ int main(int argc, char **argv)
                             ImGuiWindowFlags_NoMove |
                             ImGuiWindowFlags_NoBringToFrontOnFocus |
                             ImGuiWindowFlags_NoNavFocus;
-
 
             // When using ImGuiDockNodeFlags_PassthruCentralNode, DockSpace() will render our
             // background and handle the pass-thru hole, so we ask Begin() to not render a background.
@@ -3099,19 +3178,32 @@ int main(int argc, char **argv)
             ImGui::Begin("DockingWindow", nullptr, window_flags);
             ImGui::PopStyleVar();
 
+            ImGuiDockNode* root = ImGui::DockBuilderGetNode(ImGui::GetID("DockingSpace"));
+            static SplitParams *params = NULL;
+            if (has_framebuffer_resized)
+                params = CreateSplitParams(root, 0);
+
             // DockSpace
             if (io.ConfigFlags & ImGuiConfigFlags_DockingEnable)
             {
                 ImGuiID dockspace_id = ImGui::GetID("DockingSpace");
                 ImGui::DockSpace(dockspace_id, ImVec2(0.0f, 0.0f), dockspace_flags);
 
-                if (gui.refresh_dock_space)
+                if (params != NULL)
                 {
-                    gui.refresh_dock_space = false;
+                    ImGui::DockBuilderRemoveNode(dockspace_id); // clear previous layout
+                    ImGui::DockBuilderAddNode(dockspace_id, dockspace_flags | ImGuiDockNodeFlags_DockSpace);
+                    ImGui::DockBuilderSetNodeSize(dockspace_id, viewport.Size);
+                    ApplySplit(*params, dockspace_id);
+                    delete params; params = NULL;
+                }
+                else if (gui.refresh_docking_space)
+                {
+                    gui.refresh_docking_space = false;
 
                     ImGui::DockBuilderRemoveNode(dockspace_id); // clear previous layout
                     ImGui::DockBuilderAddNode(dockspace_id, dockspace_flags | ImGuiDockNodeFlags_DockSpace);
-                    ImGui::DockBuilderSetNodeSize(dockspace_id, viewport->Size);
+                    ImGui::DockBuilderSetNodeSize(dockspace_id, viewport.Size);
 
                     ImGuiID left, right;
                     ImGui::DockBuilderSplitNode(dockspace_id, ImGuiDir_Left,
@@ -3129,7 +3221,7 @@ int main(int argc, char **argv)
 
                     ImGuiID top_right_upper, top_right_lower;
                     ImGui::DockBuilderSplitNode(right_top, ImGuiDir_Down,
-                                                0.5, &top_right_lower, &top_right_upper);
+                                                0.5f, &top_right_lower, &top_right_upper);
 
                     // we now dock our windows into the docking node we made above
                     ImGui::DockBuilderDockWindow("Source", left_top);
@@ -3146,9 +3238,6 @@ int main(int argc, char **argv)
 
             ImGui::End();
         }
-
-        if (ImGui_IsKeyClicked(ImGuiKey_F12))
-            Assert(false);
 
         //
         // global styles
@@ -3228,6 +3317,7 @@ int main(int argc, char **argv)
         close(gdb.fd_out_write);
     }
 
+    ImGui::SaveIniSettingsToDisk("imgui.ini");
     ImGui_ImplOpenGL2_Shutdown();
     ImGui_ImplGlfw_Shutdown();
     ImGui::DestroyContext();
