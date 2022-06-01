@@ -317,6 +317,7 @@ static void SetWindowTheme(WindowTheme theme)
         DefaultInvalid
     }
 
+#if 1
     // defaults are too damn bright!
     ImVec4 hdr = ImGui::GetStyleColorVec4(ImGuiCol_Header);
     ImVec4 hdr_hovered = ImVec4(hdr.x, hdr.y, hdr.z, GetMin(1.0f, hdr.w + 0.2));
@@ -329,6 +330,7 @@ static void SetWindowTheme(WindowTheme theme)
     ImVec4 btn_active = ImVec4(btn.x, btn.y, btn.z, GetMin(1.0f, btn.w + 0.4));
     style.Colors[ImGuiCol_ButtonHovered] = btn_hovered;
     style.Colors[ImGuiCol_ButtonActive] = btn_active;
+#endif
 
     gui.window_theme = theme;
 }
@@ -2886,13 +2888,21 @@ void DrawDebugOverlay()
 
 }
 
+struct DockOrder
+{
+    String window_name;
+    short dock_order;
+};
+Vector<DockOrder> dock_orderings;
+
 struct SplitParams
 {
     bool has_split = false;
     float ratio = 0.0f;
     ImGuiDir split_dir = 0;
     SplitParams *a = NULL, *b = NULL;
-    std::vector<std::string> names;
+    Vector<String> names;
+    ImGuiID selected_tab_id;
 
     ~SplitParams()
     {
@@ -2901,15 +2911,17 @@ struct SplitParams
     }
 };
 
-void ApplySplit(SplitParams &params, ImGuiID src)
+void ApplySplit(const SplitParams &params, ImGuiID src)
 {
+    // TODO: imgui ini file does not preserve docking node visibility, but it does contain SelectedId: ImHashStr("(name)#TAB")
     if (params.has_split)
     {
-        ImGuiID id_a, id_b;
+        ImGuiID id_a = 0;
+        ImGuiID id_b = 0;
         ImGui::DockBuilderSplitNode(src, params.split_dir, params.ratio, &id_a, &id_b);
         if (params.a)
         {
-            for (std::string &name : params.a->names)
+            for (String &name : params.a->names)
                 ImGui::DockBuilderDockWindow(name.c_str(), id_a);
 
             ApplySplit(*params.a, id_a);
@@ -2917,15 +2929,21 @@ void ApplySplit(SplitParams &params, ImGuiID src)
 
         if (params.b)
         {
-            for (std::string &name : params.b->names)
+            for (String &name : params.b->names)
                 ImGui::DockBuilderDockWindow(name.c_str(), id_b);
 
             ApplySplit(*params.b, id_b);
         }
     }
+    else
+    {
+        // leaf node only
+        ImGuiDockNode *node = ImGui::DockBuilderGetNode(src);
+        node->SelectedTabId = params.selected_tab_id;
+    }
 }
 
-SplitParams *CreateSplitParams(ImGuiDockNode *node, int tabs)
+SplitParams *CreateSplit(ImGuiDockNode *node, int tabs)
 {
     // recreate the dock nodes proportional to framebuffer size
     // there's probably a more elegant way to do this but I'm not
@@ -2934,12 +2952,16 @@ SplitParams *CreateSplitParams(ImGuiDockNode *node, int tabs)
         return NULL;
 
     SplitParams *result = new SplitParams;
+    result->selected_tab_id = node->SelectedTabId;
     result->has_split = !(node->ChildNodes[0] == NULL || node->ChildNodes[1] == NULL);
     for (ImGuiWindow *win : node->Windows)
     {
-        std::string name;
+        String name;
         name.assign(win->Name, win->NameBufLen);
         result->names.push_back(name);
+        DockOrder ordering = {name, win->DockOrder};
+        dock_orderings.push_back(ordering);
+        //printf("%.*s%s %d\n", tabs, "  ", name.c_str(), win->DockNodeIsVisible);
     }
 
     if (result->has_split)
@@ -2952,9 +2974,15 @@ SplitParams *CreateSplitParams(ImGuiDockNode *node, int tabs)
         float srx = a.SizeRef.x / srs.x;
         float sry = a.SizeRef.y / srs.y;
         result->ratio = (result->split_dir == ImGuiDir_Left) ? srx : sry;
+        
+        // TODO: windows slowly shrink from flooring in SplitNode, find the exact ratio instead of coercing the value
+        result->ratio *= 10.0f;
+        result->ratio = roundf(result->ratio);
+        result->ratio /= 10.0f;
+        //printf("%.*ssplit %f\n", tabs, "  ", result->ratio);
 
-        result->a = CreateSplitParams(node->ChildNodes[0], tabs + 1);
-        result->b = CreateSplitParams(node->ChildNodes[1], tabs + 1);
+        result->a = CreateSplit(node->ChildNodes[0], tabs + 1);
+        result->b = CreateSplit(node->ChildNodes[1], tabs + 1);
     }
 
     return result;
@@ -3086,10 +3114,8 @@ int main(int argc, char **argv)
             // TODO: this is clobbering current layout with default one,
             // figure out how to scale current layout proportionally to framebuffer size
             //gui.refresh_docking_space = true; 
-            static int counter;
             has_framebuffer_resized = true;
             prog.log_scroll_to_bottom = true; 
-            printf("resize %d\n", counter++);
         };
         glfwSetFramebufferSizeCallback(gui.window, OnFramebufferResize);
 
@@ -3144,7 +3170,10 @@ int main(int argc, char **argv)
     // don't clobber saved docking space with default
     ImGui::LoadIniSettingsFromDisk("imgui.ini");
     if (NULL != ImGui::FindWindowSettings(ImHashStr("DockingWindow")))
+    {
+        has_framebuffer_resized = true;
         gui.refresh_docking_space = false;
+    }
 
     // Main loop
     while (!glfwWindowShouldClose(gui.window))
@@ -3154,7 +3183,6 @@ int main(int argc, char **argv)
         // - When io.WantCaptureMouse is true, do not dispatch mouse input data to your main application.
         // - When io.WantCaptureKeyboard is true, do not dispatch keyboard input data to your main application.
         // Generally you may always pass all inputs to dear imgui, and hide them from your application based on those two flags.
-        has_framebuffer_resized = false;
         gui.this_frame = {};    // clear old frame data
         glfwPollEvents();
 
@@ -3246,11 +3274,22 @@ int main(int argc, char **argv)
             ImGui::Begin("DockingWindow", nullptr, window_flags);
             ImGui::PopStyleVar();
 
-            // remake the docking space once the user resizes the framebuffer (main window)
-            ImGuiDockNode* root = ImGui::DockBuilderGetNode(ImGui::GetID("DockingSpace"));
-            static SplitParams *params = NULL;
-            if (has_framebuffer_resized)
-                params = CreateSplitParams(root, 0);
+            SplitParams *params = NULL;
+
+            {
+                // remake the docking space once the user resizes the framebuffer
+                // when loading docking space from ini file, wait until the first 
+                // ImGui::DockSpace call or else all of the nodes will appear as separate windows
+                static bool first_frame = true;
+                ImGuiDockNode* root = ImGui::DockBuilderGetNode(ImGui::GetID("DockingSpace"));
+                if (!first_frame && has_framebuffer_resized)
+                {
+                    has_framebuffer_resized = false;
+                    dock_orderings.clear();
+                    params = CreateSplit(root, 0);
+                }
+                first_frame = false;
+            }
 
             // DockSpace
             if (io.ConfigFlags & ImGuiConfigFlags_DockingEnable)
@@ -3264,6 +3303,13 @@ int main(int argc, char **argv)
                     ImGui::DockBuilderAddNode(dockspace_id, dockspace_flags | ImGuiDockNodeFlags_DockSpace);
                     ImGui::DockBuilderSetNodeSize(dockspace_id, viewport.Size);
                     ApplySplit(*params, dockspace_id);
+                    for (const DockOrder &iter : dock_orderings)
+                    {
+                        ImGuiWindow *window = ImGui::FindWindowByName(iter.window_name.c_str());
+                        if (window != NULL)
+                            window->DockOrder = iter.dock_order;
+                    }
+    
                     delete params; params = NULL;
                 }
                 else if (gui.refresh_docking_space)
@@ -3335,9 +3381,9 @@ int main(int argc, char **argv)
 
     {
         // GDB shutdown
-        EndProcess(gdb.spawned_pid);
         pthread_cancel(gdb.thread_read_interp);
         pthread_join(gdb.thread_read_interp, NULL);
+        EndProcess(gdb.spawned_pid);
         pthread_mutex_destroy(&gdb.modify_block);
         sem_close(gdb.recv_block);
         close(gdb.fd_in_read);
