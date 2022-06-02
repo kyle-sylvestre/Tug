@@ -3043,9 +3043,6 @@ int main(int argc, char **argv)
     //io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;      // Enable Gamepad Controls
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;           // Enable Docking
 
-    // Setup Dear ImGui style
-    SetWindowTheme(gui.window_theme);
-
     // Setup Platform/Renderer backends
 
     // Load Fonts
@@ -3064,11 +3061,11 @@ int main(int argc, char **argv)
 
     {
         String str;
+        bool got_ini = false;
         FILE *f = fopen("tug.ini", "rb");
         if (f != NULL)
         {
-            // load the imgui ini file with tug ini piggybacked at the end
-            bool got_ini = false;
+            // load the tug ini file with imgui ini piggybacked at the end
             long filesize = 0;
             if (0 == fseek(f, 0, SEEK_END) &&
                 0 < (filesize = ftell(f)) &&
@@ -3083,11 +3080,12 @@ int main(int argc, char **argv)
             }
 
             if (!got_ini)
-                PrintError("error loading imgui.ini\n");
+                PrintError("error loading imgui.ini reverting to defaults...\n");
 
             fclose(f); f = NULL;
         }
-        else
+
+        if (!got_ini)
         {
             // workaround for generating a dockspace through loading an ini file
             // originally used ImGui DockBuilder api to make the docking space but 
@@ -3097,17 +3095,60 @@ int main(int argc, char **argv)
             ImGui::LoadIniSettingsFromMemory(str.data(), str.size());
         }
 
-        // load custom Tug section at the bottom, maximum lazy right now
+        // TODO: fix maximum lazy ini parsing right now
+        size_t end_tug = str.find("; ImGui Begin");
+        if (end_tug < str.size())
+            str = str.substr(0, end_tug);
+
         if (str.size() > 0)
         {
-            gui.show_callstack  = (NULL != strstr(str.c_str(), "Callstack=1"));
-            gui.show_locals     = (NULL != strstr(str.c_str(), "Locals=1"));
-            gui.show_registers  = (NULL != strstr(str.c_str(), "Registers=1"));
-            gui.show_watch      = (NULL != strstr(str.c_str(), "Watch=1"));
-            gui.show_source     = (NULL != strstr(str.c_str(), "Source=1"));
-            gui.show_control    = (NULL != strstr(str.c_str(), "Control=1"));
+            const auto GetValue = [&](String key, String default_value) -> String
+            {
+                String result;
+                key += "=";
+                size_t index = str.find(key);
+                if (index < str.size())
+                {
+                    size_t start_index = index + key.size();
+                    size_t end_index = start_index;
+                    while (end_index < str.size())
+                    {
+                        char c = str[end_index];
+                        if (c == '\n' || c == '\r')
+                        {
+                            break;
+                        }
+                        else
+                        {
+                            end_index++;
+                        }
+                    }
+
+                    result = str.substr(start_index, end_index - start_index);
+                }
+                else
+                {
+                    return default_value;
+                }
+
+                return result;
+            };
+
+            gui.show_callstack  = ("1" == GetValue("Callstack"  , "1"));
+            gui.show_locals     = ("1" == GetValue("Locals"     , "1"));
+            gui.show_registers  = ("1" == GetValue("Registers"  , "0"));
+            gui.show_watch      = ("1" == GetValue("Watch"      , "1"));
+            gui.show_control    = ("1" == GetValue("Control"    , "1"));
+            gui.show_source     = ("1" == GetValue("Source"     , "1"));
+            
+            String theme = GetValue("WindowTheme", "DarkBlue");
+            gui.window_theme = (theme == "Light") ? WindowTheme_Light :
+                               (theme == "DarkPurple") ? WindowTheme_DarkPurple : WindowTheme_DarkBlue; 
         }
     }
+
+    // Setup Dear ImGui style
+    SetWindowTheme(gui.window_theme);
 
     // Main loop
     while (!glfwWindowShouldClose(gui.window))
@@ -3223,11 +3264,16 @@ int main(int argc, char **argv)
         fprintf(f, "Watch=%d\n",    gui.show_watch);
         fprintf(f, "Control=%d\n",  gui.show_control);
         fprintf(f, "Source=%d\n",   gui.show_source);
-        fprintf(f, "\n; ImGui Begin\n");
+
+        String theme = (gui.window_theme == WindowTheme_Light) ? "Light" :
+                       (gui.window_theme == WindowTheme_DarkPurple) ? "DarkPurple" : "DarkBlue";
+        fprintf(f, "WindowTheme=%s\n", theme.c_str());
+
 
         // write the imgui side of the ini file
         size_t ini_data_size = 0;
         const char* ini_data = ImGui::SaveIniSettingsToMemory(&ini_data_size);
+        fprintf(f, "\n; ImGui Begin\n");
         fwrite(ini_data, sizeof(char), ini_data_size, f);
         fclose(f); f = NULL;
     }
