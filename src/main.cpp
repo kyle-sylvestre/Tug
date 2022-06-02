@@ -15,7 +15,7 @@
 
 #include "common.h"
 #include "gdb.h"
-#include "imgui_default_ini.h"
+#include "default_ini.h"
 #include <fstream>
 
 //
@@ -3062,17 +3062,51 @@ int main(int argc, char **argv)
     //io.Fonts->AddFontFromFileTTF("../../misc/fonts/ProggyTiny.ttf", 10.0f);
     //ImFont* font = io.Fonts->AddFontFromFileTTF("c:\\Windows\\Fonts\\ArialUni.ttf", 18.0f, NULL, io.Fonts->GetGlyphRangesJapanese());
 
-    if (DoesFileExist("imgui.ini", false))
     {
-        ImGui::LoadIniSettingsFromDisk("imgui.ini");
-    }
-    else
-    {
-        // workaround for generating a dockspace through loading an ini file
-        // originally used ImGui DockBuilder api to make the docking space but 
-        // there was a bug where some nodes would not resize proportionally
-        // to the framebuffer
-        ImGui::LoadIniSettingsFromMemory(default_ini, strlen(default_ini));
+        String str;
+        FILE *f = fopen("tug.ini", "rb");
+        if (f != NULL)
+        {
+            // load the imgui ini file with tug ini piggybacked at the end
+            bool got_ini = false;
+            long filesize = 0;
+            if (0 == fseek(f, 0, SEEK_END) &&
+                0 < (filesize = ftell(f)) &&
+                0 == fseek(f, 0, SEEK_SET))
+            {
+                str.resize((size_t)filesize);
+                if (0 < fread((void*)str.data(), 1, filesize, f))
+                {
+                    got_ini = true;
+                    ImGui::LoadIniSettingsFromMemory(str.data(), str.size());
+                }
+            }
+
+            if (!got_ini)
+                PrintError("error loading imgui.ini\n");
+
+            fclose(f); f = NULL;
+        }
+        else
+        {
+            // workaround for generating a dockspace through loading an ini file
+            // originally used ImGui DockBuilder api to make the docking space but 
+            // there was a bug where some nodes would not resize proportionally
+            // to the framebuffer
+            str = default_ini;
+            ImGui::LoadIniSettingsFromMemory(str.data(), str.size());
+        }
+
+        // load custom Tug section at the bottom, maximum lazy right now
+        if (str.size() > 0)
+        {
+            gui.show_callstack  = (NULL != strstr(str.c_str(), "Callstack=1"));
+            gui.show_locals     = (NULL != strstr(str.c_str(), "Locals=1"));
+            gui.show_registers  = (NULL != strstr(str.c_str(), "Registers=1"));
+            gui.show_watch      = (NULL != strstr(str.c_str(), "Watch=1"));
+            gui.show_source     = (NULL != strstr(str.c_str(), "Source=1"));
+            gui.show_control    = (NULL != strstr(str.c_str(), "Control=1"));
+        }
     }
 
     // Main loop
@@ -3178,7 +3212,26 @@ int main(int argc, char **argv)
         close(gdb.fd_out_write);
     }
 
-    ImGui::SaveIniSettingsToDisk("imgui.ini");
+    FILE *f = fopen("tug.ini", "wt");
+    if (f != NULL)
+    {
+        // append custom tug ini information, imgui doesn't save docking tab visibility at the moment
+        fprintf(f, "[Tug]\n");
+        fprintf(f, "Callstack=%d\n",gui.show_callstack);
+        fprintf(f, "Locals=%d\n",   gui.show_locals);
+        fprintf(f, "Registers=%d\n",gui.show_registers);
+        fprintf(f, "Watch=%d\n",    gui.show_watch);
+        fprintf(f, "Control=%d\n",  gui.show_control);
+        fprintf(f, "Source=%d\n",   gui.show_source);
+        fprintf(f, "\n; ImGui Begin\n");
+
+        // write the imgui side of the ini file
+        size_t ini_data_size = 0;
+        const char* ini_data = ImGui::SaveIniSettingsToMemory(&ini_data_size);
+        fwrite(ini_data, sizeof(char), ini_data_size, f);
+        fclose(f); f = NULL;
+    }
+
     ImGui_ImplOpenGL2_Shutdown();
     ImGui_ImplGlfw_Shutdown();
     ImGui::DestroyContext();

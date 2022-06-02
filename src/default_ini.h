@@ -78,6 +78,12 @@ DockSpace       ID=0x8B93E3BD Window=0xA787BDB4 Pos=0,19 Size=1280,701 Split=X
       DockNode  ID=0x00000008 Parent=0x00000005 SizeRef=376,228 Selected=0x2924BF46
     DockNode    ID=0x00000006 Parent=0x00000002 SizeRef=376,238 Selected=0xFEB5AC5E
 
-
+[Tug]
+Callstack=1
+Locals=1
+Registers=0
+Watch=1
+Source=1
+Control=1
 
 )";
