@@ -1,5 +1,5 @@
 debug_misc
-imgui.ini
+*.ini
 build_debug
 build_release
 tags
