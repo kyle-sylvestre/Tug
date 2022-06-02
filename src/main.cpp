@@ -15,6 +15,7 @@
 
 #include "common.h"
 #include "gdb.h"
+#include "imgui_default_ini.h"
 #include <fstream>
 
 //
@@ -107,14 +108,14 @@ String _StringPrintf(int /* vargs_check */, const char *fmt, ...)
     return result;
 }
 
-bool DoesFileExist(const char *filename)
+bool DoesFileExist(const char *filename, bool print_error_on_missing)
 {
     struct stat st = {};
     bool result = false;
     if (0 > stat(filename, &st))
     {
-        // print when errno isn't file not found
-        PrintErrorf("stat \"%s\": %s\n", filename, strerror(errno));
+        if ((errno == ENOENT && print_error_on_missing) || errno != ENOENT)
+            PrintErrorf("stat \"%s\": %s\n", filename, strerror(errno));
     }
     else
     {
@@ -126,7 +127,7 @@ bool DoesFileExist(const char *filename)
 
 bool DoesProcessExist(pid_t p)
 {
-    return DoesFileExist(StringPrintf("/proc/%d", (int)p).c_str());
+    return DoesFileExist(StringPrintf("/proc/%d", (int)p).c_str(), false);
 }
 
 void EndProcess(pid_t p)
@@ -2888,105 +2889,12 @@ void DrawDebugOverlay()
 
 }
 
-struct DockOrder
-{
-    String window_name;
-    short dock_order;
-};
-Vector<DockOrder> dock_orderings;
-
-struct SplitParams
-{
-    bool has_split = false;
-    float ratio = 0.0f;
-    ImGuiDir split_dir = 0;
-    SplitParams *a = NULL, *b = NULL;
-    Vector<String> names;
-    ImGuiID selected_tab_id;
-
-    ~SplitParams()
-    {
-        if (a) { delete a; a = NULL; }
-        if (b) { delete b; b = NULL; }
-    }
-};
-
-void ApplySplit(const SplitParams &params, ImGuiID src)
-{
-    // TODO: imgui ini file does not preserve docking node visibility, but it does contain SelectedId: ImHashStr("(name)#TAB")
-    if (params.has_split)
-    {
-        ImGuiID id_a = 0;
-        ImGuiID id_b = 0;
-        ImGui::DockBuilderSplitNode(src, params.split_dir, params.ratio, &id_a, &id_b);
-        if (params.a)
-        {
-            for (String &name : params.a->names)
-                ImGui::DockBuilderDockWindow(name.c_str(), id_a);
-
-            ApplySplit(*params.a, id_a);
-        }
-
-        if (params.b)
-        {
-            for (String &name : params.b->names)
-                ImGui::DockBuilderDockWindow(name.c_str(), id_b);
-
-            ApplySplit(*params.b, id_b);
-        }
-    }
-    else
-    {
-        // leaf node only
-        ImGuiDockNode *node = ImGui::DockBuilderGetNode(src);
-        node->SelectedTabId = params.selected_tab_id;
-    }
-}
-
-SplitParams *CreateSplit(ImGuiDockNode *node, int tabs)
-{
-    // recreate the dock nodes proportional to framebuffer size
-    // there's probably a more elegant way to do this but I'm not
-    // familiar enough with imgui internals.
-    if (node == NULL)
-        return NULL;
-
-    SplitParams *result = new SplitParams;
-    result->selected_tab_id = node->SelectedTabId;
-    result->has_split = !(node->ChildNodes[0] == NULL || node->ChildNodes[1] == NULL);
-    for (ImGuiWindow *win : node->Windows)
-    {
-        String name;
-        name.assign(win->Name, win->NameBufLen);
-        result->names.push_back(name);
-        DockOrder ordering = {name, win->DockOrder};
-        dock_orderings.push_back(ordering);
-        //printf("%.*s%s %d\n", tabs, "  ", name.c_str(), win->DockNodeIsVisible);
-    }
-
-    if (result->has_split)
-    {
-        ImGuiDockNode &a = *node->ChildNodes[0];
-        ImGuiDockNode &b = *node->ChildNodes[1];
-        result->split_dir = (node->SplitAxis == ImGuiAxis_X) ? ImGuiDir_Left : ImGuiDir_Up;
-
-        ImVec2 srs = a.SizeRef + b.SizeRef;
-        float srx = a.SizeRef.x / srs.x;
-        float sry = a.SizeRef.y / srs.y;
-        result->ratio = (result->split_dir == ImGuiDir_Left) ? srx : sry;
-        
-        // TODO: windows slowly shrink from flooring in SplitNode, find the exact ratio instead of coercing the value
-        result->ratio *= 10.0f;
-        result->ratio = roundf(result->ratio);
-        result->ratio /= 10.0f;
-        //printf("%.*ssplit %f\n", tabs, "  ", result->ratio);
-
-        result->a = CreateSplit(node->ChildNodes[0], tabs + 1);
-        result->b = CreateSplit(node->ChildNodes[1], tabs + 1);
-    }
-
-    return result;
-}
+//struct DockOrder
+//{
+//    String window_name;
+//    short dock_order;
+//};
+//Vector<DockOrder> dock_orderings;
 
 int main(int argc, char **argv)
 {
@@ -3094,7 +3002,6 @@ int main(int argc, char **argv)
         return 1;
     }
 
-    static bool has_framebuffer_resized = false;
     {
         // GLFW init
         glfwSetErrorCallback(glfw_error_callback);
@@ -3107,18 +3014,6 @@ int main(int argc, char **argv)
 
         glfwMakeContextCurrent(gui.window);
         glfwSwapInterval(1); // Enable vsync
-
-        // install custom hooks, relies on install_callback true in ImplGlfw init 
-        const auto OnFramebufferResize = [](GLFWwindow * /*window*/, int /*width*/, int /*height*/) 
-        {
-            // TODO: this is clobbering current layout with default one,
-            // figure out how to scale current layout proportionally to framebuffer size
-            //gui.refresh_docking_space = true; 
-            has_framebuffer_resized = true;
-            prog.log_scroll_to_bottom = true; 
-        };
-        glfwSetFramebufferSizeCallback(gui.window, OnFramebufferResize);
-
 
         const auto OnScroll = [](GLFWwindow *window, double /*xoffset*/, double yoffset)
         {
@@ -3167,12 +3062,17 @@ int main(int argc, char **argv)
     //io.Fonts->AddFontFromFileTTF("../../misc/fonts/ProggyTiny.ttf", 10.0f);
     //ImFont* font = io.Fonts->AddFontFromFileTTF("c:\\Windows\\Fonts\\ArialUni.ttf", 18.0f, NULL, io.Fonts->GetGlyphRangesJapanese());
 
-    // don't clobber saved docking space with default
-    ImGui::LoadIniSettingsFromDisk("imgui.ini");
-    if (NULL != ImGui::FindWindowSettings(ImHashStr("DockingWindow")))
+    if (DoesFileExist("imgui.ini", false))
     {
-        has_framebuffer_resized = true;
-        gui.refresh_docking_space = false;
+        ImGui::LoadIniSettingsFromDisk("imgui.ini");
+    }
+    else
+    {
+        // workaround for generating a dockspace through loading an ini file
+        // originally used ImGui DockBuilder api to make the docking space but 
+        // there was a bug where some nodes would not resize proportionally
+        // to the framebuffer
+        ImGui::LoadIniSettingsFromMemory(default_ini, strlen(default_ini));
     }
 
     // Main loop
@@ -3239,121 +3139,7 @@ int main(int argc, char **argv)
         ImGui_ImplGlfw_NewFrame();
         ImGui::NewFrame();
 
-        {
-            // the new hotness: docking windows
-            // yoinked from example
-            static ImGuiDockNodeFlags dockspace_flags = ImGuiDockNodeFlags_PassthruCentralNode;
-
-            // We are using the ImGuiWindowFlags_NoDocking flag to make the parent window not dockable into,
-            // because it would be confusing to have two docking targets within each others.
-            ImGuiWindowFlags window_flags = ImGuiWindowFlags_MenuBar | ImGuiWindowFlags_NoDocking;
-
-            ImGuiViewport &viewport = *ImGui::GetMainViewport();
-            ImGui::SetNextWindowPos(viewport.Pos);
-            ImGui::SetNextWindowSize(viewport.Size);
-            ImGui::SetNextWindowViewport(viewport.ID);
-
-            window_flags |= ImGuiWindowFlags_NoTitleBar |
-                            ImGuiWindowFlags_NoCollapse |
-                            ImGuiWindowFlags_NoResize |
-                            ImGuiWindowFlags_NoMove |
-                            ImGuiWindowFlags_NoBringToFrontOnFocus |
-                            ImGuiWindowFlags_NoNavFocus;
-
-            // When using ImGuiDockNodeFlags_PassthruCentralNode, DockSpace() will render our
-            // background and handle the pass-thru hole, so we ask Begin() to not render a background.
-            if (dockspace_flags & ImGuiDockNodeFlags_PassthruCentralNode)
-                window_flags |= ImGuiWindowFlags_NoBackground;
-
-            // Important: note that we proceed even if Begin() returns false (aka window is collapsed).
-            // This is because we want to keep our DockSpace() active. If a DockSpace() is inactive, 
-            // all active windows docked into it will lose their parent and become undocked.
-            // We cannot preserve the docking relationship between an active window and an inactive docking, otherwise 
-            // any change of dockspace/settings would lead to windows being stuck in limbo and never being visible.
-            ImGui::PushStyleVar(ImGuiStyleVar_WindowPadding, ImVec2(0.0f, 0.0f));
-            ImGui::Begin("DockingWindow", nullptr, window_flags);
-            ImGui::PopStyleVar();
-
-            SplitParams *params = NULL;
-
-            {
-                // remake the docking space once the user resizes the framebuffer
-                // when loading docking space from ini file, wait until the first 
-                // ImGui::DockSpace call or else all of the nodes will appear as separate windows
-                static bool first_frame = true;
-                ImGuiDockNode* root = ImGui::DockBuilderGetNode(ImGui::GetID("DockingSpace"));
-                if (!first_frame && has_framebuffer_resized)
-                {
-                    has_framebuffer_resized = false;
-                    dock_orderings.clear();
-                    params = CreateSplit(root, 0);
-                }
-                first_frame = false;
-            }
-
-            // DockSpace
-            if (io.ConfigFlags & ImGuiConfigFlags_DockingEnable)
-            {
-                ImGuiID dockspace_id = ImGui::GetID("DockingSpace");
-                ImGui::DockSpace(dockspace_id, ImVec2(0.0f, 0.0f), dockspace_flags);
-
-                if (params != NULL)
-                {
-                    ImGui::DockBuilderRemoveNode(dockspace_id); // clear previous layout
-                    ImGui::DockBuilderAddNode(dockspace_id, dockspace_flags | ImGuiDockNodeFlags_DockSpace);
-                    ImGui::DockBuilderSetNodeSize(dockspace_id, viewport.Size);
-                    ApplySplit(*params, dockspace_id);
-                    for (const DockOrder &iter : dock_orderings)
-                    {
-                        ImGuiWindow *window = ImGui::FindWindowByName(iter.window_name.c_str());
-                        if (window != NULL)
-                            window->DockOrder = iter.dock_order;
-                    }
-    
-                    delete params; params = NULL;
-                }
-                else if (gui.refresh_docking_space)
-                {
-                    gui.refresh_docking_space = false;
-
-                    ImGui::DockBuilderRemoveNode(dockspace_id); // clear previous layout
-                    ImGui::DockBuilderAddNode(dockspace_id, dockspace_flags | ImGuiDockNodeFlags_DockSpace);
-                    ImGui::DockBuilderSetNodeSize(dockspace_id, viewport.Size);
-
-                    ImGuiID left, right;
-                    ImGui::DockBuilderSplitNode(dockspace_id, ImGuiDir_Left,
-                                                0.6f, &left, &right);
-
-                    ImGuiID left_top = 0;
-                    ImGuiID left_bottom = 0;
-                    ImGui::DockBuilderSplitNode(left, ImGuiDir_Down,
-                                                0.4f, &left_bottom, &left_top);
-
-                    ImGuiID right_top = 0;
-                    ImGuiID right_bottom = 0;
-                    ImGui::DockBuilderSplitNode(right, ImGuiDir_Down,
-                                                0.4f, &right_bottom, &right_top);
-
-                    ImGuiID top_right_upper, top_right_lower;
-                    ImGui::DockBuilderSplitNode(right_top, ImGuiDir_Down,
-                                                0.5f, &top_right_lower, &top_right_upper);
-
-                    // we now dock our windows into the docking node we made above
-                    ImGui::DockBuilderDockWindow("Source", left_top);
-                    ImGui::DockBuilderDockWindow("Control", left_bottom);
-
-                    ImGui::DockBuilderDockWindow("Locals", top_right_upper);
-                    ImGui::DockBuilderDockWindow("Callstack", top_right_lower);
-                    ImGui::DockBuilderDockWindow("Watch", right_bottom);
-                    ImGui::DockBuilderDockWindow("Registers", right_bottom);
-
-                    ImGui::DockBuilderFinish(ImGui::GetID("DockingSpace"));
-                }
-            }
-
-            ImGui::End();
-        }
-
+        ImGui::DockSpaceOverViewport(ImGui::GetMainViewport(), ImGuiDockNodeFlags_PassthruCentralNode);
         DrawDebugOverlay();
         Draw();
 
