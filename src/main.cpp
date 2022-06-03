@@ -717,19 +717,23 @@ void QueryWatchlist()
         String cmd = StringPrintf("-data-evaluate-expression --frame %zu --thread 1 \"%s\"", 
                                   prog.frame_idx, expr.c_str());
 
+        VarObj incoming = {};
+        incoming.name = iter.name;
+        incoming.value = "???";
         if (GDB_SendBlocking(cmd.c_str(), rec))
         {
             static uint32_t counter = 0;
             String exprname = StringPrintf("expression##%u", counter);
             counter++;
 
-            VarObj incoming = CreateVarObj(exprname, GDB_ExtractValue("value", rec));
-            CheckIfChanged(incoming, iter);
-            iter.value = incoming.value;
-            iter.expr = incoming.expr;
-            iter.changed = incoming.changed;
-            iter.expr_changed = incoming.expr_changed;
+            incoming = CreateVarObj(exprname, GDB_ExtractValue("value", rec));
         }
+
+        CheckIfChanged(incoming, iter);
+        iter.value = incoming.value;
+        iter.expr = incoming.expr;
+        iter.changed = incoming.changed;
+        iter.expr_changed = incoming.expr_changed;
     }
 }
 
