@@ -203,6 +203,10 @@ bool GDB_StartProcess(String gdb_filename, String gdb_args)
             PrintErrorf("posix_spawnp: %s\n", strerror(errno));
             return false;
         }
+        else
+        {
+            PrintMessagef("spawned %s %s\n", gdb_filename.c_str(), gdb_args.c_str());
+        }
     }
 
     //GDB_SendBlocking("-environment-cd /mnt/c/Users/Kyle/Documents/commercial-codebases/original/stevie");
@@ -257,10 +261,15 @@ bool GDB_StartProcess(String gdb_filename, String gdb_args)
     }
 
     String set_tty = StringPrintf("-inferior-tty-set %s", ptsname(gdb.fd_ptty_master));
-    if (!GDB_SendBlocking(set_tty.c_str()))
+    if (GDB_SendBlocking(set_tty.c_str()))
+    {
+        PrintMessagef("set inferior-tty to %s\n", ptsname(gdb.fd_ptty_master));
+    }
+    else
+    {
         return false;
+    }
 
-    PrintMessagef("spawned %s %s\n", gdb_filename.c_str(), gdb_args.c_str());
     gdb.filename = gdb_filename;
     gdb.args = gdb_args;
     return true;
@@ -1082,8 +1091,10 @@ static size_t GDB_SendBlockingInternal(const char *cmd, bool remove_after)
                             }
                             else 
                             {
-                                // don't print watch variables not in scope (no symbol "xyz" in current context)
-                                if (NULL == strstr(bufstr, "No symbol\""))
+                                // don't print error on watch variables not in scope (no symbol "xyz" in current context)
+                                // don't print error on hovering mouse over a type name
+                                if (NULL == strstr(bufstr, "in current context.") &&
+                                    NULL == strstr(bufstr, "Attempt to use a type name as an expression"))
                                 {
                                     // convert error record to GDB console output record
                                     String errmsg = GDB_ExtractValue("msg", iter.rec);

@@ -394,6 +394,7 @@ struct Program
     Vector<Frame> frames;
     size_t frame_idx = BAD_INDEX;
     pid_t inferior_process;
+    String stack_sig;               // string of all function names combined
 };
 
 extern Program prog;

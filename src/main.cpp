@@ -1038,10 +1038,11 @@ Breakpoint ExtractBreakpoint(const Record &rec)
     return result;
 }
 
-void QueryFrame()
+void QueryFrame(bool force_clear_locals)
 {
     // query the prog.frame_idx for locals, callstack, globals
     Record rec;
+    char tmpbuf[4096];
     gui.jump_to_exec_line = true;
     QueryWatchlist();
 
@@ -1055,7 +1056,7 @@ void QueryFrame()
         static bool set_default_registers = true;
         prog.frames.clear();
         static String last_stack_sig;
-        String this_stack_sig;
+        String stack_sig;
 
         for (const RecordAtom &level : GDB_IterChild(rec, callstack))
         {
@@ -1064,7 +1065,7 @@ void QueryFrame()
             add.addr = ParseHex( GDB_ExtractValue("addr", level, rec) );
             add.func = GDB_ExtractValue("func", level, rec);
             arch = GDB_ExtractValue("arch", level, rec);
-            this_stack_sig += add.func;
+            stack_sig += add.func;
 
             String fullpath = GDB_ExtractValue("fullname", level, rec);
             add.file_idx = CreateOrGetFile(fullpath);
@@ -1072,10 +1073,10 @@ void QueryFrame()
             prog.frames.emplace_back(add);
         }
 
-        if (last_stack_sig != this_stack_sig)
+        if (prog.stack_sig != stack_sig || force_clear_locals)
         {
+            prog.stack_sig = stack_sig;
             prog.local_vars.clear();
-            last_stack_sig = this_stack_sig;
             if (gui.line_display != LineDisplay_Source && prog.frames.size() > 0)
                 GetFunctionDisassembly(prog.frames[0]);
         }
@@ -1126,7 +1127,8 @@ void QueryFrame()
     // prog.local_vars not actually GDB variable objects,
     // problems with aggregates displaying updates
 
-    GDB_SendBlocking("-stack-list-variables --all-values", rec);
+    tsnprintf(tmpbuf, "-stack-list-variables --frame %zu --thread 1 --all-values", prog.frame_idx);
+    GDB_SendBlocking(tmpbuf, rec);
     for (VarObj &local : prog.local_vars) local.changed = false;
 
     const RecordAtom *vars = GDB_ExtractAtom("variables", rec);
@@ -1267,7 +1269,7 @@ void Draw()
                     if ((size_t)index < prog.frames.size())
                     {
                         prog.frame_idx = index;
-                        QueryFrame();
+                        QueryFrame(true);
 
                         if (gui.line_display != LineDisplay_Source)
                             GetFunctionDisassembly(prog.frames[ prog.frame_idx ]);
@@ -1291,7 +1293,7 @@ void Draw()
                 else
                 {
                     prog.started = true;
-                    QueryFrame();
+                    QueryFrame(false);
                 }
             }
         }
@@ -2608,7 +2610,7 @@ void Draw()
                 if (ImGui::Selectable(tmpbuf, i == prog.frame_idx))
                 {
                     prog.frame_idx = i;
-                    QueryFrame();
+                    QueryFrame(true);
 
                     if (gui.line_display != LineDisplay_Source)
                         GetFunctionDisassembly(prog.frames[ prog.frame_idx ]);
