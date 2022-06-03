@@ -378,8 +378,7 @@ struct Program
     int input_cmd_idx = -1;
     int num_input_cmds;
 
-    Vector<VarObj> other_frame_vars;// one-shot view for non-current frame values
-    Vector<VarObj> local_vars;      // watch for the current frame, -var-create name * expr
+    Vector<VarObj> local_vars;      // locals for the current frame
     Vector<VarObj> global_vars;     // watch for entire program, -var-create name @ expr
     Vector<VarObj> watch_vars;      // user defined watch for entire program
     bool running;
@@ -404,3 +403,4 @@ void WriteToConsoleBuffer(const char *raw, size_t rawsize);
 bool VerifyFileExecutable(const char *filename);
 bool DoesFileExist(const char *filename, bool print_error_on_missing = true);
 bool DoesProcessExist(pid_t p);
+bool InvokeShellCommand(String command, String &output);

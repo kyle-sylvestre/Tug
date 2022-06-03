@@ -40,18 +40,7 @@
 // dynamic colors that change upon the brightness of the background
 ImVec4 IM_COL32_WIN_RED;
 
-// this enum is too damn long, shorten it down
-typedef int ImGuiMod;
-enum ImGuiMod_
-{
-    ImGuiMod_None = ImGuiKeyModFlags_None,
-    ImGuiMod_Alt = ImGuiKeyModFlags_Alt,
-    ImGuiMod_Shift = ImGuiKeyModFlags_Shift,
-    ImGuiMod_Super = ImGuiKeyModFlags_Super,
-    ImGuiMod_Ctrl = ImGuiKeyModFlags_Ctrl,
-};
-
-static bool IsKeyPressed(ImGuiKey key, ImGuiMod mod = ImGuiMod_None)
+static bool IsKeyPressed(ImGuiKey key, ImGuiKeyModFlags mod = ImGuiKeyModFlags_None)
 {
     bool result = false;
     ImGuiIO &io = ImGui::GetIO();
@@ -61,10 +50,10 @@ static bool IsKeyPressed(ImGuiKey key, ImGuiMod mod = ImGuiMod_None)
     if (key_in_range)
     {
         result = ImGui::IsKeyPressed(key);
-        if (mod & ImGuiMod_Alt)   result &= io.KeyAlt;
-        if (mod & ImGuiMod_Ctrl)  result &= io.KeyCtrl;
-        if (mod & ImGuiMod_Shift) result &= io.KeyShift;
-        if (mod & ImGuiMod_Super) result &= io.KeySuper;
+        if (mod & ImGuiKeyModFlags_Alt)   result &= io.KeyAlt;
+        if (mod & ImGuiKeyModFlags_Ctrl)  result &= io.KeyCtrl;
+        if (mod & ImGuiKeyModFlags_Shift) result &= io.KeyShift;
+        if (mod & ImGuiKeyModFlags_Super) result &= io.KeySuper;
     }
 
     return result;
@@ -101,6 +90,38 @@ String _StringPrintf(int /* vargs_check */, const char *fmt, ...)
             // remove trailing NT, std::string provides one with .c_str()
             result.pop_back();
         }
+    }
+
+    return result;
+}
+
+bool InvokeShellCommand(String command, String &output)
+{
+    bool result = false;
+    output.clear();
+    FILE *f = popen(command.c_str(), "r");
+    if (f == NULL)
+    {
+        PrintErrorf("popen shell command \"%s\": %s\n", 
+                    command.c_str(), strerror(errno));
+    }
+    else
+    {
+        char tmp[1024] = {};
+        ssize_t bytes_read = 0;
+        while (0 < (bytes_read = fread(tmp, 1, sizeof(tmp), f)) )
+            output.insert(output.size(), tmp, bytes_read);
+        
+        if (errno != 0)
+        {
+            PrintErrorf("fread %s\n", strerror(errno));
+        }
+        else
+        {
+            result = true;
+        }
+
+        pclose(f); f = NULL;
     }
 
     return result;
@@ -164,7 +185,6 @@ void EndProcess(pid_t p)
 
 void ResetProgramState()
 {
-    prog.other_frame_vars.clear();
     prog.local_vars.clear();
     for (VarObj &iter : prog.watch_vars)
     {
@@ -1017,11 +1037,172 @@ Breakpoint ExtractBreakpoint(const Record &rec)
     result.addr = ParseHex( GDB_ExtractValue("bkpt.addr", rec) );
     return result;
 }
+
+void QueryFrame()
+{
+    // query the prog.frame_idx for locals, callstack, globals
+    Record rec;
+    gui.jump_to_exec_line = true;
+    QueryWatchlist();
+
+    // TODO: remote ARM32 debugging is this up after jsr macro
+    /* !!! */ //GDB_SendBlocking("-stack-list-frames 0 0", rec, "stack");
+    /* !!! */ GDB_SendBlocking("-stack-list-frames", rec);
+    const RecordAtom *callstack = GDB_ExtractAtom("stack", rec);
+    if (callstack)
+    {
+        String arch = "";
+        static bool set_default_registers = true;
+        prog.frames.clear();
+        static String last_stack_sig;
+        String this_stack_sig;
+
+        for (const RecordAtom &level : GDB_IterChild(rec, callstack))
+        {
+            Frame add = {};
+            add.line_idx = (size_t)GDB_ExtractInt("line", level, rec) - 1;
+            add.addr = ParseHex( GDB_ExtractValue("addr", level, rec) );
+            add.func = GDB_ExtractValue("func", level, rec);
+            arch = GDB_ExtractValue("arch", level, rec);
+            this_stack_sig += add.func;
+
+            String fullpath = GDB_ExtractValue("fullname", level, rec);
+            add.file_idx = CreateOrGetFile(fullpath);
+
+            prog.frames.emplace_back(add);
+        }
+
+        if (last_stack_sig != this_stack_sig)
+        {
+            prog.local_vars.clear();
+            last_stack_sig = this_stack_sig;
+            if (gui.line_display != LineDisplay_Source && prog.frames.size() > 0)
+                GetFunctionDisassembly(prog.frames[0]);
+        }
+
+        if (set_default_registers && arch != "")
+        {
+            set_default_registers = false;
+
+            // set the default registers for a given architecture
+            // TODO: @GDB: is there a command to query this without having to
+            // get stack frames
+            const char * const* registers = NULL;
+            size_t num_registers = 0;
+            if (arch == "i386:x86-64")
+            {
+                registers = DEFAULT_REG_AMD64;
+                num_registers = ArrayCount(DEFAULT_REG_AMD64);
+            }
+            else if (arch == "i386")
+            {
+                registers = DEFAULT_REG_X86;
+                num_registers = ArrayCount(DEFAULT_REG_X86);
+            }
+            else if (NULL != strstr(arch.c_str(), "arm"))
+            {
+                registers = DEFAULT_REG_ARM;
+                num_registers = ArrayCount(DEFAULT_REG_ARM);
+            }
+
+            for (size_t i = 0; i < num_registers; i++)
+            {
+                // add register varobj, copied from var creation in async_stopped if statement
+                // the only difference is GLOBAL_NAME_PREFIX and '@' used to signify a varobj
+                // that lasts the duration of the program
+
+                String str = StringPrintf("-var-create " GLOBAL_NAME_PREFIX "%s @ $%s", 
+                                          registers[i], registers[i]);
+                if (GDB_SendBlocking(str.c_str(), rec))
+                {
+                    VarObj add = CreateVarObj(registers[i], GDB_ExtractValue("value", rec));
+                    prog.global_vars.emplace_back(add);
+                }
+            }
+        }
+    }
+
+    // get local variables for this stack frame
+    // prog.local_vars not actually GDB variable objects,
+    // problems with aggregates displaying updates
+
+    GDB_SendBlocking("-stack-list-variables --all-values", rec);
+    for (VarObj &local : prog.local_vars) local.changed = false;
+
+    const RecordAtom *vars = GDB_ExtractAtom("variables", rec);
+    size_t start_locals_length = prog.local_vars.size();
+    Vector<bool> var_found( start_locals_length );
+
+    for (const RecordAtom &child : GDB_IterChild(rec, vars))
+    {
+        VarObj incoming = CreateVarObj(GDB_ExtractValue("name", child, rec),
+                                       GDB_ExtractValue("value", child, rec));
+
+        bool found = false;
+        for (size_t i = start_locals_length - 1; i < start_locals_length; i--)
+        {
+            VarObj &local = prog.local_vars[i];
+            if (local.name == incoming.name)
+            {
+                // @Hack: clean this up
+                CheckIfChanged(incoming, local);
+                local.value = incoming.value;
+                local.expr = incoming.expr;
+                local.expr_changed = incoming.expr_changed;
+                local.changed = incoming.changed;
+                found = true;
+                var_found[i] = true;
+                break;
+            }
+        }
+
+        if (!found)
+            prog.local_vars.emplace_back(incoming);
+    }
+
+    // remove any locals that went out of scope
+    for (size_t i = var_found.size() - 1; i < var_found.size(); i--)
+    {
+        if (!var_found[i])
+            prog.local_vars.erase(prog.local_vars.begin() + i,
+                                  prog.local_vars.begin() + i + 1);
+    }
+
+    // update global values, just registers right now
+    GDB_SendBlocking("-var-update --all-values *", rec);
+    const RecordAtom *changelist = GDB_ExtractAtom("changelist", rec);
+    for (VarObj &global : prog.global_vars) global.changed = false;
+
+    for (const RecordAtom &iter : GDB_IterChild(rec, changelist))
+    {
+        VarObj incoming = CreateVarObj(GDB_ExtractValue("name", iter, rec),
+                                       GDB_ExtractValue("value", iter, rec));
+
+        const char *srcname = incoming.name.c_str();
+        const char *namestart = strstr(srcname, GLOBAL_NAME_PREFIX);
+        if (srcname == namestart)
+        {
+            // check for global variable change 
+            namestart += strlen(GLOBAL_NAME_PREFIX);
+            for (VarObj &global : prog.global_vars)
+            {
+                if (global.name == namestart)
+                {
+                    CheckIfChanged(incoming, global);
+                    global.value = incoming.value;
+                    global.changed = incoming.changed;
+                    global.expr_changed = incoming.expr_changed;
+                    break;
+                }
+            }
+        }
+    }
+}
  
 void Draw()
 {
     // process async events
-    static Record rec;                  // scratch record 
+    Record rec;                         // scratch record 
     char tmpbuf[4096];                  // scratch for snprintf
 
     // check for new blocks
@@ -1034,7 +1215,6 @@ void Draw()
     }
 
     // process and clear all records found
-    bool async_stopped = false;
     size_t last_num_recs = prog.num_recs;
     prog.num_recs = 0;
 
@@ -1086,33 +1266,8 @@ void Draw()
                     int index = (size_t)GDB_ExtractInt("frame.level", parse_rec);
                     if ((size_t)index < prog.frames.size())
                     {
-                        // jump to program counter line at this new frame
-                        // this code is copied from the Callstack window section
-
-                        prog.frame_idx = (size_t)index;
-                        gui.jump_to_exec_line = true;
-                        if (prog.frame_idx != 0)
-                        {
-                            // do a one-shot query of a non-current frame
-                            // prog.frames is stored from bottom to top so need to do size - 1
-
-                            prog.other_frame_vars.clear();
-                            tsnprintf(tmpbuf, "-stack-list-variables --frame %zu --thread 1 --all-values", prog.frame_idx);
-                            if (GDB_SendBlocking(tmpbuf, rec))
-                            {
-                                const RecordAtom *variables = GDB_ExtractAtom("variables", rec);
-
-                                for (const RecordAtom &atom : GDB_IterChild(rec, variables))
-                                {
-                                    VarObj add = CreateVarObj(GDB_ExtractValue("name", atom, rec),
-                                                              GDB_ExtractValue("value", atom, rec));
-                                    add.changed = false;
-                                    for (size_t b = 0; b < add.expr_changed.size(); b++)
-                                        add.expr_changed[b] = false;
-                                    prog.other_frame_vars.emplace_back(add);
-                                }
-                            }
-                        }
+                        prog.frame_idx = index;
+                        QueryFrame();
 
                         if (gui.line_display != LineDisplay_Source)
                             GetFunctionDisassembly(prog.frames[ prog.frame_idx ]);
@@ -1127,176 +1282,16 @@ void Draw()
             {
                 prog.frame_idx = 0;
                 prog.running = false;
-                async_stopped = true;
                 String reason = GDB_ExtractValue("reason", parse_rec);
 
                 if ( (NULL != strstr(reason.c_str(), "exited")) )
                 {
-                    async_stopped = false;
                     ResetProgramState();
                 }
                 else
                 {
                     prog.started = true;
-                }
-            }
-        }
-    }
-
-    if (async_stopped)
-    {
-        gui.jump_to_exec_line = true;
-        QueryWatchlist();
-
-        // TODO: remote ARM32 debugging is this up after jsr macro
-        /* !!! */ //GDB_SendBlocking("-stack-list-frames 0 0", rec, "stack");
-        /* !!! */ GDB_SendBlocking("-stack-list-frames", rec);
-        const RecordAtom *callstack = GDB_ExtractAtom("stack", rec);
-        if (callstack)
-        {
-            String arch = "";
-            static bool set_default_registers = true;
-            prog.frames.clear();
-            static String last_stack_sig;
-            String this_stack_sig;
-
-            for (const RecordAtom &level : GDB_IterChild(rec, callstack))
-            {
-                Frame add = {};
-                add.line_idx = (size_t)GDB_ExtractInt("line", level, rec) - 1;
-                add.addr = ParseHex( GDB_ExtractValue("addr", level, rec) );
-                add.func = GDB_ExtractValue("func", level, rec);
-                arch = GDB_ExtractValue("arch", level, rec);
-                this_stack_sig += add.func;
-
-                String fullpath = GDB_ExtractValue("fullname", level, rec);
-                add.file_idx = CreateOrGetFile(fullpath);
-
-                prog.frames.emplace_back(add);
-            }
-
-            if (last_stack_sig != this_stack_sig)
-            {
-                prog.local_vars.clear();
-                last_stack_sig = this_stack_sig;
-                if (gui.line_display != LineDisplay_Source && prog.frames.size() > 0)
-                    GetFunctionDisassembly(prog.frames[0]);
-            }
-
-            if (set_default_registers && arch != "")
-            {
-                set_default_registers = false;
-
-                // set the default registers for a given architecture
-                // TODO: @GDB: is there a command to query this without having to
-                // get stack frames
-                const char * const* registers = NULL;
-                size_t num_registers = 0;
-                if (arch == "i386:x86-64")
-                {
-                    registers = DEFAULT_REG_AMD64;
-                    num_registers = ArrayCount(DEFAULT_REG_AMD64);
-                }
-                else if (arch == "i386")
-                {
-                    registers = DEFAULT_REG_X86;
-                    num_registers = ArrayCount(DEFAULT_REG_X86);
-                }
-                else if (NULL != strstr(arch.c_str(), "arm"))
-                {
-                    registers = DEFAULT_REG_ARM;
-                    num_registers = ArrayCount(DEFAULT_REG_ARM);
-                }
-
-                for (size_t i = 0; i < num_registers; i++)
-                {
-                    // add register varobj, copied from var creation in async_stopped if statement
-                    // the only difference is GLOBAL_NAME_PREFIX and '@' used to signify a varobj
-                    // that lasts the duration of the program
-
-                    tsnprintf(tmpbuf, "-var-create " GLOBAL_NAME_PREFIX "%s @ $%s", 
-                              registers[i], registers[i]);
-                    if (GDB_SendBlocking(tmpbuf, rec))
-                    {
-                        VarObj add = CreateVarObj(registers[i], GDB_ExtractValue("value", rec));
-                        prog.global_vars.emplace_back(add);
-                    }
-                }
-            }
-        }
-
-        // get local variables for this stack frame
-        // prog.local_vars not actually GDB variable objects,
-        // problems with aggregates displaying updates
-
-        GDB_SendBlocking("-stack-list-variables --all-values", rec);
-        for (VarObj &local : prog.local_vars) local.changed = false;
-        
-        const RecordAtom *vars = GDB_ExtractAtom("variables", rec);
-        size_t start_locals_length = prog.local_vars.size();
-        Vector<bool> var_found( start_locals_length );
-
-        for (const RecordAtom &child : GDB_IterChild(rec, vars))
-        {
-            VarObj incoming = CreateVarObj(GDB_ExtractValue("name", child, rec),
-                                           GDB_ExtractValue("value", child, rec));
-
-            bool found = false;
-            for (size_t i = start_locals_length - 1; i < start_locals_length; i--)
-            {
-                VarObj &local = prog.local_vars[i];
-                if (local.name == incoming.name)
-                {
-                    // @Hack: clean this up
-                    CheckIfChanged(incoming, local);
-                    local.value = incoming.value;
-                    local.expr = incoming.expr;
-                    local.expr_changed = incoming.expr_changed;
-                    local.changed = incoming.changed;
-                    found = true;
-                    var_found[i] = true;
-                    break;
-                }
-            }
-
-            if (!found)
-                prog.local_vars.emplace_back(incoming);
-        }
-
-        // remove any locals that went out of scope
-        for (size_t i = var_found.size() - 1; i < var_found.size(); i--)
-        {
-            if (!var_found[i])
-                prog.local_vars.erase(prog.local_vars.begin() + i,
-                                      prog.local_vars.begin() + i + 1);
-        }
-
-        // update global values, just registers right now
-        GDB_SendBlocking("-var-update --all-values *", rec);
-        const RecordAtom *changelist = GDB_ExtractAtom("changelist", rec);
-        for (VarObj &global : prog.global_vars) global.changed = false;
-
-        for (const RecordAtom &iter : GDB_IterChild(rec, changelist))
-        {
-            VarObj incoming = CreateVarObj(GDB_ExtractValue("name", iter, rec),
-                                           GDB_ExtractValue("value", iter, rec));
-
-            const char *srcname = incoming.name.c_str();
-            const char *namestart = strstr(srcname, GLOBAL_NAME_PREFIX);
-            if (srcname == namestart)
-            {
-                // check for global variable change 
-                namestart += strlen(GLOBAL_NAME_PREFIX);
-                for (VarObj &global : prog.global_vars)
-                {
-                    if (global.name == namestart)
-                    {
-                        CheckIfChanged(incoming, global);
-                        global.value = incoming.value;
-                        global.changed = incoming.changed;
-                        global.expr_changed = incoming.expr_changed;
-                        break;
-                    }
+                    QueryFrame();
                 }
             }
         }
@@ -1596,7 +1591,7 @@ void Draw()
         }
 
 
-        if ( IsKeyPressed(ImGuiKey_F, ImGuiMod_Ctrl) )
+        if ( IsKeyPressed(ImGuiKey_F, ImGuiKeyModFlags_Ctrl) )
         {
             gui.source_search_bar_open = true;
             ImGui::SetKeyboardFocusHere(0); // auto click the input box
@@ -1615,7 +1610,7 @@ void Draw()
         bool goto_line_activate;
         static int goto_line;
 
-        if ( IsKeyPressed(ImGuiKey_G, ImGuiMod_Ctrl) )
+        if ( IsKeyPressed(ImGuiKey_G, ImGuiKeyModFlags_Ctrl) )
         {
             goto_line_open = true;
             goto_line_activate = true;
@@ -2564,10 +2559,9 @@ void Draw()
                 ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_NoResize);
                 ImGui::TableHeadersRow();
 
-                Vector<VarObj> &frame_vars = (prog.frame_idx == 0) ? prog.local_vars : prog.other_frame_vars;
-                for (size_t i = 0; i < frame_vars.size(); i++)
+                for (size_t i = 0; i < prog.local_vars.size(); i++)
                 {
-                    const VarObj &iter = frame_vars[i];
+                    const VarObj &iter = prog.local_vars[i];
                     if (iter.value[0] == '{')
                     {
                         RecurseExpressionTreeNodes(iter, 0);
@@ -2614,28 +2608,7 @@ void Draw()
                 if (ImGui::Selectable(tmpbuf, i == prog.frame_idx))
                 {
                     prog.frame_idx = i;
-                    gui.jump_to_exec_line = true;
-                    if (prog.frame_idx != 0)
-                    {
-                        // do a one-shot query of a non-current frame
-                        // prog.frames is stored from bottom to top so need to do size - 1
-
-                        prog.other_frame_vars.clear();
-                        tsnprintf(tmpbuf, "-stack-list-variables --frame %zu --thread 1 --all-values", i);
-                        GDB_SendBlocking(tmpbuf, rec);
-                        const RecordAtom *variables = GDB_ExtractAtom("variables", rec);
-
-                        for (const RecordAtom &atom : GDB_IterChild(rec, variables))
-                        {
-                            VarObj add = CreateVarObj(GDB_ExtractValue("name", atom, rec),
-                                                      GDB_ExtractValue("value", atom, rec));
-                            add.changed = false;
-                            for (size_t b = 0; b < add.expr_changed.size(); b++)
-                                add.expr_changed[b] = false;
-                            prog.other_frame_vars.emplace_back(add);
-                        }
-
-                    }
+                    QueryFrame();
 
                     if (gui.line_display != LineDisplay_Source)
                         GetFunctionDisassembly(prog.frames[ prog.frame_idx ]);
@@ -3009,6 +2982,20 @@ int main(int argc, char **argv)
         }
 
         PrintMessagef("pty slave: %s\n", ptsname(gdb.fd_ptty_master));
+
+        String tmp;
+        if (InvokeShellCommand("which gdb", tmp))
+        {
+            while (tmp.size() > 0 &&
+                   (tmp[ tmp.size() - 1 ] == '\n' ||
+                    tmp[ tmp.size() - 1 ] == '\r'))
+            {
+                tmp.pop_back();
+            }
+
+            if (DoesFileExist(tmp.c_str(), false))
+                gdb.filename = tmp;
+        }
     }
 
     // create the file for FILE_IDX_INVALID 
@@ -3022,8 +3009,8 @@ int main(int argc, char **argv)
         {
             const char *usage = 
                 "tug [flags]\n"
-                "  --exe [path to executable to debug]\n"
-                "  --gdb [path to gdb to use]\n"
+                "  --exe [executable filename to debug]\n"
+                "  --gdb [GDB filename to use]\n"
                 "  -h, --help see available flags to use\n";
             printf("%s", usage);
             return 1;
@@ -3058,13 +3045,15 @@ int main(int argc, char **argv)
 
     if (gdb.filename != "" && 
         !GDB_StartProcess(gdb.filename, ""))
-        return 1;
+    {
+        gdb.filename = "";
+    }
 
     if (gdb.spawned_pid != 0 && 
         gdb.debug_filename != "" && 
         !GDB_LoadInferior(gdb.debug_filename, ""))
     {
-        return 1;
+        gdb.debug_filename = "";
     }
 
     {
@@ -3109,22 +3098,6 @@ int main(int argc, char **argv)
     //io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;      // Enable Gamepad Controls
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;           // Enable Docking
 
-    // Setup Platform/Renderer backends
-
-    // Load Fonts
-    // - If no fonts are loaded, dear imgui will use the default font. You can also load multiple fonts and use ImGui::PushFont()/PopFont() to select them.
-    // - AddFontFromFileTTF() will return the ImFont* so you can store it if you need to select the font among multiple.
-    // - If the file cannot be loaded, the function will return NULL. Please handle those errors in your application (e.g. use an assertion, or display an error and quit).
-    // - The fonts will be rasterized at a given size (w/ oversampling) and stored into a texture when calling ImFontAtlas::Build()/GetTexDataAsXXXX(), which ImGui_ImplXXXX_NewFrame below will call.
-    // - Read 'docs/FONTS.md' for more instructions and details.
-    // - Remember that in C/C++ if you want to include a backslash \ in a string literal you need to write a double backslash \\ !
-    //io.FontAllowUserScaling = true;
-
-    //io.Fonts->AddFontFromFileTTF("../../misc/fonts/Cousine-Regular.ttf", 15.0f);
-    //io.Fonts->AddFontFromFileTTF("../../misc/fonts/DroidSans.ttf", 16.0f);
-    //io.Fonts->AddFontFromFileTTF("../../misc/fonts/ProggyTiny.ttf", 10.0f);
-    //ImFont* font = io.Fonts->AddFontFromFileTTF("c:\\Windows\\Fonts\\ArialUni.ttf", 18.0f, NULL, io.Fonts->GetGlyphRangesJapanese());
-
     {
         // load the tug configuration with imgui data below it
         String str;
@@ -3146,7 +3119,7 @@ int main(int argc, char **argv)
             }
 
             if (!got_ini)
-                PrintError("error loading imgui.ini reverting to defaults...\n");
+                PrintError("reverting to default ini...\n");
 
             fclose(f); f = NULL;
         }
@@ -3194,7 +3167,7 @@ int main(int argc, char **argv)
                 }
                 else
                 {
-                    return default_value;
+                    result = default_value;
                 }
 
                 return result;
@@ -3206,7 +3179,7 @@ int main(int argc, char **argv)
             gui.show_watch      = ("1" == GetValue("Watch"      , "1"));
             gui.show_control    = ("1" == GetValue("Control"    , "1"));
             gui.show_source     = ("1" == GetValue("Source"     , "1"));
-            
+
             String theme = GetValue("WindowTheme", "DarkBlue");
             gui.window_theme = (theme == "Light") ? WindowTheme_Light :
                                (theme == "DarkPurple") ? WindowTheme_DarkPurple : WindowTheme_DarkBlue; 

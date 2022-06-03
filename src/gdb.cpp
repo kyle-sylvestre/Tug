@@ -106,30 +106,13 @@ bool GDB_StartProcess(String gdb_filename, String gdb_args)
     }
     else
     {
-        // make sure the file provided is gdb or gdb-multiarch
-        FILE *fver = popen( StringPrintf("%s --version 2>&1", gdb_filename.c_str()).c_str(), "r");
-        bool is_gdb = false;
-        if (fver == NULL)
-        {
-            PrintErrorf("%s popen: %s\n", gdb_filename.c_str(), strerror(errno));
-        }
-        else
-        {
-            String version;
-            char tmp[1024] = {};
-            ssize_t tmpread = 0;
-            while (0 < (tmpread = fread(tmp, 1, sizeof(tmp), fver)) )
-            {
-                version.insert(version.size(), tmp, tmpread);
-            }
+        String version;
+        String gdb_version_command = StringPrintf("%s --version 2>&1", gdb_filename.c_str());
+        if (!InvokeShellCommand(gdb_version_command, version))
+            return false;
 
-            is_gdb = (NULL != strstr(version.c_str(), "GNU")) && 
-                     (NULL != strstr(version.c_str(), "gdb"));
-
-            pclose(fver); fver = NULL;
-        }
-
-        if (!is_gdb)
+        if ((NULL == strstr(version.c_str(), "GNU")) || 
+            (NULL == strstr(version.c_str(), "gdb")) )
         {
             PrintErrorf("file not GDB: %s\n", gdb_filename.c_str());
             return false;
@@ -183,38 +166,24 @@ bool GDB_StartProcess(String gdb_filename, String gdb_args)
         }
 
         // get all the environment variables for the process
+        String env;
         Vector<char *> envptr;
-        FILE *fsh = popen("printenv", "r");
-        if (fsh == NULL)
-        {
-            PrintErrorf("printenv popen: %s\n", strerror(errno));
+        if (!InvokeShellCommand("printenv", env))
             return false;
-        }
-        else
+
+        size_t lineoff = 0;
+
+        for (size_t i = 0; i < env.size(); i++)
         {
-            String env;
-            char tmp[1024];
-            ssize_t tmpread;
-            while (0 < (tmpread = fread(tmp, 1, sizeof(tmp), fsh)) )
+            if (env[i] == '\n')
             {
-                env.insert(env.size(), tmp, tmpread);
+                envptr.push_back(&env[0] + lineoff);
+                env[i] = '\0';
+                lineoff = i + 1;
             }
-
-            size_t lineoff = 0;
-
-            for (size_t i = 0; i < env.size(); i++)
-            {
-                if (env[i] == '\n')
-                {
-                    envptr.push_back(&env[0] + lineoff);
-                    env[i] = '\0';
-                    lineoff = i + 1;
-                }
-            }
-
-            envptr.push_back(NULL);
-            pclose(fsh); fsh = NULL;
         }
+
+        envptr.push_back(NULL);
 
         // start the GDB process
         posix_spawn_file_actions_t actions = {};
@@ -1114,7 +1083,7 @@ static size_t GDB_SendBlockingInternal(const char *cmd, bool remove_after)
                             else 
                             {
                                 // don't print watch variables not in scope (no symbol "xyz" in current context)
-                                if (NULL == strstr(bufstr, "No symbol"))
+                                if (NULL == strstr(bufstr, "No symbol\""))
                                 {
                                     // convert error record to GDB console output record
                                     String errmsg = GDB_ExtractValue("msg", iter.rec);
