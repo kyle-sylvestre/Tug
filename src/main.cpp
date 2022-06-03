@@ -51,7 +51,7 @@ enum ImGuiMod_
     ImGuiMod_Ctrl = ImGuiKeyModFlags_Ctrl,
 };
 
-static bool ImGui_IsKeyClicked(ImGuiKey key, ImGuiMod mod = ImGuiMod_None)
+static bool IsKeyPressed(ImGuiKey key, ImGuiMod mod = ImGuiMod_None)
 {
     bool result = false;
     ImGuiIO &io = ImGui::GetIO();
@@ -60,9 +60,7 @@ static bool ImGui_IsKeyClicked(ImGuiKey key, ImGuiMod mod = ImGuiMod_None)
 
     if (key_in_range)
     {
-        result = io.KeysData[key].DownDurationPrev >= 0.0f &&
-                 io.KeysData[key].DownDuration < 0.0f;
-
+        result = ImGui::IsKeyPressed(key);
         if (mod & ImGuiMod_Alt)   result &= io.KeyAlt;
         if (mod & ImGuiMod_Ctrl)  result &= io.KeyCtrl;
         if (mod & ImGuiMod_Shift) result &= io.KeyShift;
@@ -1588,13 +1586,13 @@ void Draw()
         }
 
 
-        if ( ImGui_IsKeyClicked(ImGuiKey_F, ImGuiMod_Ctrl) )
+        if ( IsKeyPressed(ImGuiKey_F, ImGuiMod_Ctrl) )
         {
             gui.source_search_bar_open = true;
             ImGui::SetKeyboardFocusHere(0); // auto click the input box
             gui.source_search_keyword[0] = '\0';
         }
-        else if (gui.source_search_bar_open && ImGui_IsKeyClicked(ImGuiKey_Escape))
+        else if (gui.source_search_bar_open && IsKeyPressed(ImGuiKey_Escape))
         {
             gui.source_search_bar_open = false;
         }
@@ -1607,7 +1605,7 @@ void Draw()
         bool goto_line_activate;
         static int goto_line;
 
-        if ( ImGui_IsKeyClicked(ImGuiKey_G, ImGuiMod_Ctrl) )
+        if ( IsKeyPressed(ImGuiKey_G, ImGuiMod_Ctrl) )
         {
             goto_line_open = true;
             goto_line_activate = true;
@@ -1624,7 +1622,7 @@ void Draw()
                 goto_line_activate = false;
             }
 
-            if (ImGui_IsKeyClicked(ImGuiKey_Escape))
+            if (IsKeyPressed(ImGuiKey_Escape))
                 goto_line_open = false;
 
             if ( ImGui::InputInt("##goto_line", &goto_line, 1, 1, ImGuiInputTextFlags_EnterReturnsTrue) )    
@@ -1662,7 +1660,7 @@ void Draw()
                 File &this_file = prog.files[ this_frame_idx ];
                 bool found = false;
 
-                if ( ImGui_IsKeyClicked(ImGuiKey_N) &&
+                if ( IsKeyPressed(ImGuiKey_N) &&
                      !ImGui::GetIO().WantCaptureKeyboard)
                 {
                     // N = search forward
@@ -2201,7 +2199,7 @@ void Draw()
         // start
         ImGui::SameLine();
         ImGuiDisabled(prog.running, clicked = ImGui::Button("|>"));
-        if (clicked || (!prog.running && ImGui_IsKeyClicked(ImGuiKey_F5)))
+        if (clicked || (!prog.running && IsKeyPressed(ImGuiKey_F5)))
         {
             if (!prog.started)
             {
@@ -2421,7 +2419,7 @@ void Draw()
         if (len_before_culling != phrases.size()) 
             phrase_idx = 0;
 
-        if (ImGui::IsItemActive() && ImGui_IsKeyClicked(ImGuiKey_Tab))// && ImGui::GetIO().WantCaptureKeyboard)
+        if (ImGui::IsItemActive() && IsKeyPressed(ImGuiKey_Tab))// && ImGui::GetIO().WantCaptureKeyboard)
         {
             if (phrases.size() == 0)
             {
@@ -2450,7 +2448,7 @@ void Draw()
             }
         }
 
-        if (ImGui_IsKeyClicked(ImGuiKey_Escape))
+        if (IsKeyPressed(ImGuiKey_Escape))
         {
             phrase_idx = 0;
             phrases.clear();
@@ -2689,7 +2687,7 @@ void Draw()
                             bool deleted = false;
                             delay++;
                             bool active = ImGui::IsItemFocused() && (delay < 2 || ImGui::GetIO().WantCaptureKeyboard);
-                            if (ImGui_IsKeyClicked(ImGuiKey_Delete))
+                            if (IsKeyPressed(ImGuiKey_Delete))
                             {
                                 prog.watch_vars.erase(prog.watch_vars.begin() + i,
                                                       prog.watch_vars.begin() + i + 1);
@@ -2708,7 +2706,7 @@ void Draw()
 
                             }
 
-                            if (!active || deleted || ImGui_IsKeyClicked(ImGuiKey_Escape))
+                            if (!active || deleted || IsKeyPressed(ImGuiKey_Escape))
                             {
                                 edit_var_name_idx = -1;
                                 continue;
@@ -2809,7 +2807,7 @@ void DrawDebugOverlay()
 {
     const ImGuiIO &io = ImGui::GetIO();
     static bool debug_window_toggled;
-    if (ImGui_IsKeyClicked(ImGuiKey_F1))
+    if (IsKeyPressed(ImGuiKey_F1))
         debug_window_toggled = !debug_window_toggled;
 
     if (debug_window_toggled)
@@ -3060,12 +3058,12 @@ int main(int argc, char **argv)
     //ImFont* font = io.Fonts->AddFontFromFileTTF("c:\\Windows\\Fonts\\ArialUni.ttf", 18.0f, NULL, io.Fonts->GetGlyphRangesJapanese());
 
     {
+        // load the tug configuration with imgui data below it
         String str;
         bool got_ini = false;
         FILE *f = fopen("tug.ini", "rb");
         if (f != NULL)
         {
-            // load the tug ini file with imgui ini piggybacked at the end
             long filesize = 0;
             if (0 == fseek(f, 0, SEEK_END) &&
                 0 < (filesize = ftell(f)) &&
@@ -3256,8 +3254,10 @@ int main(int argc, char **argv)
     FILE *f = fopen("tug.ini", "wt");
     if (f != NULL)
     {
-        // append custom tug ini information, imgui doesn't save docking tab visibility at the moment
+        // write custom tug ini information
         fprintf(f, "[Tug]\n");
+
+        // save docking tab visibility, imgui doesn't save this at the moment
         fprintf(f, "Callstack=%d\n",gui.show_callstack);
         fprintf(f, "Locals=%d\n",   gui.show_locals);
         fprintf(f, "Registers=%d\n",gui.show_registers);
