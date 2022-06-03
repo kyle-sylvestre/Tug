@@ -1822,18 +1822,10 @@ enum ImGuiCond_
 struct ImNewWrapper {};
 inline void* operator new(size_t, ImNewWrapper, void* ptr) { return ptr; }
 inline void  operator delete(void*, ImNewWrapper, void*)   {} // This is only required so we can use the symmetrical new()
-//#define IM_ALLOC(_SIZE)                     ImGui::MemAlloc(_SIZE)
-//#define IM_FREE(_PTR)                       ImGui::MemFree(_PTR)
-//#define IM_PLACEMENT_NEW(_PTR)              new(ImNewWrapper(), _PTR)
-//#define IM_NEW(_TYPE)                       new(ImNewWrapper(), ImGui::MemAlloc(sizeof(_TYPE))) _TYPE
-
-// NOTE(KLS): testing imgui with doug lea allocator
-extern "C" void *dlmalloc(size_t num_bytes);
-extern "C" void dlfree(void *ptr);
-#define IM_ALLOC(_SIZE)                     dlmalloc(_SIZE)
-#define IM_FREE(_PTR)                       dlfree(_PTR)
+#define IM_ALLOC(_SIZE)                     ImGui::MemAlloc(_SIZE)
+#define IM_FREE(_PTR)                       ImGui::MemFree(_PTR)
 #define IM_PLACEMENT_NEW(_PTR)              new(ImNewWrapper(), _PTR)
-#define IM_NEW(_TYPE)                       new(ImNewWrapper(), IM_ALLOC(sizeof(_TYPE))) _TYPE
+#define IM_NEW(_TYPE)                       new(ImNewWrapper(), ImGui::MemAlloc(sizeof(_TYPE))) _TYPE
 template<typename T> void IM_DELETE(T* p)   { if (p) { p->~T(); IM_FREE(p); } }
 
 //-----------------------------------------------------------------------------

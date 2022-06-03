@@ -2931,6 +2931,11 @@ void DrawDebugOverlay()
 
 int main(int argc, char **argv)
 {
+    ImGui::SetAllocatorFunctions(
+        [](size_t sz, void * /*user_data*/){ return dlmalloc(sz); },
+        [](void *ptr, void * /*user_data*/){ dlfree(ptr); }
+    );
+
     {
         // GDB Init
         int rc = 0;
@@ -3092,6 +3097,7 @@ int main(int argc, char **argv)
 
     if (!imgui_started)
         return 1;
+
 
     ImGuiIO& io = ImGui::GetIO();
     io.IniFilename = NULL; // manually load/save imgui.ini file
