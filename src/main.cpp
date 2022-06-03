@@ -130,6 +130,8 @@ bool DoesProcessExist(pid_t p)
 
 void EndProcess(pid_t p)
 {
+    if (p == 0) return;
+
     if (0 > kill(p, SIGTERM))
     {
         PrintErrorf("kill SIGTERM: %s\n", strerror(errno));
@@ -338,7 +340,6 @@ static bool CreateFile(const char *fullpath, File &result)
 {
     result = {};
     result.fullpath = fullpath;
-    result.lines.push_back("");    // lines[0] empty for syncing index with line number
     bool found = false;
 
     if (0 == access( fullpath, F_OK ))
@@ -762,7 +763,7 @@ void GetFunctionDisassembly(const Frame &frame)
         // -n -1 = disassemble all lines in the function its contained in
         // 5 = source and disasm with opcodes
         tsnprintf(tmpbuf, "-data-disassemble -f \"%s\" -l %zu -n -1 5",
-                  prog.files[ frame.file_idx ].fullpath.c_str(), frame.line);
+                  prog.files[ frame.file_idx ].fullpath.c_str(), frame.line_idx + 1);
     } 
     
 
@@ -781,7 +782,7 @@ void GetFunctionDisassembly(const Frame &frame)
             bool is_first_inst = true;
             DisassemblySourceLine line_src = {};
             const RecordAtom *atom = GDB_ExtractAtom("line_asm_insn", src_and_asm_line, rec);
-            line_src.line_number = (size_t)GDB_ExtractInt("line", src_and_asm_line, rec);
+            line_src.line_idx = (size_t)GDB_ExtractInt("line", src_and_asm_line, rec) - 1;
             line_src.num_instructions = 0;
 
             for (const RecordAtom &line_asm_inst : GDB_IterChild(rec, atom))
@@ -1001,6 +1002,17 @@ void RecurseExpressionTreeNodes(const VarObj &var, size_t atom_idx,
         // TODO fix empty names RecurseSetNodeState(src, atom_idx, 0, name);
     }
 }
+
+Breakpoint ExtractBreakpoint(const Record &rec)
+{
+    Breakpoint result = {};
+    String filename = GDB_ExtractValue("bkpt.fullname", rec);
+    result.file_idx = CreateOrGetFile(filename);
+    result.number = GDB_ExtractInt("bkpt.number", rec);
+    result.line_idx = GDB_ExtractInt("bkpt.line", rec) - 1;
+    result.addr = ParseHex( GDB_ExtractValue("bkpt.addr", rec) );
+    return result;
+}
  
 void Draw()
 {
@@ -1042,18 +1054,12 @@ void Draw()
             {
                 if (prefix_word == "breakpoint-created")
                 {
-                    Breakpoint res = {};
-                    res.number = GDB_ExtractInt("bkpt.number", parse_rec);
-                    res.line = GDB_ExtractInt("bkpt.line", parse_rec);
-                    res.addr = ParseHex( GDB_ExtractValue("bkpt.addr", parse_rec) );
-
-                    String fullpath = GDB_ExtractValue("bkpt.fullname", parse_rec);
-                    res.file_idx = CreateOrGetFile(fullpath);
-
-                    prog.breakpoints.push_back(res);
+                    // breakpoints created from console ex: "b main.cpp:14"
+                    prog.breakpoints.push_back(ExtractBreakpoint(parse_rec));
                 }
                 else if (prefix_word == "breakpoint-deleted")
                 {
+                    // breakpoints deleted from console ex: "d 1"
                     size_t id = (size_t)GDB_ExtractInt("id", parse_rec);
                     auto &bpts = prog.breakpoints;
                     for (size_t b = 0; b < bpts.size(); b++)
@@ -1153,7 +1159,7 @@ void Draw()
             for (const RecordAtom &level : GDB_IterChild(rec, callstack))
             {
                 Frame add = {};
-                add.line = (size_t)GDB_ExtractInt("line", level, rec);
+                add.line_idx = (size_t)GDB_ExtractInt("line", level, rec) - 1;
                 add.addr = ParseHex( GDB_ExtractValue("addr", level, rec) );
                 add.func = GDB_ExtractValue("func", level, rec);
                 arch = GDB_ExtractValue("arch", level, rec);
@@ -1730,25 +1736,24 @@ void Draw()
                 if (gui.jump_to_exec_line)
                 {
                     gui.jump_to_exec_line = false;
-                    size_t linenum = 1 + (ImGui::GetScrollY() / lineheight);
-                    if ( !(frame.line >= linenum + 5 && 
-                           frame.line <= linenum + perscreen - 5) )
+                    size_t line_idx = (ImGui::GetScrollY() / lineheight);
+                    if ( !(frame.line_idx >= line_idx + 5 && 
+                           frame.line_idx <= line_idx + perscreen - 5) )
                     {
-                        float scroll = lineheight * (frame.line - (perscreen / 2)); // ((frame.line - 1) - (lineheight / 2));
+                        float scroll = lineheight * (frame.line_idx - (perscreen / 2)); // ((frame.line - 1) - (lineheight / 2));
                         if (scroll < 0.0f) scroll = 0.0f;
                         ImGui::SetScrollY(scroll);
                     }
                 }
 
-                // index zero is always skipped, only used to sync up line number and index
-                size_t start_idx = 1 + (ImGui::GetScrollY() / lineheight);
+                size_t start_idx = (ImGui::GetScrollY() / lineheight);
                 size_t end_idx = GetMin(start_idx + perscreen, file.lines.size());
                 if (file.lines.size() > perscreen)
                 {
                     // set scrollbar height, -1 because index zero is never drawn
-                    ImGui::SetCursorPosY(start_curpos_y + (file.lines.size() - 1) * lineheight); 
+                    ImGui::SetCursorPosY(start_curpos_y + file.lines.size() * lineheight); 
                 }
-                ImGui::SetCursorPosY((start_idx - 1) * lineheight + start_curpos_y);
+                ImGui::SetCursorPosY(start_idx * lineheight + start_curpos_y);
 
                 for (size_t i = start_idx; i < end_idx; i++)
                 {
@@ -1756,7 +1761,7 @@ void Draw()
 
                     bool is_breakpoint_set = false;
                     for (Breakpoint &iter : prog.breakpoints)
-                        if (iter.line == i && iter.file_idx == frame.file_idx)
+                        if (iter.line_idx == i && iter.file_idx == frame.file_idx)
                             is_breakpoint_set = true;
 
                     // start radio button style
@@ -1792,7 +1797,7 @@ void Draw()
                             for (size_t b = 0; b < prog.breakpoints.size(); b++)
                             {
                                 Breakpoint &iter = prog.breakpoints[b];
-                                if (iter.line == i && iter.file_idx == frame.file_idx)
+                                if (iter.line_idx == i && iter.file_idx == frame.file_idx)
                                 {
                                     // remove breakpoint
                                     tsnprintf(tmpbuf, "-break-delete %zu", iter.number);
@@ -1809,18 +1814,20 @@ void Draw()
                         {
                             // insert breakpoint
                             tsnprintf(tmpbuf, "-break-insert --source \"%s\" --line %d", 
-                                      file.fullpath.c_str(), (int)i);
+                                      file.fullpath.c_str(), (int)(i + 1));
                             if (GDB_SendBlocking(tmpbuf, rec))
                             {
-                                Breakpoint res = {};
-                                res.number = GDB_ExtractInt("bkpt.number", rec);
-                                res.line = GDB_ExtractInt("bkpt.line", rec);
-                                res.addr = ParseHex( GDB_ExtractValue("bkpt.addr", rec) );
+                                Breakpoint bkpt = ExtractBreakpoint(rec);
+                                prog.breakpoints.push_back(bkpt);
+                                const char *filename = prog.files[bkpt.file_idx].fullpath.c_str();
+                                const char *last_fwd = strrchr(filename, '/');
+                                if (last_fwd != NULL)
+                                    filename = last_fwd + 1;
 
-                                String fullpath = GDB_ExtractValue("bkpt.fullname", rec);
-                                res.file_idx = CreateOrGetFile(fullpath);
-
-                                prog.breakpoints.push_back(res);
+                                // add console message matching what GDB would send
+                                //Breakpoint 2 at 0x555555555185: file debug.c, line 13.
+                                PrintMessagef("Breakpoint %d at 0x%" PRIx64": file %s, line %d",
+                                              (int)bkpt.number, bkpt.addr, filename, (int)(bkpt.line_idx + 1));
                             }
                         }
                     }
@@ -1830,7 +1837,7 @@ void Draw()
 
                     ImGui::SameLine();
                     ImVec2 textstart = ImGui::GetCursorPos();
-                    if (i == frame.line)
+                    if (i == frame.line_idx)
                     {
                         ImGui::Selectable(line.c_str(), !prog.running);
                     }
@@ -2017,7 +2024,7 @@ void Draw()
                     if ( !(jump_index >= current_index + 10 && 
                            jump_index <= current_index + perscreen - 10) )
                     {
-                        float scroll = lineheight * ((frame.line - 1) - (lineheight / 2));
+                        float scroll = lineheight * (frame.line_idx - (lineheight / 2));
                         if (scroll < 0.0f) scroll = 0.0f;
                         ImGui::SetScrollY(scroll);
                     }
@@ -2050,7 +2057,7 @@ void Draw()
                         {
                             while (src_idx < gui.line_disasm_source.size())
                             {
-                                size_t lidx = gui.line_disasm_source[src_idx].line_number;
+                                size_t lidx = gui.line_disasm_source[src_idx].line_idx;
                                 inst_left = gui.line_disasm_source[src_idx].num_instructions;
                                 if (lidx < file.lines.size())
                                 {
@@ -2125,17 +2132,7 @@ void Draw()
                             // insert breakpoint
                             tsnprintf(tmpbuf, "-break-insert *0x%" PRIx64, line.addr);
                             if (GDB_SendBlocking(tmpbuf, rec))
-                            {
-                                Breakpoint res = {};
-                                res.number = GDB_ExtractInt("bkpt.number", rec);
-                                res.line = GDB_ExtractInt("bkpt.line", rec);
-                                res.addr = ParseHex( GDB_ExtractValue("bkpt.addr", rec) );
-
-                                String fullpath = GDB_ExtractValue("bkpt.fullname", rec);
-                                res.file_idx = CreateOrGetFile(fullpath);
-
-                                prog.breakpoints.push_back(res);
-                            }
+                                prog.breakpoints.push_back(ExtractBreakpoint(rec));
                         }
                     }
 
@@ -2467,6 +2464,44 @@ void Draw()
 
 
         {
+            // @@@ ptty testing 
+            while (true)
+            {
+                pollfd p = {};
+                p.fd = gdb.fd_ptty_master;
+                p.events = POLLIN;
+
+                int rc = poll(&p, 1, 0);
+                if (rc < 0)
+                {
+                    PrintErrorf("poll %s\n", strerror(errno));
+                    break;
+                }
+                else if (rc == 0) // timeout
+                {
+                    break;
+                }
+                else if (rc > 0)
+                {
+                    // ensure we got data ready to poll
+                    if ((p.revents & POLLIN) == 0)
+                        break; 
+
+                    char buf[1024];
+                    int bytes_read = read(gdb.fd_ptty_master, buf, sizeof(buf));
+                    if (bytes_read < 0)
+                    {
+                        PrintErrorf("read %s\n", strerror(errno));
+                        break;
+                    }
+                    else
+                    {
+                        WriteToConsoleBuffer(buf, bytes_read);
+                    }
+                }
+            }
+
+
             // draw the console log
             ImGui::SetCursorPos(logstart);
             ImVec2 logsize = ImGui::GetWindowSize();
@@ -2570,7 +2605,7 @@ void Draw()
                 const char *last_fwd_slash = strrchr(file.c_str(), '/');
                 const char *filename = (last_fwd_slash != NULL) ? last_fwd_slash + 1 : file.c_str();
 
-                tsnprintf(tmpbuf, "%4zu %s##%zu", iter.line, filename, i);
+                tsnprintf(tmpbuf, "%4zu %s##%zu", iter.line_idx + 1, filename, i);
 
                 if (ImGui::Selectable(tmpbuf, i == prog.frame_idx))
                 {
@@ -2940,8 +2975,31 @@ int main(int argc, char **argv)
         if (rc < 0) 
         {
             PrintErrorf("pthread_create: %s\n", strerror(errno));
-            return false;
+            return 1;
         }
+
+        gdb.fd_ptty_master = posix_openpt(O_RDWR | O_NOCTTY);// | O_NONBLOCK);
+        if (gdb.fd_ptty_master < 0)
+        {
+            PrintErrorf("posix_openpt: %s\n", strerror(errno));
+            return 1;
+        }
+
+        rc = grantpt(gdb.fd_ptty_master);
+        if (rc < 0)
+        {
+            PrintErrorf("grantpt: %s\n", strerror(errno));
+            return 1;
+        }
+
+        rc = unlockpt(gdb.fd_ptty_master);
+        if (rc < 0)
+        {
+            PrintErrorf("grantpt: %s\n", strerror(errno));
+            return 1;
+        }
+
+        PrintMessagef("pty slave: %s\n", ptsname(gdb.fd_ptty_master));
     }
 
     // create the file for FILE_IDX_INVALID 
@@ -3238,19 +3296,6 @@ int main(int argc, char **argv)
         glfwSwapBuffers(gui.window);
     }
 
-    {
-        // GDB shutdown
-        pthread_cancel(gdb.thread_read_interp);
-        pthread_join(gdb.thread_read_interp, NULL);
-        EndProcess(gdb.spawned_pid);
-        pthread_mutex_destroy(&gdb.modify_block);
-        sem_close(gdb.recv_block);
-        close(gdb.fd_in_read);
-        close(gdb.fd_out_read);
-        close(gdb.fd_in_write);
-        close(gdb.fd_out_write);
-    }
-
     FILE *f = fopen("tug.ini", "wt");
     if (f != NULL)
     {
@@ -3284,6 +3329,20 @@ int main(int argc, char **argv)
 
     glfwDestroyWindow(gui.window);
     glfwTerminate();
+
+    {
+        // GDB shutdown
+        pthread_cancel(gdb.thread_read_interp);
+        pthread_join(gdb.thread_read_interp, NULL);
+        pthread_mutex_destroy(&gdb.modify_block);
+        sem_close(gdb.recv_block);
+        close(gdb.fd_ptty_master);
+        close(gdb.fd_in_read);
+        close(gdb.fd_out_read);
+        close(gdb.fd_in_write);
+        close(gdb.fd_out_write);
+        EndProcess(gdb.spawned_pid);
+    }
 
     return 0;
 }

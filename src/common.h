@@ -38,6 +38,7 @@
 #include <signal.h>
 #include <fcntl.h>
 #include <semaphore.h>
+#include <poll.h>
 #include <sys/time.h>
 #include <sys/stat.h>
 
@@ -45,10 +46,9 @@
 // STL Switcheroo
 //
 
-extern "C" {
-    void *dlmalloc(size_t);
-    void dlfree(void*);
-}
+// doug lea allocator, used for imgui, Vector, and String
+extern "C" void* dlmalloc(size_t bytes);
+extern "C" void dlfree(void *mem);
 
 template <class T>
 struct DL_Allocator
@@ -172,14 +172,14 @@ struct Frame
     String func;
     uint64_t addr;      // current PC/IP
     size_t file_idx;    // in prog.files
-    size_t line;        // next line to be executed
+    size_t line_idx;    // next line to be executed - 1
 };
 
 struct Breakpoint
 {
     uint64_t addr;
     size_t number;      // ordinal assigned by GDB
-    size_t line;        // file line number
+    size_t line_idx;    // file line number - 1
     size_t file_idx;    // index in prog.files
 };
 
@@ -193,7 +193,7 @@ struct DisassemblySourceLine
 {
     uint64_t addr;
     size_t num_instructions;
-    size_t line_number;
+    size_t line_idx;
 };
 
 struct File
@@ -309,6 +309,8 @@ struct GDB
     String debug_args;      // args passed to debug executable
     String filename;        // filename of spawned GDB 
     String args;            // args passed to spawned GDB 
+    String ptty_slave;
+    int fd_ptty_master;
     
     bool end_program;
     pthread_t thread_read_interp;
