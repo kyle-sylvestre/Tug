@@ -7,7 +7,8 @@ GDB frontend made with Dear Imgui
 *Jamie Guinan's original archer fish logo and the vector versions by Andreas Arnez are licensed under CC BY-SA 3.0 US.*
 *https://creativecommons.org/licenses/by-sa/3.0/us/*
 
-![image](https://user-images.githubusercontent.com/25188464/160457519-15b65af3-0046-4c78-8fda-0b56a3ae7664.png)
+![image](https://user-images.githubusercontent.com/25188464/171760180-31b82e33-e3db-4731-ad72-208ed8fcd104.png)
+
 # Building the Project
 1. Install GLFW3 from your package system</br>
    **Debian:** sudo apt-get install libglfw3 libglfw3-dev</br>
