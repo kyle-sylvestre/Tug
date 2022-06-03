@@ -295,8 +295,6 @@ struct RecordAtomSequence
 #define PREFIX_TARGET_LOG '@'
 #define PREFIX_CONSOLE_LOG '~'
 
-#define MAX_STORED_BLOCKS 128
-
 const size_t BAD_INDEX = ~0;
 
 #define FILE_IDX_INVALID 0
@@ -334,8 +332,7 @@ struct GDB
     // raw data, guarded by modify_storage_lock
     // a block is one or more Records
     char block_data[1024 * 1024];
-    Span block_spans[MAX_STORED_BLOCKS];    // pipe read span into block_data
-    size_t num_blocks;
+    Vector<Span> block_spans;    // pipe read span into block_data
 
     // capabilities of the spawned GDB process using -list-features 
     bool has_frozen_varobj;

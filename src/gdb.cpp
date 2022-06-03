@@ -71,12 +71,6 @@ void *GDB_ReadInterpreterBlocks(void *)
         }
 
 
-        if (gdb.num_blocks + 1 > ArrayCount(gdb.block_spans))
-        {
-            fprintf(stderr, "exhausted available block spans\n");
-            break;
-        }
-
         if (read_block_maxsize < num_read)
             read_block_maxsize = num_read;
 
@@ -84,13 +78,12 @@ void *GDB_ReadInterpreterBlocks(void *)
 
         // set to the last inserted to get bufsize
         Span span;
-        if (gdb.num_blocks == 0) span = {};
-        else span = gdb.block_spans[gdb.num_blocks - 1];
+        if (gdb.block_spans.size() == 0) span = {};
+        else span = gdb.block_spans[ gdb.block_spans.size() - 1 ];
 
         span.index = read_base_idx; 
         span.length = num_read;
-        gdb.block_spans[ gdb.num_blocks ] = span;
-        gdb.num_blocks++;
+        gdb.block_spans.push_back(span);
 
         // post a change if the binary semaphore is zero
         int semvalue; 
@@ -278,6 +271,10 @@ bool GDB_StartProcess(String gdb_filename, String gdb_args)
         // GDB_SendBlocking("-list-target-features", rec);
 
     }
+    else
+    {
+        return false;
+    }
 
     if (GDB_SendBlocking("-list-target-features", rec))
     {
@@ -285,6 +282,14 @@ bool GDB_StartProcess(String gdb_filename, String gdb_args)
         gdb.supports_async_execution =          (NULL != strstr(src, "async"));
         gdb.supports_reverse_execution =        (NULL != strstr(src, "reverse"));
     }
+    else
+    {
+        return false;
+    }
+
+    String set_tty = StringPrintf("-inferior-tty-set %s", ptsname(gdb.fd_ptty_master));
+    if (!GDB_SendBlocking(set_tty.c_str()))
+        return false;
 
     PrintMessagef("spawned %s %s\n", gdb_filename.c_str(), gdb_args.c_str());
     gdb.filename = gdb_filename;
@@ -1106,12 +1111,17 @@ static size_t GDB_SendBlockingInternal(const char *cmd, bool remove_after)
                                 last.rec = OPTIMIZED_OUT_FIX;
                                 last.parsed = false;
                             }
-                            else
+                            else 
                             {
-                                // convert error record to GDB console output record
-                                String errmsg = GDB_ExtractValue("msg", iter.rec);
-                                errmsg = "&\"GDB MI Error: " + errmsg + "\\n\"\n";
-                                WriteToConsoleBuffer(errmsg.data(), errmsg.size());
+                                // don't print watch variables not in scope (no symbol "xyz" in current context)
+                                if (NULL == strstr(bufstr, "No symbol"))
+                                {
+                                    // convert error record to GDB console output record
+                                    String errmsg = GDB_ExtractValue("msg", iter.rec);
+                                    errmsg = "&\"GDB MI Error: " + errmsg + "\\n\"\n";
+                                    WriteToConsoleBuffer(errmsg.data(), errmsg.size());
+                                }
+
                                 iter.parsed = true;
                                 return BAD_INDEX;
                             }
@@ -1287,13 +1297,10 @@ void GDB_GrabBlockData()
 {
     pthread_mutex_lock(&gdb.modify_block);
 
-    for (size_t i = 0; i < gdb.num_blocks; i++)
-    {
-        Span &iter = gdb.block_spans[i];
+    for (Span &iter : gdb.block_spans)
         GDB_ProcessBlock(gdb.block_data + iter.index, iter.length);
-        iter = {};
-    }
-    gdb.num_blocks = 0;
+
+    gdb.block_spans.clear();
 
     pthread_mutex_unlock(&gdb.modify_block);
 }
