@@ -2901,13 +2901,6 @@ void DrawDebugOverlay()
 
 }
 
-//struct DockOrder
-//{
-//    String window_name;
-//    short dock_order;
-//};
-//Vector<DockOrder> dock_orderings;
-
 int main(int argc, char **argv)
 {
     ImGui::SetAllocatorFunctions(
@@ -2997,6 +2990,20 @@ int main(int argc, char **argv)
 
             if (DoesFileExist(tmp.c_str(), false))
                 gdb.filename = tmp;
+        }
+
+        struct sigaction act = {};
+        act.sa_handler = [](int)
+        { 
+            if (gui.window) 
+                glfwSetWindowShouldClose(gui.window, 1); 
+        };
+
+        if (0 > sigaction(SIGINT, &act, NULL) ||
+            0 > sigaction(SIGTERM, &act, NULL))
+        {
+            PrintErrorf("sigaction %s\n", strerror(errno));
+            return 1;
         }
     }
 
@@ -3314,20 +3321,18 @@ int main(int argc, char **argv)
 
     glfwDestroyWindow(gui.window);
     glfwTerminate();
+    gui.window = NULL;
 
-    {
-        // GDB shutdown
-        pthread_cancel(gdb.thread_read_interp);
-        pthread_join(gdb.thread_read_interp, NULL);
-        pthread_mutex_destroy(&gdb.modify_block);
-        sem_close(gdb.recv_block);
-        close(gdb.fd_ptty_master);
-        close(gdb.fd_in_read);
-        close(gdb.fd_out_read);
-        close(gdb.fd_in_write);
-        close(gdb.fd_out_write);
-        EndProcess(gdb.spawned_pid);
-    }
+    pthread_cancel(gdb.thread_read_interp);
+    pthread_join(gdb.thread_read_interp, NULL);
+    pthread_mutex_destroy(&gdb.modify_block);
+    sem_close(gdb.recv_block);
+    close(gdb.fd_ptty_master);
+    close(gdb.fd_in_read);
+    close(gdb.fd_out_read);
+    close(gdb.fd_in_write);
+    close(gdb.fd_out_write);
+    EndProcess(gdb.spawned_pid);
 
     return 0;
 }
