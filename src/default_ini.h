@@ -8,6 +8,7 @@ Registers=0
 Watch=1
 Source=1
 Control=1
+Breakpoints=1
 WindowTheme=DarkBlue
 
 ; ImGui Begin

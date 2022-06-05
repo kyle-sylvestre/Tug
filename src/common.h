@@ -178,9 +178,10 @@ struct Frame
 struct Breakpoint
 {
     uint64_t addr;
-    size_t number;      // ordinal assigned by GDB
-    size_t line_idx;    // file line number - 1
-    size_t file_idx;    // index in prog.files
+    size_t number;          // ordinal assigned by GDB
+    size_t line_idx;        // file line number - 1
+    size_t file_idx;        // index in prog.files
+    String cond;            
 };
 
 struct DisassemblyLine
@@ -199,7 +200,7 @@ struct DisassemblySourceLine
 struct File
 {
     Vector<String> lines;
-    String fullpath;
+    String filename;
 };
 
 #define INVALID_BLOCK_STRING_IDX 0
@@ -351,6 +352,9 @@ struct GDB
     // capabilities of the target using -list-target-features
     bool supports_async_execution;          // GDB will accept further commands while the target is running.
     bool supports_reverse_execution;        // target is capable of reverse execution
+
+    bool echo_next_no_symbol_in_context;    // GDB MI error "no symbol "xyz" in current context"
+                                            // useful sometimes but mostly gets spammed in console
 };
 
 enum ConsoleLineType
@@ -393,6 +397,7 @@ struct Program
 
     Vector<Frame> frames;
     size_t frame_idx = BAD_INDEX;
+    size_t file_idx = BAD_INDEX;
     pid_t inferior_process;
     String stack_sig;               // string of all function names combined
 };
@@ -405,3 +410,4 @@ bool VerifyFileExecutable(const char *filename);
 bool DoesFileExist(const char *filename, bool print_error_on_missing = true);
 bool DoesProcessExist(pid_t p);
 bool InvokeShellCommand(String command, String &output);
+void TrimWhitespace(String &str);

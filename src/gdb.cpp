@@ -16,7 +16,7 @@
 #include "common.h"
 #include "gdb.h"
 
-ssize_t read_block_maxsize = 0;
+static ssize_t read_block_maxsize = 0;
 void *GDB_ReadInterpreterBlocks(void *)
 {
     // read data from GDB pipe
@@ -76,22 +76,18 @@ void *GDB_ReadInterpreterBlocks(void *)
 
         pthread_mutex_lock(&gdb.modify_block);
 
-        // set to the last inserted to get bufsize
-        Span span;
-        if (gdb.block_spans.size() == 0) span = {};
-        else span = gdb.block_spans[ gdb.block_spans.size() - 1 ];
-
+        Span span = {};
         span.index = read_base_idx; 
         span.length = num_read;
         gdb.block_spans.push_back(span);
+
+        pthread_mutex_unlock(&gdb.modify_block);
 
         // post a change if the binary semaphore is zero
         int semvalue; 
         sem_getvalue(gdb.recv_block, &semvalue);
         if (semvalue == 0) 
             sem_post(gdb.recv_block);
-
-        pthread_mutex_unlock(&gdb.modify_block);
     }
 
     return NULL;
@@ -278,42 +274,27 @@ bool GDB_StartProcess(String gdb_filename, String gdb_args)
 bool GDB_LoadInferior(String filename, String args)
 {
     bool result = false;
-    char tmp[PATH_MAX];
-    char *dir = NULL;
 
-    tsnprintf(tmp, "%s", filename.c_str());
-    
+    // set the debugged executable
+    String str = StringPrintf("-file-exec-and-symbols \"%s\"", filename.c_str());
 
-    if (NULL != (dir = dirname(tmp)))
+    if (GDB_SendBlocking(str.c_str()))
     {
-        // set the debugged executable
-        String str = StringPrintf("-file-exec-and-symbols \"%s\"", 
-                                  filename.c_str());
-
-        if (GDB_SendBlocking(str.c_str()))
+        // set the command line arguments for the debugged executable
+        bool good_args = true;
+        if (args != "")
         {
-            // look for source files in the directory of the exe
-            str = StringPrintf("-environment-directory \"%s\"", dir);
-            if (GDB_SendBlocking(str.c_str()))
-            {
-                // set the command line arguments for the debugged executable
-                bool good_args = true;
-                if (args != "")
-                {
-                    str = StringPrintf("-exec-arguments %s",
-                                       args.c_str());
+            str = StringPrintf("-exec-arguments %s", args.c_str());
 
-                    good_args = GDB_SendBlocking(str.c_str());
-                }
+            good_args = GDB_SendBlocking(str.c_str());
+        }
 
-                result = good_args;
-                if (result)
-                {
-                    PrintMessagef("set debug program: %s %s\n", filename.c_str(), args.c_str());
-                    gdb.debug_filename = filename;
-                    gdb.debug_args = args;
-                }
-            }
+        result = good_args;
+        if (result)
+        {
+            PrintMessagef("set debug program: %s %s\n", filename.c_str(), args.c_str());
+            gdb.debug_filename = filename;
+            gdb.debug_args = args;
         }
     }
 
@@ -1093,8 +1074,9 @@ static size_t GDB_SendBlockingInternal(const char *cmd, bool remove_after)
                             {
                                 // don't print error on watch variables not in scope (no symbol "xyz" in current context)
                                 // don't print error on hovering mouse over a type name
-                                if (NULL == strstr(bufstr, "in current context.") &&
-                                    NULL == strstr(bufstr, "Attempt to use a type name as an expression"))
+                                if (NULL == strstr(bufstr, "in current context.") ||
+                                    gdb.echo_next_no_symbol_in_context)
+                                    //NULL == strstr(bufstr, "Attempt to use a type name as an expression"))
                                 {
                                     // convert error record to GDB console output record
                                     String errmsg = GDB_ExtractValue("msg", iter.rec);
@@ -1118,6 +1100,9 @@ static size_t GDB_SendBlockingInternal(const char *cmd, bool remove_after)
 
         } while (!found);
     }
+
+    // reset to default ignoring "no symbol in context" GDB MI error
+    gdb.echo_next_no_symbol_in_context = false;
 
     return result;
 }
@@ -1204,34 +1189,17 @@ static void GDB_ProcessBlock(char *block, size_t blocksize)
             static ParseRecordContext ctx;
             if ( GDB_ParseRecord(start, linesize, ctx) )
             {
-                // search for unused block before adding new one
-                RecordHolder *out = NULL;
-                for (size_t i = 0; i < prog.num_recs; i++)
+                if (prog.read_recs.size() < prog.num_recs + 1)
                 {
-                    if (prog.read_recs[i].parsed)
-                    {
-                        // reused parsed elem in read records
-                        out = &prog.read_recs[i];
-                        break;
-                    }
+                    size_t newcount = (prog.num_recs + 1) * 4;
+                    prog.read_recs.resize(newcount);
                 }
 
-                if (out == NULL)
-                {
-                    if (prog.read_recs.size() < prog.num_recs + 1)
-                    {
-                        size_t newcount = (prog.num_recs + 1) * 4;
-                        prog.read_recs.resize(newcount);
-                    }
+                RecordHolder &out = prog.read_recs[ prog.num_recs ];
+                out = {};
+                prog.num_recs++;
 
-                    out = &prog.read_recs[ prog.num_recs ];
-                    prog.num_recs++;
-                }
-
-                *out = {};
-                out->parsed = false;
-
-                Record &rec = out->rec;
+                Record &rec = out.rec;
                 rec.atoms = ctx.atoms;
                 rec.buf.resize(linesize);
                 rec.id = this_record_id;
@@ -1263,6 +1231,8 @@ static void GDB_ProcessBlock(char *block, size_t blocksize)
                 if (rec.atoms.size() > 1)
                     IterateAtoms(rec, rec.atoms[0], RemoveStringBackslashes, NULL);
 
+                //printf("[added %d] %d: %s\n", 
+                //       (int)(out - &prog.read_recs[0]), (int)rec.id, rec.buf.c_str());
                 // @Debug
                 //GDB_PrintRecordAtom(rec, rec.atoms[0], 0);
             }
@@ -1278,7 +1248,9 @@ void GDB_GrabBlockData()
     pthread_mutex_lock(&gdb.modify_block);
 
     for (Span &iter : gdb.block_spans)
+    {
         GDB_ProcessBlock(gdb.block_data + iter.index, iter.length);
+    }
 
     gdb.block_spans.clear();
 
