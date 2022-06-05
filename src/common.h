@@ -271,6 +271,13 @@ struct RecordAtomSequence
     size_t length;
 };
 
+struct Thread
+{
+    size_t id;
+    String group_id;
+    bool running;
+};
+
 
 // GDB MI sends output as human readable lines, starting with a symbol
 // * = exec-async-output contains asynchronous state change on the target 
@@ -394,10 +401,11 @@ struct Program
     size_t num_recs;
 
     Vector<File> files;
-
+    Vector<Thread> threads;
     Vector<Frame> frames;
     size_t frame_idx = BAD_INDEX;
     size_t file_idx = BAD_INDEX;
+    size_t thread_idx = BAD_INDEX;
     pid_t inferior_process;
     String stack_sig;               // string of all function names combined
 };

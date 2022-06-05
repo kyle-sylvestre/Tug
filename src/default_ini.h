@@ -9,6 +9,8 @@ Watch=1
 Source=1
 Control=1
 Breakpoints=0
+FontFilename=
+FontSize=
 WindowTheme=DarkBlue
 
 ; ImGui Begin

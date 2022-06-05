@@ -95,6 +95,7 @@ String _StringPrintf(int /* vargs_check */, const char *fmt, ...)
     return result;
 }
 
+
 bool InvokeShellCommand(String command, String &output)
 {
     bool result = false;
@@ -226,6 +227,9 @@ void ResetProgramState()
     prog.frames.clear();
     prog.frame_idx = BAD_INDEX;
     prog.inferior_process = 0;
+
+    prog.threads.clear();
+    prog.thread_idx = BAD_INDEX;
 }
 
 enum LineDisplay
@@ -755,6 +759,16 @@ void CheckIfChanged(VarObj &this_var, const VarObj &last_var)
     }
 }
 
+int GetTID()
+{
+    int result = 0;
+    if (prog.thread_idx < prog.threads.size())
+    {
+        result = prog.threads[prog.thread_idx].id;
+    }
+    return result;
+}
+
 void QueryWatchlist()
 {
     // evaluate user defined watch variables
@@ -776,8 +790,8 @@ void QueryWatchlist()
             expr = iter.name;
         }
 
-        String cmd = StringPrintf("-data-evaluate-expression --frame %zu --thread 1 \"%s\"", 
-                                  prog.frame_idx, expr.c_str());
+        String cmd = StringPrintf("-data-evaluate-expression --frame %zu --thread %d \"%s\"", 
+                                  prog.frame_idx, GetTID(), expr.c_str());
 
         VarObj incoming = {};
         incoming.name = iter.name;
@@ -1102,9 +1116,8 @@ void QueryFrame(bool force_clear_locals)
     gui.jump_to_exec_line = true;
     QueryWatchlist();
 
-    // TODO: remote ARM32 debugging is this up after jsr macro
-    /* !!! */ //GDB_SendBlocking("-stack-list-frames 0 0", rec, "stack");
-    /* !!! */ GDB_SendBlocking("-stack-list-frames", rec);
+    tsnprintf(tmpbuf, "-stack-list-frames --thread %d", GetTID());
+    GDB_SendBlocking(tmpbuf, rec);
     const RecordAtom *callstack = GDB_ExtractAtom("stack", rec);
     if (callstack)
     {
@@ -1145,8 +1158,9 @@ void QueryFrame(bool force_clear_locals)
         {
             prog.stack_sig = stack_sig;
             prog.local_vars.clear();
-            if (gui.line_display != LineDisplay_Source && prog.frames.size() > 0)
-                GetFunctionDisassembly(prog.frames[0]);
+            if (gui.line_display != LineDisplay_Source && 
+                prog.frame_idx < prog.frames.size())
+                GetFunctionDisassembly(prog.frames[prog.frame_idx]);
         }
 
         if (set_default_registers && arch != "")
@@ -1195,7 +1209,7 @@ void QueryFrame(bool force_clear_locals)
     // prog.local_vars not actually GDB variable objects,
     // problems with aggregates displaying updates
 
-    tsnprintf(tmpbuf, "-stack-list-variables --frame %zu --thread 1 --all-values", prog.frame_idx);
+    tsnprintf(tmpbuf, "-stack-list-variables --frame %zu --thread %d --all-values", prog.frame_idx, GetTID());
     GDB_SendBlocking(tmpbuf, rec);
     for (VarObj &local : prog.local_vars) local.changed = false;
 
@@ -1362,26 +1376,90 @@ void Draw()
                 {
                     prog.inferior_process = (pid_t)GDB_ExtractInt("pid", parse_rec);
                 }
+                else if (prefix_word == "thread-group-exited")
+                {
+                    String group_id = GDB_ExtractValue("id", parse_rec);
+                    for (size_t end = prog.threads.size(); end > 0; end--)
+                    {
+                        size_t t = end - 1;
+                        if (prog.threads[t].group_id == group_id)
+                        {
+                            prog.threads.erase(prog.threads.begin() + t,
+                                               prog.threads.begin() + t + 1);
+                            break;
+                        }
+                    }
+                }
                 else if (prefix_word == "thread-selected")
                 {
+                    size_t tid = (size_t)GDB_ExtractInt("id", parse_rec);
+                    for (size_t t = 0; t < prog.threads.size(); t++)
+                        if (prog.threads[t].id == tid)
+                            prog.thread_idx = t; 
+
                     // user jumped to a new thread/frame from the console window
-                    size_t index = (size_t)GDB_ExtractInt("frame.level", parse_rec);
-                    if (index < prog.frames.size())
+                    if (!prog.running)
                     {
-                        prog.frame_idx = index;
-                        QueryFrame(true);
+                        size_t index = (size_t)GDB_ExtractInt("frame.level", parse_rec);
+                        if (index < prog.frames.size())
+                        {
+                            prog.frame_idx = index;
+                            QueryFrame(true);
+                        }
+                    }
+                }
+                else if (prefix_word == "thread-created")
+                {
+                    Thread t = {};
+                    t.id = (size_t)GDB_ExtractInt("id", parse_rec);
+                    t.group_id = GDB_ExtractValue("group-id", parse_rec);
+
+                    if (t.id != 0 && t.group_id != "")
+                        prog.threads.push_back(t);
+                }
+                else if (prefix_word == "thread-exited")
+                {
+                    size_t id = (size_t)GDB_ExtractInt("id", parse_rec);
+                    String group_id = GDB_ExtractValue("group-id", parse_rec);
+                    for (size_t t = 0; t < prog.threads.size(); t++)
+                    {
+                        if (prog.threads[t].id == id &&
+                            prog.threads[t].group_id == group_id)
+                        {
+                            prog.threads.erase(prog.threads.begin() + t,
+                                               prog.threads.begin() + t + 1);
+                            break;
+                        }
                     }
                 }
             }
             else if (prefix_word == "running")
             {
                 prog.running = true;
+                String thread = GDB_ExtractValue("thread-id", parse_rec);
+                if (thread == "all")
+                {
+                    for (Thread &t : prog.threads)
+                        t.running = true;
+                }
+                else
+                {
+                    size_t tid = atoi(thread.c_str());
+                    for (Thread &t : prog.threads)
+                        if (t.id == tid)
+                            t.running = true;
+                }
             }
             else if (prefix_word == "stopped")
             {
+                // TODO: thread-id vs stopped-threads
                 prog.frame_idx = 0;
                 prog.running = false;
                 String reason = GDB_ExtractValue("reason", parse_rec);
+                size_t tid = (size_t)GDB_ExtractInt("thread-id", parse_rec);
+                for (size_t t = 0; t < prog.threads.size(); t++)
+                    if (prog.threads[t].id == tid)
+                        prog.thread_idx = t; 
 
                 if ( (NULL != strstr(reason.c_str(), "exited")) )
                 {
@@ -1412,7 +1490,7 @@ void Draw()
         };
 
         static bool open_source = false;
-        open_source |= ImGui::MenuItem("Open File");
+        open_source |= ImGui::MenuItem("Open Source");
         if (open_source)
         {
             static FileWindowContext ctx;
@@ -2039,8 +2117,8 @@ void Draw()
                                             hover_frame_idx = prog.frame_idx;
                                             String word(line.data() + word_idx, char_idx - word_idx);
 
-                                            tsnprintf(tmpbuf, "-data-evaluate-expression --frame %zu --thread 1 \"%s\"", 
-                                                      prog.frame_idx, word.c_str());
+                                            tsnprintf(tmpbuf, "-data-evaluate-expression --frame %zu --thread %d \"%s\"", 
+                                                      prog.frame_idx, GetTID(), word.c_str());
                                             GDB_SendBlocking(tmpbuf, rec);
                                             hover_value = GDB_ExtractValue("value", rec);
                                         }
@@ -2714,6 +2792,34 @@ void Draw()
         {
             ImGui::SetNextWindowSize(MIN_WINSIZE, ImGuiCond_Once);
             ImGui::Begin("Callstack", &gui.show_callstack);
+
+            // draw the thread stack as a dropdown box
+            String thread_preview;
+            if (prog.thread_idx < prog.threads.size())
+            {
+                const Thread &t = prog.threads[prog.thread_idx];
+                thread_preview = StringPrintf("Thread ID %d Group ID %s", 
+                                              (int)t.id, t.group_id.c_str());
+            }
+
+
+            if (ImGui::BeginCombo("Threads", thread_preview.c_str()))
+            {
+                for (size_t i = 0; i < prog.threads.size(); i++)
+                {
+                    const Thread &t = prog.threads[i];
+                    String str = StringPrintf("Thread ID %d Group ID %s", (int)t.id, t.group_id.c_str());
+                    if (ImGui::Selectable(str.c_str(), prog.thread_idx == i) && prog.thread_idx != i)
+                    {
+                        prog.thread_idx = i;
+                        prog.frame_idx = 0;
+                        QueryFrame(true);
+                    }
+                }
+
+                ImGui::EndCombo();
+            }
+
             for (size_t i = 0; i < prog.frames.size(); i++)
             {
                 const Frame &iter = prog.frames[i];
@@ -3201,13 +3307,7 @@ int main(int argc, char **argv)
         String tmp;
         if (InvokeShellCommand("which gdb", tmp))
         {
-            while (tmp.size() > 0 &&
-                   (tmp[ tmp.size() - 1 ] == '\n' ||
-                    tmp[ tmp.size() - 1 ] == '\r'))
-            {
-                tmp.pop_back();
-            }
-
+            TrimWhitespace(tmp);
             if (DoesFileExist(tmp.c_str(), false))
                 gdb.filename = tmp;
         }
@@ -3407,6 +3507,29 @@ int main(int argc, char **argv)
             gui.show_breakpoints= ("1" == GetValue("Breakpoints", "1"));
             gui.show_source     = ("1" == GetValue("Source"     , "1"));
 
+            const auto ToString = [](float value) -> String { return StringPrintf("%f", value); };
+            gui.font_filename   = GetValue("FontFilename", "");
+            String font_size    = GetValue("FontSize", ToString(DEFAULT_FONT_SIZE)); 
+            float ffz = 0.0f;
+            if (font_size != "")
+            {
+                if (0.0f == (ffz = atof(font_size.c_str())))
+                {
+                    PrintErrorf("bad ini Fontsize \"%s\"\n", font_size.c_str());
+                }
+                else
+                {
+                    gui.font_size = ffz;
+                    gui.source_font_size = ffz;
+                }
+            } 
+
+            if (gui.font_filename != "")
+            {
+                gui.change_font = true;
+                gui.use_default_font = false;
+            }
+
             String theme = GetValue("WindowTheme", "DarkBlue");
             gui.window_theme = (theme == "Light") ? WindowTheme_Light :
                                (theme == "DarkPurple") ? WindowTheme_DarkPurple : WindowTheme_DarkBlue; 
@@ -3520,6 +3643,8 @@ int main(int argc, char **argv)
         fprintf(f, "Control=%d\n",  gui.show_control);
         fprintf(f, "Source=%d\n",   gui.show_source);
         fprintf(f, "Breakpoints=%d\n", gui.show_breakpoints);
+        fprintf(f, "FontFilename=%s\n", gui.font_filename.c_str());
+        fprintf(f, "FontSize=%.0f\n", gui.font_size);
 
         String theme = (gui.window_theme == WindowTheme_Light) ? "Light" :
                        (gui.window_theme == WindowTheme_DarkPurple) ? "DarkPurple" : "DarkBlue";
