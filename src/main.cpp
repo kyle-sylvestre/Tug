@@ -220,6 +220,7 @@ void ResetProgramState()
 
     prog.running = false;
     prog.started = false;
+    prog.source_out_of_date = false;
 
     prog.read_recs.clear();
     prog.num_recs = 0;
@@ -1177,6 +1178,7 @@ void QueryFrame(bool force_clear_locals)
             prog.frames.emplace_back(add);
         }
 
+        prog.source_out_of_date = false;
         if (prog.frame_idx < prog.frames.size())
         {
             const Frame &frame = prog.frames[prog.frame_idx];
@@ -1186,6 +1188,26 @@ void QueryFrame(bool force_clear_locals)
                 File &file = prog.files[prog.file_idx];
                 if (file.lines.size() == 0)
                     LoadFile(file);
+
+                // check to see if the source file is newer than executable
+                // same as what GDB does in source-cache.c
+                struct stat source_st = {};
+                struct stat exe_st = {};
+                if (DoesFileExist(file.filename.c_str()) && 
+                    (0 > stat(file.filename.c_str(), &source_st) ||
+                     0 > stat(gdb.debug_filename.c_str(), &exe_st)) )
+                {
+                    PrintErrorf("stat %s\n", strerror(errno));
+                }
+                else
+                {
+                    time_t src = source_st.st_mtim.tv_sec;
+                    time_t exe = exe_st.st_mtim.tv_sec;
+                    if (src != 0 && exe != 0 && exe < src)
+                    {
+                        prog.source_out_of_date = true;
+                    }
+                }
             }
         }
 
@@ -2564,6 +2586,13 @@ void Draw()
         //R"(</\ = step out)";
         DrawHelpMarker(button_desc);
 
+        if (prog.source_out_of_date)
+        {
+            ImGui::SameLine();
+            ImGui::TextColored(ImColor(1.0f, 1.0f, 0.0f, 1.0f).Value, "%s",
+                               "Warning: Source file is more recent than executable.");
+        }
+
         #define CMDSIZE sizeof(Program::input_cmd[0])
         static char input_command[CMDSIZE];
 
@@ -2632,10 +2661,25 @@ void Draw()
                 phrases.clear();
             }
 
+            String keyword = send_command;
+            String rest;
+            TrimWhitespace(keyword);
+            size_t space_idx = keyword.find(' ');
+            if (space_idx < keyword.size())
+            {
+                rest = keyword.substr(space_idx + 1);
+                keyword = keyword.substr(0, space_idx);
+            }
+
+
             // TODO: might inject MI commands for program control commands to match
             // their respective button console output
             String micommand;
-            if (send_command[0] == '-')
+            if (keyword == "file")
+            {
+                GDB_LoadInferior(rest.c_str(), gdb.debug_args.c_str());
+            }
+            else if (send_command[0] == '-')
             {
                 // this always times out because the prefix ID 
                 // doesn't get returned to us, send non-blocking
@@ -3105,7 +3149,6 @@ void Draw()
             ImGui::TableSetupColumn("Condition", ImGuiTableColumnFlags_WidthFixed, 125.0f);
             ImGui::TableSetupColumn("Line");
             ImGui::TableSetupColumn("File", ImGuiTableColumnFlags_NoResize);
-
             ImGui::TableNextRow(ImGuiTableRowFlags_Headers);
 
             // enable all, disable all, delete all
@@ -3254,7 +3297,7 @@ void Draw()
         ImGui::Begin("Threads", &gui.show_threads);
         if (ImGui::BeginTable("##BreakpointsTable", 3, TABLE_FLAGS))
         {
-            ImGui::TableSetupColumn(""); // play all
+            ImGui::TableSetupColumn(""); // resume all
             ImGui::TableSetupColumn(""); // pause all
             ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_NoResize);
             ImGui::TableNextRow(ImGuiTableRowFlags_Headers);

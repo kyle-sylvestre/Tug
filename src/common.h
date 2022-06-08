@@ -396,6 +396,7 @@ struct Program
     Vector<VarObj> watch_vars;      // user defined watch for entire program
     bool running;
     bool started;
+    bool source_out_of_date;
     Vector<Breakpoint> breakpoints;
     // TODO: threads, active_thread
 
