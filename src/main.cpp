@@ -1193,7 +1193,7 @@ void QueryFrame(bool force_clear_locals)
                 // same as what GDB does in source-cache.c
                 struct stat source_st = {};
                 struct stat exe_st = {};
-                if (DoesFileExist(file.filename.c_str()) && 
+                if (DoesFileExist(file.filename.c_str(), false) && 
                     (0 > stat(file.filename.c_str(), &source_st) ||
                      0 > stat(gdb.debug_filename.c_str(), &exe_st)) )
                 {
@@ -1902,7 +1902,7 @@ void Draw()
 
             if (goto_line_open && prog.file_idx < prog.files.size())
             {
-                ImGui::SetNextWindowSize(MIN_WINSIZE, ImGuiCond_Once);
+                ImGui::SetNextWindowSize(ImVec2(150.0f, 100.0f), ImGuiCond_Once);
                 ImGui::Begin("Goto Line", &goto_line_open);
                 if (goto_line_activate) 
                 {
@@ -2661,9 +2661,10 @@ void Draw()
                 phrases.clear();
             }
 
-            String keyword = send_command;
+            String trimmed = send_command;
+            TrimWhitespace(trimmed);
+            String keyword = trimmed;
             String rest;
-            TrimWhitespace(keyword);
             size_t space_idx = keyword.find(' ');
             if (space_idx < keyword.size())
             {
@@ -2672,25 +2673,49 @@ void Draw()
             }
 
 
-            // TODO: might inject MI commands for program control commands to match
-            // their respective button console output
+            // inject MI commands for program control commands to match their 
+            // respective button console output
+
             String micommand;
             if (keyword == "file")
             {
                 GDB_LoadInferior(rest.c_str(), gdb.debug_args.c_str());
             }
-            else if (send_command[0] == '-')
+            else if (keyword == "step" || keyword == "s")
+            {
+                micommand = "-exec-step " + rest;
+            }
+            else if (keyword == "continue" || keyword == "c")
+            {
+                micommand = "-exec-continue " + rest;
+            }
+            else if (keyword == "next" || keyword == "n")
+            {
+                micommand = "-exec-next " + rest;
+            }
+            else
+            {
+                micommand = send_command;
+            }
+
+
+            if (micommand == "")
+            {
+                // do nothing, cases like file where the command
+                // is already completed
+            }
+            else if (micommand[0] == '-')
             {
                 // this always times out because the prefix ID 
                 // doesn't get returned to us, send non-blocking
                 micommand = StringPrintf("-interpreter-exec mi \"%s\"", 
-                                         send_command);
+                                         micommand.c_str());
                 GDB_Send(micommand.c_str()); 
             }
             else
             {
                 micommand = StringPrintf("-interpreter-exec console \"%s\"", 
-                                         send_command);
+                                         micommand.c_str());
                 GDB_SendBlocking(micommand.c_str());
             }
 
