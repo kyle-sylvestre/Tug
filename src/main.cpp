@@ -1084,7 +1084,6 @@ void RecurseExpressionTreeNodes(const VarObj &var, size_t atom_idx,
                 ImGui::TableNextColumn();
                 if (child.name.length > 0)
                 {
-                    Assert(child.name.length > 0);
                     ImGui::Text("%.*s", (int)child.name.length,
                                 &src.buf[ child.name.index ]);
                 }
@@ -1203,8 +1202,8 @@ void QueryFrame(bool force_clear_locals)
                 }
                 else
                 {
-                    time_t src = source_st.st_mtim.tv_sec;
-                    time_t exe = exe_st.st_mtim.tv_sec;
+                    long src = source_st.st_mtim.tv_sec;
+                    long exe = exe_st.st_mtim.tv_sec;
                     if (src != 0 && exe != 0 && exe < src)
                     {
                         prog.source_out_of_date = true;
@@ -1568,7 +1567,11 @@ void Draw()
                    size_t idx = FindOrCreateFile(ctx.path.c_str());
                    prog.files[idx].lines.clear();
                    if (LoadFile(prog.files[idx]))
+                   {
                        prog.file_idx = idx;
+                       gui.jump_type = Jump_Goto;
+                       gui.goto_line_idx = 0;
+                   }
                } 
 
                open_source = false;
@@ -2517,14 +2520,7 @@ void Draw()
         {
             if (!prog.started)
             {
-                if (gdb.has_exec_run_start)
-                {
-                    GDB_SendBlocking("-exec-run --start");
-                }
-                else
-                {
-                    ExecuteCommand("-exec-run");
-                }
+                ExecuteCommand("-exec-run");
             }
             else
             {
@@ -2664,32 +2660,49 @@ void Draw()
                 phrases.clear();
             }
 
-            String trimmed = send_command;
-            TrimWhitespace(trimmed);
-            String keyword = trimmed;
-            String rest;
-            size_t space_idx = keyword.find(' ');
-            if (space_idx < keyword.size())
+            static const auto PopFrontWord = [](String &str) -> String
             {
-                rest = keyword.substr(space_idx + 1);
-                keyword = keyword.substr(0, space_idx);
-            }
+                // remove the beginning word from full and return it 
+                String result;
+                TrimWhitespace(str);
+                size_t space_idx = str.find(' ');
 
+                if (space_idx < str.size())
+                {
+                    result = str.substr(0, space_idx);
+                    str = str.substr(space_idx + 1);
+                }
+
+                return result;
+            };
+
+            String rest = send_command; // remaining send command after popping words
+            String keyword = PopFrontWord(rest);
 
             // inject MI commands for program control commands to match their 
             // respective button console output
 
             String micommand;
-            if (keyword == "file" && rest != "")
+            if (keyword == "file")
             {
-                if (rest != "")
+                tsnprintf(tmpbuf, "-file-exec-and-symbols \"%s\"", rest.c_str());
+                if (GDB_SendBlocking(tmpbuf))
                 {
-                    GDB_LoadInferior(rest.c_str(), gdb.debug_args.c_str());
+                    PrintMessagef("set debug program: %s\n", rest.c_str());
+                    gdb.debug_filename = rest;
                 }
-                else
+            }
+            else if (keyword == "set")
+            {
+                String set_target = PopFrontWord(rest);
+                if (set_target == "args")
                 {
-                    gdb.debug_filename = "";
-                    micommand = send_command;
+                    tsnprintf(tmpbuf, "-exec-arguments %s", rest.c_str());
+                    if (GDB_SendBlocking(tmpbuf))
+                    {
+                        PrintMessagef("set args %s\n", rest.c_str());
+                        gdb.debug_args = rest;
+                    }
                 }
             }
             else if (keyword == "step" || keyword == "s")
@@ -2709,6 +2722,7 @@ void Draw()
                 micommand = send_command;
             }
 
+
             if (micommand == "")
             {
                 // do nothing, cases like file where the command
@@ -2716,14 +2730,12 @@ void Draw()
             }
             else if (micommand[0] == '-')
             {
-                // this always times out because the prefix ID 
-                // doesn't get returned to us, send non-blocking
-                micommand = StringPrintf("-interpreter-exec mi \"%s\"", 
-                                         micommand.c_str());
-                GDB_Send(micommand.c_str()); 
+                // send the machine interpreter command as is
+                GDB_SendBlocking(micommand.c_str()); 
             }
             else
             {
+                // wrap command in machine interpreter statement
                 micommand = StringPrintf("-interpreter-exec console \"%s\"", 
                                          micommand.c_str());
                 GDB_SendBlocking(micommand.c_str());
@@ -2865,7 +2877,7 @@ void Draw()
             ImVec2 logsize = ImGui::GetWindowSize();
             logsize.y = logsize.y - logstart.y - CONSOLE_BAR_HEIGHT;
             logsize.x = 0.0f; // take up the full window width
-            ImGui::BeginChild("##GDB_Console", logsize, true);
+            ImGui::BeginChild("##GDB_Console", logsize, true, ImGuiWindowFlags_HorizontalScrollbar);
 
             // draw the log lines upwards from the bottom of the child window
             ImGui::SetCursorPosY( GetMax(ImGui::GetCursorPosY(), logsize.y - prog.num_log_rows * ImGui::GetTextLineHeightWithSpacing()) );
@@ -3403,15 +3415,16 @@ void Draw()
             FileEntry(String fn, unsigned char d_type) { dirent_d_type = d_type; filename = fn; queried = false; }
         };
 
-        static FileEntry root = FileEntry(".", 0);
+        char abspath[PATH_MAX];
+        static FileEntry root = FileEntry(realpath(".", abspath), 0);
         static FileEntry *query_output = &root;
-        static String query_dir = ".";
+        static String query_dir = root.filename;
 
         // TODO: is there a cleaner way to recurse lambdas
         typedef std::function<void(FileEntry &root, String &path)> RecurseFilesFn;
         static RecurseFilesFn RecurseFiles;
         int id = 0;
-        const RecurseFilesFn _RecurseFiles = [&id, &tmpbuf](FileEntry &parent, String &path)
+        const RecurseFilesFn _RecurseFiles = [&id, &tmpbuf, &abspath](FileEntry &parent, String &path)
         {
             for (FileEntry &ent : parent.entries)
             {
@@ -3439,7 +3452,6 @@ void Draw()
                     if (ImGui::Selectable(tmpbuf))
                     {
                         String relpath = path + "/" + ent.filename;
-                        char abspath[PATH_MAX];
                         char *rc = realpath(relpath.c_str(), abspath);
                         if (rc == NULL)
                         {
@@ -3448,13 +3460,39 @@ void Draw()
                         else
                         {
                             size_t idx = FindOrCreateFile(abspath);
-                            LoadFile(prog.files[idx]);
-                            prog.file_idx = idx;
+                            File &f = prog.files[idx];
+                            if (f.lines.size() > 0 || LoadFile(f))
+                            {
+                                prog.file_idx = idx;
+                                gui.jump_type = Jump_Goto;
+                                gui.goto_line_idx = 0;
+                            }
                         }
                     }
                 }
             }
         };
+
+        static FileWindowContext ctx;
+        static bool show_change_dir = false;
+        show_change_dir |= ImGui::Button("...##ChangeDirectory");
+
+        if (show_change_dir &&
+            ImGuiFileWindow(ctx, ImGuiFileWindowMode_SelectDirectory,
+                            root.filename.c_str()))
+        {
+            if (ctx.selected)
+            {
+                query_output = &root;
+                root.filename = ctx.path.c_str();
+                query_dir = root.filename;
+            }
+
+            show_change_dir = false;
+        }
+
+        ImGui::SameLine();
+        ImGui::Text("%s", root.filename.c_str());
 
         RecurseFiles = _RecurseFiles;
         RecurseFiles(root, root.filename);
@@ -3912,7 +3950,6 @@ int main(int argc, char **argv)
             gui.show_watch      = ("1" == GetValue("Watch"      , "1"));
             gui.show_control    = ("1" == GetValue("Control"    , "1"));
             gui.show_breakpoints= ("1" == GetValue("Breakpoints", "1"));
-            gui.show_source     = ("1" == GetValue("Source"     , "1"));
             gui.show_source     = ("1" == GetValue("Source"     , "1"));
             gui.show_registers  = ("1" == GetValue("Registers"  , "0"));
             gui.show_threads    = ("1" == GetValue("Threads"    , "0"));

@@ -1,4 +1,5 @@
 DEBUG ?= 0
+SAN ?= 0
 IMGUI_DIR = ./third-party/imgui
 OBJDIR =
 
@@ -7,14 +8,21 @@ CXXFLAGS = -I./third-party -I./src
 CXXFLAGS += -g3 -gdwarf-2 -std=c++11 -Wall -Werror=format -Wextra -Werror=shadow -pedantic -pthread
 
 ifeq ($(DEBUG), 1)
-    CXXFLAGS += -DDEBUG -O0 #-fsanitize=undefined,address  #-fsanitize-undefined-trap-on-error
+    CXXFLAGS += -DDEBUG -O0 
 	OBJDIR = ./build_debug
 else
     CXXFLAGS += -DNDEBUG -O3
 	OBJDIR = ./build_release
 endif
 
+
+ifeq ($(SAN), 1)
+	CXXFLAGS += -fno-omit-frame-pointer -fsanitize=undefined,address  #-fsanitize-undefined-trap-on-error
+endif
+
+
 EXE = $(OBJDIR)/tug
+PVS_LOG = $(addprefix $(OBJDIR)/, pvs.log)
 
 SOURCES = ./src/main.cpp\
           ./src/gdb.cpp\
@@ -76,6 +84,6 @@ $(OBJDIR):
 	mkdir -p $@
 
 clean:
-	rm -f $(EXE) $(OBJS)
+	rm -f $(EXE) $(OBJS) $(PVS_LOG)
 
 
