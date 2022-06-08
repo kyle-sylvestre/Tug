@@ -245,16 +245,19 @@ bool GDB_StartProcess(String gdb_filename, String gdb_args)
         return false;
     }
 
-    if (GDB_SendBlocking("-list-target-features", rec))
-    {
-        const char *src = rec.buf.c_str();
-        gdb.supports_async_execution =          (NULL != strstr(src, "async"));
-        gdb.supports_reverse_execution =        (NULL != strstr(src, "reverse"));
-    }
-    else
-    {
-        return false;
-    }
+    gdb.supports_async_execution = GDB_SendBlocking("-gdb-set target-async");
+    GDB_SendBlocking("-gdb-set non-stop");
+
+    //if (GDB_SendBlocking("-list-target-features", rec))
+    //{
+    //    const char *src = rec.buf.c_str();
+    //    gdb.supports_async_execution =          (NULL != strstr(src, "async"));
+    //    gdb.supports_reverse_execution =        (NULL != strstr(src, "reverse"));
+    //}
+    //else
+    //{
+    //    return false;
+    //}
 
     String set_tty = StringPrintf("-inferior-tty-set %s", ptsname(gdb.fd_ptty_master));
     if (GDB_SendBlocking(set_tty.c_str()))

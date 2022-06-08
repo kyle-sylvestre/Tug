@@ -181,6 +181,7 @@ struct Breakpoint
     size_t number;          // ordinal assigned by GDB
     size_t line_idx;        // file line number - 1
     size_t file_idx;        // index in prog.files
+    bool enabled;
     String cond;            
 };
 
@@ -276,6 +277,7 @@ struct Thread
     size_t id;
     String group_id;
     bool running;
+    bool exec_active;   // targeted in ExecuteCommand
 };
 
 

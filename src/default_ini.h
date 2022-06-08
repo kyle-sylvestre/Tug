@@ -4,11 +4,12 @@ const char *const default_ini = R"(
 [Tug]
 Callstack=1
 Locals=1
-Registers=0
 Watch=1
 Source=1
 Control=1
 Breakpoints=0
+Threads=0
+Registers=0
 FontFilename=
 FontSize=
 WindowTheme=DarkBlue

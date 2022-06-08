@@ -248,6 +248,14 @@ enum WindowTheme
     WindowTheme_DarkBlue,
 };
 
+enum Jump
+{
+    Jump_None,
+    Jump_Goto,
+    Jump_Search,
+    Jump_Stopped,
+};
+
 #define DEFAULT_FONT_SIZE 13.0f
 #define MIN_FONT_SIZE 8.0f
 #define MAX_FONT_SIZE 72.0f
@@ -265,10 +273,12 @@ struct GUI
     Vector<DisassemblySourceLine> line_disasm_source;
     bool show_machine_interpreter_commands;
 
-    bool jump_to_exec_line;
-    bool source_search_bar_open = false;
+    Jump jump_type;
+    bool source_search_bar_open;
     char source_search_keyword[256];
+    bool source_found_line;
     size_t source_found_line_idx;
+    size_t goto_line_idx;
     bool refresh_docking_space = true;
 
     // use two font sizes: global and source window
@@ -288,6 +298,7 @@ struct GUI
     bool show_locals;
     bool show_watch;
     bool show_breakpoints;
+    bool show_threads;
     WindowTheme window_theme = WindowTheme_DarkBlue;
 };
 
@@ -759,7 +770,7 @@ void CheckIfChanged(VarObj &this_var, const VarObj &last_var)
     }
 }
 
-int GetTID()
+int GetActiveThreadID()
 {
     int result = 0;
     if (prog.thread_idx < prog.threads.size())
@@ -767,6 +778,29 @@ int GetTID()
         result = prog.threads[prog.thread_idx].id;
     }
     return result;
+}
+
+bool ExecuteCommand(const char *cmd, bool remove_after = true)
+{
+    // execute command for --all, --thread-group, --thread,
+    // or a series of --thread-group or --thread calls
+    bool exec_all = true;
+    for (Thread &t : prog.threads)
+    {
+        exec_all &= t.exec_active;
+    }
+
+    String mi;
+    if (exec_all)
+    {
+        mi = StringPrintf("%s --all", cmd);
+    }
+    else
+    {
+        mi = StringPrintf("%s --all", cmd);
+    }
+
+    return GDB_SendBlocking(mi.c_str(), remove_after);
 }
 
 void QueryWatchlist()
@@ -791,7 +825,7 @@ void QueryWatchlist()
         }
 
         String cmd = StringPrintf("-data-evaluate-expression --frame %zu --thread %d \"%s\"", 
-                                  prog.frame_idx, GetTID(), expr.c_str());
+                                  prog.frame_idx, GetActiveThreadID(), expr.c_str());
 
         VarObj incoming = {};
         incoming.name = iter.name;
@@ -1090,7 +1124,8 @@ Breakpoint ExtractBreakpoint(const Record &rec)
     String filename = GDB_ExtractValue("bkpt.fullname", rec);
     result.file_idx = FindOrCreateFile(filename);
     result.number = GDB_ExtractInt("bkpt.number", rec);
-    result.addr = ParseHex( GDB_ExtractValue("bkpt.addr", rec) );
+    result.addr = ParseHex(GDB_ExtractValue("bkpt.addr", rec));
+    result.enabled = ("y" == GDB_ExtractValue("bkpt.enabled", rec));
 
     int line = GDB_ExtractInt("bkpt.line", rec);
     result.line_idx = (line > 0) ? (size_t)(line - 1) : BAD_INDEX;
@@ -1113,10 +1148,10 @@ void QueryFrame(bool force_clear_locals)
     // query the prog.frame_idx for locals, callstack, globals
     Record rec;
     char tmpbuf[4096];
-    gui.jump_to_exec_line = true;
+    gui.jump_type = Jump_Stopped;
     QueryWatchlist();
 
-    tsnprintf(tmpbuf, "-stack-list-frames --thread %d", GetTID());
+    tsnprintf(tmpbuf, "-stack-list-frames --thread %d", GetActiveThreadID());
     GDB_SendBlocking(tmpbuf, rec);
     const RecordAtom *callstack = GDB_ExtractAtom("stack", rec);
     if (callstack)
@@ -1209,7 +1244,7 @@ void QueryFrame(bool force_clear_locals)
     // prog.local_vars not actually GDB variable objects,
     // problems with aggregates displaying updates
 
-    tsnprintf(tmpbuf, "-stack-list-variables --frame %zu --thread %d --all-values", prog.frame_idx, GetTID());
+    tsnprintf(tmpbuf, "-stack-list-variables --frame %zu --thread %d --all-values", prog.frame_idx, GetActiveThreadID());
     GDB_SendBlocking(tmpbuf, rec);
     for (VarObj &local : prog.local_vars) local.changed = false;
 
@@ -1302,6 +1337,10 @@ void Draw()
     Record rec;
     char tmpbuf[4096];
     const ImVec2 MIN_WINSIZE = ImVec2(350.0f, 250.0f);
+    const ImGuiTableFlags TABLE_FLAGS = ImGuiTableFlags_ScrollX |
+                                        ImGuiTableFlags_ScrollY |
+                                        ImGuiTableFlags_Resizable |
+                                        ImGuiTableFlags_BordersInner;
 
     // check for new blocks
     int recv_block_semvalue = 0;
@@ -1413,6 +1452,7 @@ void Draw()
                     Thread t = {};
                     t.id = (size_t)GDB_ExtractInt("id", parse_rec);
                     t.group_id = GDB_ExtractValue("group-id", parse_rec);
+                    t.exec_active = true;
 
                     if (t.id != 0 && t.group_id != "")
                         prog.threads.push_back(t);
@@ -1458,8 +1498,13 @@ void Draw()
                 String reason = GDB_ExtractValue("reason", parse_rec);
                 size_t tid = (size_t)GDB_ExtractInt("thread-id", parse_rec);
                 for (size_t t = 0; t < prog.threads.size(); t++)
+                {
                     if (prog.threads[t].id == tid)
+                    {
                         prog.thread_idx = t; 
+                        prog.threads[t].running = false;
+                    }
+                }
 
                 if ( (NULL != strstr(reason.c_str(), "exited")) )
                 {
@@ -1478,9 +1523,6 @@ void Draw()
     if (last_num_recs == prog.num_recs)
         prog.num_recs = 0;
 
-    //
-    // main menu bar at top of screen
-    //
     if ( ImGui::BeginMainMenuBar() )
     {
         struct RegisterName
@@ -1511,7 +1553,7 @@ void Draw()
 
         static Vector<RegisterName> all_registers;
         static bool show_register_window = false;
-        static bool just_opened_debug_program = true;
+        static bool is_debug_program_open = false;
 
         if (ImGui::BeginMenu("Debug Program"))
         {
@@ -1523,13 +1565,13 @@ void Draw()
             static char debug_args[1024];
             static bool pick_debug_file = false;
 
-            if (just_opened_debug_program)
+            if (!is_debug_program_open)
             {
+                is_debug_program_open = true;
                 tsnprintf(debug_filename, "%s", gdb.debug_filename.c_str());
                 tsnprintf(debug_args, "%s", gdb.debug_args.c_str());
                 tsnprintf(gdb_filename, "%s", gdb.filename.c_str());
                 tsnprintf(gdb_args, "%s", gdb.args.c_str());
-                just_opened_debug_program = false;
             }
 
             ImGui::InputText("GDB filename", gdb_filename, sizeof(gdb_filename));
@@ -1574,13 +1616,14 @@ void Draw()
                 }
 
                 if (gdb.spawned_pid != 0 && GDB_LoadInferior(debug_filename, debug_args))
-                {
-                    just_opened_debug_program = true; // reset for next open
                     ImGui::CloseCurrentPopup(); 
-                }
             }
 
             ImGui::EndMenu();
+        }
+        else
+        {
+            is_debug_program_open = false;
         }
 
         if (ImGui::BeginMenu("View"))
@@ -1592,10 +1635,12 @@ void Draw()
             ImGui::MenuItem("Locals##Checkbox", "", &gui.show_locals);
             ImGui::MenuItem("Watch##Checkbox", "", &gui.show_watch);
             ImGui::MenuItem("Breakpoints##Checkbox", "", &gui.show_breakpoints);
+            ImGui::MenuItem("Threads##Checkbox", "", &gui.show_threads);
 
             ImGui::EndMenu();
         }
 
+        static bool is_settings_open = false;
         if (ImGui::BeginMenu("Settings"))
         {
             if (ImGui::Button("Configure Registers##Button"))
@@ -1646,6 +1691,13 @@ void Draw()
             static char font_filename[PATH_MAX];
             static bool show_font_picker = false;
             bool changed_font_filename = false;
+
+            if (!is_settings_open)
+            {
+                // just opened the settings menu
+                is_settings_open = true;
+                tsnprintf(font_filename, "%s", gui.font_filename.c_str());
+            }
 
             if (ImGui::Checkbox("Use Default Font (Proggy Clean.ttf)", &gui.use_default_font))
             {
@@ -1718,6 +1770,10 @@ void Draw()
 
             ImGui::EndMenu();
         }
+        else
+        {
+            is_settings_open = false;
+        }
 
         // modify register window: query GDB for the list of register
         // names then let the user pick which ones to use
@@ -1770,9 +1826,6 @@ void Draw()
         ImGui::EndMainMenuBar();
     }
 
-    // 
-    // source code window
-    //
     if (gui.show_source) 
     {
         float saved_frame_border_size = ImGui::GetStyle().FrameBorderSize;
@@ -1801,47 +1854,55 @@ void Draw()
         }
         else if (gui.source_search_bar_open && IsKeyPressed(ImGuiKey_Escape))
         {
+            // jump to the found line permanently, if found
             gui.source_search_bar_open = false;
+
+            if (gui.source_found_line)
+            {
+                gui.jump_type = Jump_Goto;
+                gui.goto_line_idx = gui.source_found_line_idx;
+            }
         }
 
         //
         // goto window: jump to a line in the source document
         //
-
-        static bool goto_line_open;
-        bool goto_line_activate;
-        static int goto_line;
-
-        if ( IsKeyPressed(ImGuiKey_G, ImGuiKeyModFlags_Ctrl) )
         {
-            goto_line_open = true;
-            goto_line_activate = true;
-        }
+            static bool goto_line_open = false;
+            bool goto_line_activate = false;
+            int goto_line_idx = 0;
 
-        if (goto_line_open && prog.file_idx < prog.files.size())
-        {
-            ImGui::Begin("Goto Line", &goto_line_open);
-            if (goto_line_activate) 
+            if ( IsKeyPressed(ImGuiKey_G, ImGuiKeyModFlags_Ctrl) )
             {
-                ImGui::SetKeyboardFocusHere(0); // auto click the goto line field
-                goto_line_activate = false;
+                goto_line_open = true;
+                goto_line_activate = true;
             }
 
-            if (IsKeyPressed(ImGuiKey_Escape))
-                goto_line_open = false;
-
-            if ( ImGui::InputInt("##goto_line", &goto_line, 1, 1, ImGuiInputTextFlags_EnterReturnsTrue) )    
+            if (goto_line_open && prog.file_idx < prog.files.size())
             {
-                size_t linecount = prog.files[prog.file_idx].lines.size();
-                if (goto_line < 0) goto_line = 0;
-                if ((size_t)goto_line >= linecount) goto_line = (linecount > 0) ? linecount - 1 : 0;
+                ImGui::SetNextWindowSize(MIN_WINSIZE, ImGuiCond_Once);
+                ImGui::Begin("Goto Line", &goto_line_open);
+                if (goto_line_activate) 
+                {
+                    ImGui::SetKeyboardFocusHere(0); // auto click the goto line field
+                    goto_line_activate = false;
+                }
 
-                gui.source_found_line_idx = (size_t)goto_line; // @Hack: reuse the search source index for jumping to goto line
-                goto_line_open = false;
+                if (IsKeyPressed(ImGuiKey_Escape))
+                    goto_line_open = false;
+
+                if ( ImGui::InputInt("##goto_line", &goto_line_idx, 1, 1, ImGuiInputTextFlags_EnterReturnsTrue) )    
+                {
+                    size_t linecount = prog.files[prog.file_idx].lines.size();
+                    if (goto_line_idx < 0) goto_line_idx = 0;
+                    if ((size_t)goto_line_idx >= linecount) goto_line_idx = (linecount > 0) ? linecount - 1 : 0;
+                    goto_line_open = false;
+                    gui.jump_type = Jump_Goto;
+                    gui.goto_line_idx = (size_t)goto_line_idx;
+                }
+                ImGui::End();
             }
-            ImGui::End();
         }
-
 
         //
         // search bar: look for text in source window
@@ -1856,7 +1917,6 @@ void Draw()
             {
                 size_t dir = 1;
                 const File &this_file = prog.files[prog.file_idx];
-                bool found = false;
 
                 if ( IsKeyPressed(ImGuiKey_N) &&
                      !ImGui::GetIO().WantCaptureKeyboard)
@@ -1875,14 +1935,16 @@ void Draw()
 
                 // search for a keyword starting at the last found index + 1
                 bool wraparound = false;
+                gui.source_found_line = false;
                 for (size_t i = gui.source_found_line_idx; 
                      i < this_file.lines.size(); i += dir)
                 {
                     const String &line = this_file.lines[i];
                     if ( NULL != strstr(line.c_str(), gui.source_search_keyword) )
                     {
+                        gui.source_found_line = true;
+                        gui.jump_type = Jump_Search;
                         gui.source_found_line_idx = i;
-                        found = true;
                         break;
                     }
 
@@ -1893,14 +1955,14 @@ void Draw()
                         wraparound = true;
                     }
                 }
-                if (!found) gui.source_found_line_idx = 0;
+                if (!gui.source_found_line) gui.source_found_line_idx = 0;
             }
 
             ImGui::Separator();
             ImGui::BeginChild("SourceScroll");
         }
 
-        if (prog.file_idx < prog.files.size())
+        if (prog.file_idx < prog.files.size() && prog.files[prog.file_idx].lines.size() > 0)
         {
             const File &file = prog.files[ prog.file_idx ];
 
@@ -1926,25 +1988,56 @@ void Draw()
 
                 // automatically scroll to the next executed line if it is far enough away
                 // and we've just stopped execution
-                if (in_active_frame_file && gui.jump_to_exec_line)
+                size_t start_idx = (ImGui::GetScrollY() / lineheight);
+                if (gui.jump_type != Jump_None)
                 {
-                    const Frame &frame = prog.frames[prog.frame_idx];
-                    gui.jump_to_exec_line = false;
-                    size_t line_idx = (ImGui::GetScrollY() / lineheight);
-                    if ( !(frame.line_idx >= line_idx + 5 && 
-                           frame.line_idx <= line_idx + perscreen - 5) )
+                    size_t middle_idx = BAD_INDEX;
+                    switch (gui.jump_type)
                     {
-                        float scroll = lineheight * (frame.line_idx - (perscreen / 2)); // ((frame.line - 1) - (lineheight / 2));
-                        if (scroll < 0.0f) scroll = 0.0f;
-                        ImGui::SetScrollY(scroll);
+                        case Jump_Stopped:
+                        {
+                            if (in_active_frame_file)
+                            {
+                                const Frame &frame = prog.frames[prog.frame_idx];
+                                bool is_next_exec_visible = frame.line_idx >= start_idx + 5 && 
+                                                            frame.line_idx <= start_idx + perscreen - 5;
+                                if (!is_next_exec_visible)
+                                    middle_idx = frame.line_idx;
+                            }
+                        } break;
+
+                        case Jump_Goto:
+                        {
+                            middle_idx = gui.goto_line_idx;
+                        } break;
+
+                        case Jump_Search:
+                        {
+                            bool is_found_visible = gui.source_found_line_idx >= start_idx &&
+                                                    gui.source_found_line_idx < start_idx + perscreen;
+                                                  
+                            if (!is_found_visible)
+                                middle_idx = gui.source_found_line_idx;
+                        } break;
+
+                        DefaultInvalid
                     }
+
+                    if (middle_idx < file.lines.size())
+                    {
+                        size_t s = middle_idx - (perscreen / 2);
+                        if (s >= file.lines.size()) s = 0;
+                        start_idx = s;
+                        ImGui::SetScrollY(start_curpos_y + start_idx * lineheight); 
+                    }
+
+                    gui.jump_type = Jump_None;
                 }
 
-                size_t start_idx = (ImGui::GetScrollY() / lineheight);
                 size_t end_idx = GetMin(start_idx + perscreen, file.lines.size());
                 if (file.lines.size() > perscreen)
                 {
-                    // set scrollbar height, -1 because index zero is never drawn
+                    // set scrollbar height
                     ImGui::SetCursorPosY(start_curpos_y + file.lines.size() * lineheight); 
                 }
                 ImGui::SetCursorPosY(start_idx * lineheight + start_curpos_y);
@@ -1953,10 +2046,16 @@ void Draw()
                 {
                     const String &line = file.lines[i];
 
-                    bool is_breakpoint_set = false;
+                    bool is_breakpoint_on_line = false;
+                    bool is_breakpoint_disabled = false;
                     for (Breakpoint &iter : prog.breakpoints)
+                    {
                         if (iter.line_idx == i && iter.file_idx == prog.file_idx)
-                            is_breakpoint_set = true;
+                        {
+                            is_breakpoint_on_line = true;
+                            is_breakpoint_disabled |= !iter.enabled;
+                        }
+                    }
 
                     // start radio button style
                     ImColor window_bg_color = ImGui::GetStyleColorVec4(ImGuiCol_WindowBg);
@@ -1968,6 +2067,14 @@ void Draw()
                     bkpt_hovered_color.Value.y = window_bg_color.Value.y + inc;
                     bkpt_hovered_color.Value.z = window_bg_color.Value.z + inc;
                     bkpt_hovered_color.Value.w = window_bg_color.Value.w;
+
+                    if (is_breakpoint_on_line && is_breakpoint_disabled)
+                    {
+                        // disabled breakpoint on this line, make breakpoint color lighter
+                        window_bg_color.Value.w = 0.3f;
+                        bkpt_active_color.Value.w = 0.3f;
+                        bkpt_hovered_color.Value.w = 0.3f;
+                    }
 
                     ImGui::PushStyleColor(ImGuiCol_FrameBg, 
                                           window_bg_color.Value);
@@ -1983,30 +2090,40 @@ void Draw()
                                           bkpt_active_color.Value);        
 
                     tsnprintf(tmpbuf, "##bkpt%d", (int)i); 
-                    if (ImGui::RadioButton(tmpbuf, is_breakpoint_set))
+                    if (ImGui::RadioButton(tmpbuf, is_breakpoint_on_line))
                     {
-                        // dispatch command to set breakpoint
-                        if (is_breakpoint_set)
+                        if (is_breakpoint_on_line)
                         {
                             for (size_t b = 0; b < prog.breakpoints.size(); b++)
                             {
                                 Breakpoint &iter = prog.breakpoints[b];
                                 if (iter.line_idx == i && iter.file_idx == prog.file_idx)
                                 {
-                                    // remove breakpoint
-                                    tsnprintf(tmpbuf, "-break-delete %zu", iter.number);
-                                    if (GDB_SendBlocking(tmpbuf))
+                                    if (!iter.enabled)
                                     {
-                                        prog.breakpoints.erase(prog.breakpoints.begin() + b,
-                                                               prog.breakpoints.begin() + b + 1);
+                                        // change breakpoint state from disabled to enabled
+                                        tsnprintf(tmpbuf, "-break-enable %zu", iter.number);
+                                        if (GDB_SendBlocking(tmpbuf))
+                                            iter.enabled = true;
                                     }
+                                    else
+                                    {
+                                        // remove breakpoint
+                                        tsnprintf(tmpbuf, "-break-delete %zu", iter.number);
+                                        if (GDB_SendBlocking(tmpbuf))
+                                        {
+                                            prog.breakpoints.erase(prog.breakpoints.begin() + b,
+                                                                   prog.breakpoints.begin() + b + 1);
+                                        }
+                                    }
+
                                     break;
                                 }
                             }
                         }
                         else
                         {
-                            // insert breakpoint
+                            // create breakpoint
                             tsnprintf(tmpbuf, "-break-insert --source \"%s\" --line %d", 
                                       file.filename.c_str(), (int)(i + 1));
                             if (GDB_SendBlocking(tmpbuf, rec))
@@ -2031,17 +2148,20 @@ void Draw()
 
                     ImGui::SameLine();
                     ImVec2 textstart = ImGui::GetCursorPos();
-                    if (in_active_frame_file)
+                    if (in_active_frame_file && i == prog.frames[prog.frame_idx].line_idx)
                     {
-                        const Frame &frame = prog.frames[prog.frame_idx];
-                        if (i == frame.line_idx)
-                            ImGui::Selectable(line.c_str(), !prog.running);
-                        else
-                            ImGui::Text("%s", line.c_str());
+                        ImGui::Selectable(line.c_str(), !prog.running);
                     }
                     else
                     {
-                        ImGui::Text("%s", line.c_str());
+                        if (gui.source_search_bar_open && i == gui.source_found_line_idx)
+                        {
+                            ImGui::TextColored(ImColor(1.0f, 1.0f, 0.0f, 1.0f).Value, "%s", line.c_str());
+                        }
+                        else
+                        {
+                            ImGui::Text("%s", line.c_str());
+                        }
                     }
 
                     if (ImGui::IsItemHovered())
@@ -2118,7 +2238,7 @@ void Draw()
                                             String word(line.data() + word_idx, char_idx - word_idx);
 
                                             tsnprintf(tmpbuf, "-data-evaluate-expression --frame %zu --thread %d \"%s\"", 
-                                                      prog.frame_idx, GetTID(), word.c_str());
+                                                      prog.frame_idx, GetActiveThreadID(), word.c_str());
                                             GDB_SendBlocking(tmpbuf, rec);
                                             hover_value = GDB_ExtractValue("value", rec);
                                         }
@@ -2201,30 +2321,9 @@ void Draw()
                 const Frame &frame = prog.frames[prog.frame_idx];
                 // automatically scroll to the next executed line if it is far enough away
                 // and we've just stopped execution
-                if (gui.jump_to_exec_line)
+                if (gui.jump_type == Jump_Stopped)
                 {
-                    size_t current_index = (ImGui::GetScrollY() / lineheight);
-                    gui.jump_to_exec_line = false;
-                    size_t jump_index = 0;
-                    for (size_t i = 0; i < gui.line_disasm.size(); i++)
-                    {
-                        if (gui.line_disasm[i].addr == frame.addr)
-                        {
-                            jump_index = i; 
-                            break;
-                        }
-                    }
-
-                    if ( !(jump_index >= current_index + 10 && 
-                           jump_index <= current_index + perscreen - 10) )
-                    {
-                        float scroll = lineheight * (frame.line_idx - (lineheight / 2));
-                        if (scroll < 0.0f) scroll = 0.0f;
-                        ImGui::SetScrollY(scroll);
-                    }
-                    float scroll = lineheight * (jump_index - (lineheight / 2));
-                    if (scroll < 0.0f) scroll = 0.0f;
-                    ImGui::SetScrollY(scroll);
+                    gui.jump_type = Jump_None;
                 }
 
                 size_t start_idx = (ImGui::GetScrollY() / lineheight);
@@ -2369,10 +2468,6 @@ void Draw()
         ImGui::GetStyle().FrameBorderSize = saved_frame_border_size; // restore saved size
     }
 
-
-    //
-    // program control / gdb console
-    //
     if (gui.show_control)
     {
         ImGui::SetNextWindowBgAlpha(1.0);   // @Imgui: bug where GetStyleColor doesn't respect window opacity
@@ -2381,67 +2476,80 @@ void Draw()
 
         // continue
         bool clicked = false;
-        ImGuiDisabled(prog.running, clicked = ImGui::Button("---"));
-        if (clicked)
+        //ImGuiDisabled(prog.running, clicked = ImGui::Button("---"));
+        clicked = ImGui::Button("---");
+        if (clicked && prog.frame_idx < prog.frames.size())
         {
-            // jump to program counter line
-            gui.jump_to_exec_line = true;
+            gui.jump_type = Jump_Goto;
+            gui.goto_line_idx = prog.frames[prog.frame_idx].line_idx;
         }
 
         // start
         ImGui::SameLine();
-        ImGuiDisabled(prog.running, clicked = ImGui::Button("|>"));
+        //ImGuiDisabled(prog.running, clicked = ImGui::Button("|>"));
+        clicked = ImGui::Button("|>");
         if (clicked || (!prog.running && IsKeyPressed(ImGuiKey_F5)))
         {
             if (!prog.started)
             {
-                const char *cmd = (gdb.has_exec_run_start) ? "-exec-run --start" : "-exec-run";
-                GDB_SendBlocking(cmd);
+                if (gdb.has_exec_run_start)
+                {
+                    GDB_SendBlocking("-exec-run --start");
+                }
+                else
+                {
+                    ExecuteCommand("-exec-run");
+                }
             }
             else
             {
-                GDB_SendBlocking("-exec-continue");
+                ExecuteCommand("-exec-continue");
             }
         }
 
         // send SIGINT 
         ImGui::SameLine();
-        ImGuiDisabled(!prog.running, clicked = ImGui::Button("||"));
+        //ImGuiDisabled(!prog.running, clicked = ImGui::Button("||"));
+        clicked = ImGui::Button("||");
         if (clicked)
         {
-            kill(prog.inferior_process, SIGINT);
+            if (prog.inferior_process != 0)
+                kill(prog.inferior_process, SIGINT);
         }
 
         // step line
         ImGui::SameLine();
-        ImGuiDisabled(prog.running, clicked = ImGui::Button("-->"));
+        //ImGuiDisabled(prog.running, clicked = ImGui::Button("-->"));
+        clicked = ImGui::Button("-->");
         if (clicked)
         {
-            GDB_SendBlocking("-exec-step", false);
+            ExecuteCommand("-exec-step", false);
         }
 
         // step over
         ImGui::SameLine();
-        ImGuiDisabled(prog.running, clicked = ImGui::Button("/\\>"));
+        //ImGuiDisabled(prog.running, clicked = ImGui::Button("/\\>"));
+        clicked = ImGui::Button("/\\>");
         if (clicked)
         {
-            GDB_SendBlocking("-exec-next", false);
+            ExecuteCommand("-exec-next", false);
         }
 
         // step out
         ImGui::SameLine();
-        ImGuiDisabled(prog.running, clicked = ImGui::Button("</\\"));
+        //ImGuiDisabled(prog.running, clicked = ImGui::Button("</\\"));
+        clicked = ImGui::Button("</\\");
         if (clicked)
         {
             if (prog.frame_idx == prog.frames.size() - 1)
             {
                 // GDB error in top frame: "finish" not meaningful in the outermost frame.
                 // emulate visual studios by just running the program  
-                GDB_SendBlocking("-exec-continue");
+                ExecuteCommand("-exec-continue");
             }
             else
             {
-                GDB_SendBlocking("-exec-finish", false);
+                ExecuteCommand("-exec-finish", false);
             }
         }
 
@@ -2524,61 +2632,24 @@ void Draw()
                 phrases.clear();
             }
 
-            const char *keyword_end = strchr(send_command, ' ');
-            if (keyword_end == NULL) keyword_end = send_command + strlen(send_command);
-            String after_space;
-            String modified;
-            String keyword(send_command, keyword_end - send_command);
-            TrimWhitespace(keyword);
-            TrimWhitespace(after_space);
-
-            if (keyword == "step" || keyword == "s")
+            // TODO: might inject MI commands for program control commands to match
+            // their respective button console output
+            String micommand;
+            if (send_command[0] == '-')
             {
-                modified = StringPrintf("-exec-step %s", after_space.c_str());
-            }
-            else if (keyword == "next" || keyword == "n")
-            {
-                modified = StringPrintf("-exec-next %s", after_space.c_str());
-            }
-            else if (keyword == "continue" || keyword == "c" || keyword == "cont")
-            {
-                modified = "-exec-continue";
-            }
-            else if (keyword == "finish")
-            {
-                modified = "-exec-finish";
-            }
-            else if (keyword == "start" && gdb.has_exec_run_start)
-            {
-                modified = "-exec-run --start";
-            }
-            else if (keyword == "run")
-            {
-                modified = "-exec-run";
-            }
-            else if (keyword == "file")
-            {
-                // get symbols of the inferior
-                if (after_space == "")
-                {
-                    // file command with no args, clearing exe 
-                    prog.files.clear();
-                }
-                else
-                {
-                    GDB_LoadInferior(after_space.c_str(), gdb.debug_args.c_str());
-                    modified = "";
-                }
-            }
-
-            if (modified != "")
-            {
-                GDB_SendBlocking(modified.c_str(), false);
+                // this always times out because the prefix ID 
+                // doesn't get returned to us, send non-blocking
+                micommand = StringPrintf("-interpreter-exec mi \"%s\"", 
+                                         send_command);
+                GDB_Send(micommand.c_str()); 
             }
             else
             {
-                GDB_Send(send_command);
+                micommand = StringPrintf("-interpreter-exec console \"%s\"", 
+                                         send_command);
+                GDB_SendBlocking(micommand.c_str());
             }
+
 
             if (!use_last_command)
             {
@@ -2740,130 +2811,26 @@ void Draw()
         ImGui::End();
     }
 
-    //
-    // registers, locals, watch, breakpoints
-    //
+    if (gui.show_locals)
     {
         ImGui::SetNextWindowBgAlpha(1.0);   // @Imgui: bug where GetStyleColor doesn't respect window opacity
-        ImGuiTableFlags flags = ImGuiTableFlags_ScrollX |
-                                ImGuiTableFlags_ScrollY |
-                                ImGuiTableFlags_Resizable |
-                                ImGuiTableFlags_BordersInner;
-
-        if (gui.show_locals)
+        ImGui::SetNextWindowSize(MIN_WINSIZE, ImGuiCond_Once);
+        ImGui::Begin("Locals", &gui.show_locals);
+        if (ImGui::BeginTable("##LocalsTable", 2, TABLE_FLAGS))
         {
-            ImGui::SetNextWindowSize(MIN_WINSIZE, ImGuiCond_Once);
-            ImGui::Begin("Locals", &gui.show_locals);
-            if (ImGui::BeginTable("##LocalsTable", 2, flags))
+            ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthFixed, 125.0f);
+            ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_NoResize);
+            ImGui::TableHeadersRow();
+
+            for (size_t i = 0; i < prog.local_vars.size(); i++)
             {
-                ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthFixed, 125.0f);
-                ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_NoResize);
-                ImGui::TableHeadersRow();
-
-                for (size_t i = 0; i < prog.local_vars.size(); i++)
+                const VarObj &iter = prog.local_vars[i];
+                if (iter.value[0] == '{')
                 {
-                    const VarObj &iter = prog.local_vars[i];
-                    if (iter.value[0] == '{')
-                    {
-                        RecurseExpressionTreeNodes(iter, 0);
-                    }
-                    else
-                    {
-                        ImGui::TableNextRow();
-
-                        ImGui::TableNextColumn();
-                        ImGui::Text("%s", iter.name.c_str());
-
-                        ImGui::TableNextColumn();
-                        ImColor color = (iter.changed)
-                            ? IM_COL32_WIN_RED
-                            : ImGui::GetStyleColorVec4(ImGuiCol_Text);
-                        ImGui::TextColored(color, "%s", iter.value.c_str());
-                    }
+                    RecurseExpressionTreeNodes(iter, 0);
                 }
-
-                ImGui::EndTable();
-            }
-
-            ImGui::End();
-        }
-
-        if (gui.show_callstack)
-        {
-            ImGui::SetNextWindowSize(MIN_WINSIZE, ImGuiCond_Once);
-            ImGui::Begin("Callstack", &gui.show_callstack);
-
-            // draw the thread stack as a dropdown box
-            String thread_preview;
-            if (prog.thread_idx < prog.threads.size())
-            {
-                const Thread &t = prog.threads[prog.thread_idx];
-                thread_preview = StringPrintf("Thread ID %d Group ID %s", 
-                                              (int)t.id, t.group_id.c_str());
-            }
-
-
-            if (ImGui::BeginCombo("Threads", thread_preview.c_str()))
-            {
-                for (size_t i = 0; i < prog.threads.size(); i++)
+                else
                 {
-                    const Thread &t = prog.threads[i];
-                    String str = StringPrintf("Thread ID %d Group ID %s", (int)t.id, t.group_id.c_str());
-                    if (ImGui::Selectable(str.c_str(), prog.thread_idx == i) && prog.thread_idx != i)
-                    {
-                        prog.thread_idx = i;
-                        prog.frame_idx = 0;
-                        QueryFrame(true);
-                    }
-                }
-
-                ImGui::EndCombo();
-            }
-
-            for (size_t i = 0; i < prog.frames.size(); i++)
-            {
-                const Frame &iter = prog.frames[i];
-
-                String file = (iter.file_idx < prog.files.size())
-                    ? prog.files[ iter.file_idx ].filename
-                    : "???";
-
-                // @Windows
-                // get the filename from the full path
-                const char *last_fwd_slash = strrchr(file.c_str(), '/');
-                const char *filename = (last_fwd_slash != NULL) ? last_fwd_slash + 1 : file.c_str();
-
-                tsnprintf(tmpbuf, "%4zu %s##%zu", iter.line_idx + 1, filename, i);
-
-                if (ImGui::Selectable(tmpbuf, i == prog.frame_idx))
-                {
-                    prog.frame_idx = i;
-                    const Frame &frame = prog.frames[prog.frame_idx];
-                    if (frame.file_idx < prog.files.size())
-                    {
-                        prog.file_idx = frame.file_idx;
-                        QueryFrame(true);
-                    }
-
-                }
-            }
-
-            ImGui::End();
-        }
-
-        if (gui.show_registers)
-        {
-            ImGui::SetNextWindowSize(MIN_WINSIZE, ImGuiCond_Once);
-            ImGui::Begin("Registers", &gui.show_registers);
-            if (ImGui::BeginTable("##RegistersTable", 2, flags))
-            {
-                ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthFixed, 125.0f);
-                ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_NoResize);
-                ImGui::TableHeadersRow();
-
-                for (size_t i = 0; i < prog.global_vars.size(); i++)
-                {
-                    const VarObj &iter = prog.global_vars[i];
                     ImGui::TableNextRow();
 
                     ImGui::TableNextColumn();
@@ -2875,241 +2842,472 @@ void Draw()
                         : ImGui::GetStyleColorVec4(ImGuiCol_Text);
                     ImGui::TextColored(color, "%s", iter.value.c_str());
                 }
-
-                ImGui::EndTable();
             }
-            ImGui::End();
+
+            ImGui::EndTable();
         }
 
-        if (gui.show_watch)
+        ImGui::End();
+    }
+
+    if (gui.show_callstack)
+    {
+        ImGui::SetNextWindowSize(MIN_WINSIZE, ImGuiCond_Once);
+        ImGui::Begin("Callstack", &gui.show_callstack);
+
+        // draw the thread stack as a dropdown box
+        String thread_preview;
+        if (prog.thread_idx < prog.threads.size())
         {
-            ImGui::SetNextWindowSize(MIN_WINSIZE, ImGuiCond_Once);
-            ImGui::Begin("Watch", &gui.show_watch);
-            if (ImGui::BeginTable("##WatchTable", 2, flags))
+            const Thread &t = prog.threads[prog.thread_idx];
+            thread_preview = StringPrintf("Thread ID %d Group ID %s", 
+                                          (int)t.id, t.group_id.c_str());
+        }
+
+
+        if (ImGui::BeginCombo("Threads##Callstack", thread_preview.c_str()))
+        {
+            for (size_t i = 0; i < prog.threads.size(); i++)
             {
-                static size_t edit_var_name_idx = -1;
-                static bool focus_name_input = false;
-                ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthFixed, 125.0f);
-                ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_NoResize);
-                ImGui::TableHeadersRow();
-
-                // InputText color
-                ImGui::PushStyleColor(ImGuiCol_FrameBg, IM_COL32(255,255,255,16));
-
-                for (size_t i = 0; i < prog.watch_vars.size(); i++)
+                const Thread &t = prog.threads[i];
+                String str = StringPrintf("Thread ID %d Group ID %s", (int)t.id, t.group_id.c_str());
+                if (ImGui::Selectable(str.c_str(), prog.thread_idx == i) && prog.thread_idx != i)
                 {
-                    VarObj &iter = prog.watch_vars[i];
-                    ImGui::TableNextRow();
+                    prog.thread_idx = i;
+                    prog.frame_idx = 0;
+                    QueryFrame(true);
+                }
+            }
 
-                    ImGui::TableNextColumn();
-                    ImGui::SetNextItemWidth(-FLT_MIN);
+            ImGui::EndCombo();
+        }
 
-                    // is column clicked?
-                    static char editwatch[4096];
-                    bool column_clicked = false;
-                    if (i == edit_var_name_idx)
+        for (size_t i = 0; i < prog.frames.size(); i++)
+        {
+            const Frame &iter = prog.frames[i];
+
+            String file = (iter.file_idx < prog.files.size())
+                ? prog.files[ iter.file_idx ].filename
+                : "???";
+
+            // @Windows
+            // get the filename from the full path
+            const char *last_fwd_slash = strrchr(file.c_str(), '/');
+            const char *filename = (last_fwd_slash != NULL) ? last_fwd_slash + 1 : file.c_str();
+
+            tsnprintf(tmpbuf, "%4zu %s##%zu", iter.line_idx + 1, filename, i);
+
+            if (ImGui::Selectable(tmpbuf, i == prog.frame_idx))
+            {
+                prog.frame_idx = i;
+                const Frame &frame = prog.frames[prog.frame_idx];
+                if (frame.file_idx < prog.files.size())
+                {
+                    prog.file_idx = frame.file_idx;
+                    QueryFrame(true);
+                }
+
+            }
+        }
+
+        ImGui::End();
+    }
+
+    if (gui.show_registers)
+    {
+        ImGui::SetNextWindowSize(MIN_WINSIZE, ImGuiCond_Once);
+        ImGui::Begin("Registers", &gui.show_registers);
+        if (ImGui::BeginTable("##RegistersTable", 2, TABLE_FLAGS))
+        {
+            ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthFixed, 125.0f);
+            ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_NoResize);
+            ImGui::TableHeadersRow();
+
+            for (size_t i = 0; i < prog.global_vars.size(); i++)
+            {
+                const VarObj &iter = prog.global_vars[i];
+                ImGui::TableNextRow();
+
+                ImGui::TableNextColumn();
+                ImGui::Text("%s", iter.name.c_str());
+
+                ImGui::TableNextColumn();
+                ImColor color = (iter.changed)
+                    ? IM_COL32_WIN_RED
+                    : ImGui::GetStyleColorVec4(ImGuiCol_Text);
+                ImGui::TextColored(color, "%s", iter.value.c_str());
+            }
+
+            ImGui::EndTable();
+        }
+        ImGui::End();
+    }
+
+    //
+    // watch: query variables every time the program stops
+    //
+    if (gui.show_watch)
+    {
+        ImGui::SetNextWindowSize(MIN_WINSIZE, ImGuiCond_Once);
+        ImGui::Begin("Watch", &gui.show_watch);
+        if (ImGui::BeginTable("##WatchTable", 2, TABLE_FLAGS))
+        {
+            static size_t edit_var_name_idx = -1;
+            static bool focus_name_input = false;
+            ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_WidthFixed, 125.0f);
+            ImGui::TableSetupColumn("Value", ImGuiTableColumnFlags_NoResize);
+            ImGui::TableHeadersRow();
+
+            // InputText color
+            ImGui::PushStyleColor(ImGuiCol_FrameBg, IM_COL32(255,255,255,16));
+
+            for (size_t i = 0; i < prog.watch_vars.size(); i++)
+            {
+                VarObj &iter = prog.watch_vars[i];
+                ImGui::TableNextRow();
+
+                ImGui::TableNextColumn();
+                ImGui::SetNextItemWidth(-FLT_MIN);
+
+                // is column clicked?
+                static char editwatch[4096];
+                bool column_clicked = false;
+                if (i == edit_var_name_idx)
+                {
+                    if (ImGui::InputText("##edit_watch", editwatch, 
+                                         sizeof(editwatch), 
+                                         ImGuiInputTextFlags_EnterReturnsTrue,
+                                         NULL, NULL))
                     {
-                        if (ImGui::InputText("##edit_watch", editwatch, 
-                                             sizeof(editwatch), 
-                                             ImGuiInputTextFlags_EnterReturnsTrue,
-                                             NULL, NULL))
-                        {
-                            iter = {};
-                            iter.name = editwatch;
-                            QueryWatchlist();
-                            Zeroize(editwatch);
-                            edit_var_name_idx = -1;
-                        }
+                        iter = {};
+                        iter.name = editwatch;
+                        QueryWatchlist();
+                        Zeroize(editwatch);
+                        edit_var_name_idx = -1;
+                    }
 
 
-                        static int delay = 0; // @Imgui: need a delay or else it will auto de-focus
-                        if (focus_name_input)
-                        {
-                            ImGui::SetKeyboardFocusHere(-1);
-                            focus_name_input = false;
-                            delay = 0;
-                        }
-                        else
-                        {
-                            bool deleted = false;
-                            delay++;
-                            bool active = ImGui::IsItemFocused() && (delay < 2 || ImGui::GetIO().WantCaptureKeyboard);
-                            if (IsKeyPressed(ImGuiKey_Delete))
-                            {
-                                prog.watch_vars.erase(prog.watch_vars.begin() + i,
-                                                      prog.watch_vars.begin() + i + 1);
-                                size_t sz = prog.watch_vars.size();
-                                if (sz > 0)
-                                {
-                                    // activate another watch variable input box
-                                    ImGui::SetKeyboardFocusHere(0);
-                                    edit_var_name_idx = (i > sz) ? sz - 1 : i;
-                                    column_clicked = true;
-                                }
-                                else
-                                {
-                                    deleted = true;
-                                } 
-
-                            }
-
-                            if (!active || deleted || IsKeyPressed(ImGuiKey_Escape))
-                            {
-                                edit_var_name_idx = -1;
-                                continue;
-                            }
-                        }
-
+                    static int delay = 0; // @Imgui: need a delay or else it will auto de-focus
+                    if (focus_name_input)
+                    {
+                        ImGui::SetKeyboardFocusHere(-1);
+                        focus_name_input = false;
+                        delay = 0;
                     }
                     else
                     {
-                        // check if table cell is clicked
-                        ImVec2 p0 = ImGui::GetCursorScreenPos();
-                        ImGui::Text("%s", iter.name.c_str());
-                        ImVec2 sz = ImVec2(ImGui::GetColumnWidth(), ImGui::GetCursorScreenPos().y - p0.y);
-                        if (ImGui::IsMouseHoveringRect(p0, p0 + sz) && 
-                            ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+                        bool deleted = false;
+                        delay++;
+                        bool active = ImGui::IsItemFocused() && (delay < 2 || ImGui::GetIO().WantCaptureKeyboard);
+                        if (IsKeyPressed(ImGuiKey_Delete))
                         {
-                            column_clicked = true;
-                        }
-                    }
-
-                    if (column_clicked)
-                    {
-                        tsnprintf(editwatch, "%s", iter.name.c_str());
-                        focus_name_input = true;
-                        edit_var_name_idx = i;
-                    }
-
-
-                    ImGui::TableNextColumn();
-                    ImColor color = (iter.changed)
-                        ? IM_COL32_WIN_RED
-                        : ImGui::GetStyleColorVec4(ImGuiCol_Text);
-                    ImGui::TextColored(color, "%s", iter.value.c_str());
-
-                    if (iter.expr.atoms.size() > 0)
-                    {
-                        RecurseExpressionTreeNodes(iter, 0);
-                    }
-
-                }
-
-                ImGui::TableNextRow();
-                ImGui::TableNextColumn();
-                static char watch[256];
-
-                ImGui::SetNextItemWidth(-FLT_MIN);
-                if (ImGui::InputText("##create_new_watch", watch, 
-                                     sizeof(watch), 
-                                     ImGuiInputTextFlags_EnterReturnsTrue,
-                                     NULL, NULL))
-                {
-                    VarObj add = CreateVarObj(watch);
-                    prog.watch_vars.push_back(add);
-                    QueryWatchlist();
-                    Zeroize(watch);
-                }
-                ImGui::PopStyleColor();
-
-                ImGui::TableNextColumn();
-                ImGui::Text("%s", "");
-                ImGui::EndTable();
-            }
-
-            ImGui::End();
-        }
-
-        if (gui.show_breakpoints)
-        {
-            ImGui::SetNextWindowSize(MIN_WINSIZE, ImGuiCond_Once);
-            ImGui::Begin("Breakpoints", &gui.show_breakpoints);
-            if (ImGui::BeginTable("##BreakpointsTable", 4, flags))
-            {
-                static size_t edit_bkpt_idx = BAD_INDEX;
-                static bool focus_cond_input = false;
-                ImGui::TableSetupColumn("Number");
-                ImGui::TableSetupColumn("Condition", ImGuiTableColumnFlags_WidthFixed, 125.0f);
-                ImGui::TableSetupColumn("Line");
-                ImGui::TableSetupColumn("File", ImGuiTableColumnFlags_NoResize);
-                ImGui::TableHeadersRow();
-
-                // InputText color
-                ImGui::PushStyleColor(ImGuiCol_FrameBg, IM_COL32(255,255,255,16));
-
-                for (size_t i = 0; i < prog.breakpoints.size(); i++)
-                {
-                    Breakpoint &iter = prog.breakpoints[i];
-                    ImGui::TableNextRow();
-
-                    // check if breakpoint doesn't have line (watchpoints)
-                    bool has_line = IsValidLine(iter.line_idx, iter.file_idx);
-
-                    ImGui::TableSetColumnIndex(0);
-                    ImGui::Text("%d", (int)iter.number);
-
-                    ImGui::TableSetColumnIndex(1);
-                    static char editcond[1024];
-                    if (i == edit_bkpt_idx)
-                    {
-                        if (ImGui::InputText("##EditBreakpointCond", 
-                                             editcond, sizeof(editcond), 
-                                             ImGuiInputTextFlags_EnterReturnsTrue,
-                                             NULL, NULL))
-                        {
-                            gdb.echo_next_no_symbol_in_context = true;
-                            tsnprintf(tmpbuf, "-break-condition %d %s", (int)iter.number, editcond);
-                            if (GDB_SendBlocking(tmpbuf, rec))
+                            prog.watch_vars.erase(prog.watch_vars.begin() + i,
+                                                  prog.watch_vars.begin() + i + 1);
+                            size_t sz = prog.watch_vars.size();
+                            if (sz > 0)
                             {
-                                iter.cond = editcond;
+                                // activate another watch variable input box
+                                ImGui::SetKeyboardFocusHere(0);
+                                edit_var_name_idx = (i > sz) ? sz - 1 : i;
+                                column_clicked = true;
                             }
                             else
                             {
-                                tsnprintf(tmpbuf, "-break-condition %d", (int)iter.number);
-                                GDB_SendBlocking(tmpbuf, rec);
-                            }
+                                deleted = true;
+                            } 
 
-                            Zeroize(editcond);
-                            edit_bkpt_idx = BAD_INDEX;
                         }
 
-                        if (focus_cond_input)
+                        if (!active || deleted || IsKeyPressed(ImGuiKey_Escape))
                         {
-                            ImGui::SetKeyboardFocusHere(-1);
-                            focus_cond_input = false;
+                            edit_var_name_idx = -1;
+                            continue;
                         }
                     }
-                    else
+
+                }
+                else
+                {
+                    // check if table cell is clicked
+                    ImVec2 p0 = ImGui::GetCursorScreenPos();
+                    ImGui::Text("%s", iter.name.c_str());
+                    ImVec2 sz = ImVec2(ImGui::GetColumnWidth(), ImGui::GetCursorScreenPos().y - p0.y);
+                    if (ImGui::IsMouseHoveringRect(p0, p0 + sz) && 
+                        ImGui::IsMouseClicked(ImGuiMouseButton_Left))
                     {
-                        // check if table cell is clicked
-                        ImVec2 p0 = ImGui::GetCursorScreenPos();
-                        ImGuiDisabled(!has_line, ImGui::Text("%s", iter.cond.c_str()));
-                        ImVec2 sz = ImVec2(ImGui::GetColumnWidth(), ImGui::GetCursorScreenPos().y - p0.y);
-
-                        if (has_line &&
-                            ImGui::IsMouseHoveringRect(p0, p0 + sz) && 
-                            ImGui::IsMouseClicked(ImGuiMouseButton_Left))
-                        {
-                            tsnprintf(editcond, "%s", iter.cond.c_str());
-                            edit_bkpt_idx = i;
-                            focus_cond_input = true;
-                        }
+                        column_clicked = true;
                     }
-
-                    ImGui::TableSetColumnIndex(2);
-                    if (has_line)
-                        ImGui::Text("%u", (int)(iter.line_idx + 1));
-
-                    ImGui::TableSetColumnIndex(3);
-                    ImGui::Text("%s", (iter.file_idx < prog.files.size()) ? prog.files[iter.file_idx].filename.c_str() : "???");
                 }
 
-                ImGui::PopStyleColor();
-                ImGui::EndTable();
+                if (column_clicked)
+                {
+                    tsnprintf(editwatch, "%s", iter.name.c_str());
+                    focus_name_input = true;
+                    edit_var_name_idx = i;
+                }
+
+
+                ImGui::TableNextColumn();
+                ImColor color = (iter.changed)
+                    ? IM_COL32_WIN_RED
+                    : ImGui::GetStyleColorVec4(ImGuiCol_Text);
+                ImGui::TextColored(color, "%s", iter.value.c_str());
+
+                if (iter.expr.atoms.size() > 0)
+                {
+                    RecurseExpressionTreeNodes(iter, 0);
+                }
+
             }
 
-            ImGui::End();
+            ImGui::TableNextRow();
+            ImGui::TableNextColumn();
+            static char watch[256];
+
+            ImGui::SetNextItemWidth(-FLT_MIN);
+            if (ImGui::InputText("##create_new_watch", watch, 
+                                 sizeof(watch), 
+                                 ImGuiInputTextFlags_EnterReturnsTrue,
+                                 NULL, NULL))
+            {
+                VarObj add = CreateVarObj(watch);
+                prog.watch_vars.push_back(add);
+                QueryWatchlist();
+                Zeroize(watch);
+            }
+            ImGui::PopStyleColor();
+
+            ImGui::TableNextColumn();
+            ImGui::Text("%s", "");
+            ImGui::EndTable();
         }
+
+        ImGui::End();
+    }
+
+
+    //
+    // breakpoints
+    //
+    if (gui.show_breakpoints)
+    {
+        ImGui::SetNextWindowSize(MIN_WINSIZE, ImGuiCond_Once);
+        ImGui::Begin("Breakpoints", &gui.show_breakpoints);
+        if (ImGui::BeginTable("##BreakpointsTable", 5, TABLE_FLAGS))
+        {
+            // TODO: checkbox column to enable/disable breakpoints
+            static size_t edit_bkpt_idx = BAD_INDEX;
+            static bool focus_cond_input = false;
+            bool tmp = true;
+
+            ImGui::TableSetupColumn("");
+            ImGui::TableSetupColumn("Number");
+            ImGui::TableSetupColumn("Condition", ImGuiTableColumnFlags_WidthFixed, 125.0f);
+            ImGui::TableSetupColumn("Line");
+            ImGui::TableSetupColumn("File", ImGuiTableColumnFlags_NoResize);
+
+            ImGui::TableNextRow(ImGuiTableRowFlags_Headers);
+
+            // enable all, disable all, delete all
+            ImGui::TableSetColumnIndex(0);
+            if (ImGui::Button("X##BreakpointDeleteAll") && GDB_SendBlocking("-break-delete --all"))
+                prog.breakpoints.clear();
+
+            ImGui::SameLine();
+            if (ImGui::Checkbox("##BreakpointEnableAll", &tmp) && GDB_SendBlocking("-break-enable --all"))
+                for (Breakpoint &b : prog.breakpoints)
+                    b.enabled = true;
+
+            tmp = false;
+            ImGui::SameLine();
+            if (ImGui::Checkbox("##BreakpointDisableAll", &tmp) && GDB_SendBlocking("-break-disable --all"))
+                for (Breakpoint &b : prog.breakpoints)
+                    b.enabled = false;
+
+
+            ImGui::TableSetColumnIndex(1);
+            ImGui::TableHeader("Number");
+
+            ImGui::TableSetColumnIndex(2);
+            ImGui::TableHeader("Condition");
+
+            ImGui::TableSetColumnIndex(3);
+            ImGui::TableHeader("Line");
+
+            ImGui::TableSetColumnIndex(4);
+            ImGui::TableHeader("File");
+
+            // InputText color
+            ImGui::PushStyleColor(ImGuiCol_FrameBg, IM_COL32(255,255,255,16));
+
+            for (size_t i = 0; i < prog.breakpoints.size(); i++)
+            {
+                Breakpoint &iter = prog.breakpoints[i];
+                ImGui::TableNextRow();
+
+                ImGui::TableSetColumnIndex(0);
+                tsnprintf(tmpbuf, "X##BreakpointDelete%d", (int)i);
+                if (ImGui::Button(tmpbuf))
+                {
+                    tsnprintf(tmpbuf, "-break-delete %zu", iter.number);
+                    if (GDB_SendBlocking(tmpbuf))
+                    {
+                        prog.breakpoints.erase(prog.breakpoints.begin() + i,
+                                               prog.breakpoints.begin() + i + 1);
+                        continue;
+                    }
+                }
+
+                ImGui::SameLine();
+                tsnprintf(tmpbuf, "##BreakpointToggle%d", (int)i);
+                tmp = iter.enabled;
+                if (ImGui::Checkbox(tmpbuf, &tmp))
+                {
+                    if (iter.enabled) 
+                        tsnprintf(tmpbuf, "-break-disable %zu", iter.number);
+                    else
+                        tsnprintf(tmpbuf, "-break-enable %zu", iter.number);
+
+                    if (GDB_SendBlocking(tmpbuf))
+                        iter.enabled = !iter.enabled;
+                }
+
+                // check if breakpoint doesn't have line (watchpoints)
+                bool has_line = IsValidLine(iter.line_idx, iter.file_idx);
+
+                ImGui::TableSetColumnIndex(1);
+                ImGui::Text("%d", (int)iter.number);
+
+                ImGui::TableSetColumnIndex(2);
+                static char editcond[1024];
+                if (i == edit_bkpt_idx)
+                {
+                    if (ImGui::InputText("##EditBreakpointCond", 
+                                         editcond, sizeof(editcond), 
+                                         ImGuiInputTextFlags_EnterReturnsTrue,
+                                         NULL, NULL))
+                    {
+                        gdb.echo_next_no_symbol_in_context = true;
+                        tsnprintf(tmpbuf, "-break-condition %d %s", (int)iter.number, editcond);
+                        if (GDB_SendBlocking(tmpbuf, rec))
+                        {
+                            iter.cond = editcond;
+                        }
+                        else
+                        {
+                            tsnprintf(tmpbuf, "-break-condition %d", (int)iter.number);
+                            GDB_SendBlocking(tmpbuf, rec);
+                        }
+
+                        Zeroize(editcond);
+                        edit_bkpt_idx = BAD_INDEX;
+                    }
+
+                    if (focus_cond_input)
+                    {
+                        ImGui::SetKeyboardFocusHere(-1);
+                        focus_cond_input = false;
+                    }
+
+                    // user clicked outside of textbox
+                    if (ImGui::IsItemDeactivated())
+                        edit_bkpt_idx = BAD_INDEX;
+                }
+                else
+                {
+                    // check if table cell is clicked
+                    ImVec2 p0 = ImGui::GetCursorScreenPos();
+                    ImGuiDisabled(!has_line, ImGui::Text("%s", iter.cond.c_str()));
+                    ImVec2 sz = ImVec2(ImGui::GetColumnWidth(), ImGui::GetCursorScreenPos().y - p0.y);
+
+                    if (has_line &&
+                        ImGui::IsMouseHoveringRect(p0, p0 + sz) && 
+                        ImGui::IsMouseClicked(ImGuiMouseButton_Left))
+                    {
+                        tsnprintf(editcond, "%s", iter.cond.c_str());
+                        edit_bkpt_idx = i;
+                        focus_cond_input = true;
+                    }
+                }
+
+                ImGui::TableSetColumnIndex(3);
+                if (has_line)
+                    ImGui::Text("%u", (int)(iter.line_idx + 1));
+
+                ImGui::TableSetColumnIndex(4);
+                ImGui::Text("%s", (iter.file_idx < prog.files.size()) ? prog.files[iter.file_idx].filename.c_str() : "???");
+            }
+
+            ImGui::PopStyleColor();
+            ImGui::EndTable();
+        }
+
+        ImGui::End();
+    }
+
+    //
+    // threads
+    //
+    if (gui.show_threads)
+    {
+        ImGui::SetNextWindowSize(MIN_WINSIZE, ImGuiCond_Once);
+        ImGui::Begin("Threads", &gui.show_threads);
+        if (ImGui::BeginTable("##BreakpointsTable", 3, TABLE_FLAGS))
+        {
+            ImGui::TableSetupColumn(""); // play all
+            ImGui::TableSetupColumn(""); // pause all
+            ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_NoResize);
+            ImGui::TableNextRow(ImGuiTableRowFlags_Headers);
+
+            // custom headers row, |> and || resume and pause all respectively
+            // @GDB: becomes unresponsive if sending -exec-continue --all with no threads available
+            ImGui::TableSetColumnIndex(0);
+            if (ImGui::Button("|>##ResumeAll") && prog.threads.size() > 0) 
+                GDB_SendBlocking("-exec-continue --all");
+
+            ImGui::TableSetColumnIndex(1);
+            if (ImGui::Button("||##PauseAll"))
+                GDB_SendBlocking("-exec-interrupt --all");
+            
+            ImGui::TableSetColumnIndex(2);
+            ImGui::TableHeader("Name");
+
+            for (size_t i = 0; i < prog.threads.size(); i++)
+            {
+                const Thread &thread = prog.threads[i];
+                ImGui::TableNextRow();
+                
+                bool clicked_run = false;
+                ImGui::TableSetColumnIndex(0);
+                tsnprintf(tmpbuf, "|>##Thread%i", (int)i);
+                ImGuiDisabled(thread.running, clicked_run = ImGui::Button(tmpbuf));
+                if (clicked_run)
+                {
+                    tsnprintf(tmpbuf, "-exec-continue --thread %d", (int)thread.id);
+                    GDB_SendBlocking(tmpbuf);
+                }
+
+                bool clicked_pause = false;
+                ImGui::TableSetColumnIndex(1);
+                tsnprintf(tmpbuf, "||##Thread%i", (int)i);
+                ImGuiDisabled(!thread.running, clicked_pause = ImGui::Button(tmpbuf));
+                if (clicked_pause)
+                {
+                    tsnprintf(tmpbuf, "-exec-interrupt --thread %d", (int)thread.id); 
+                    GDB_SendBlocking(tmpbuf);
+                }
+
+                ImGui::TableSetColumnIndex(2);
+                ImGui::Text("Thread ID %d Group ID %s", 
+                            (int)thread.id, thread.group_id.c_str());
+            }
+
+            // @ImGui:: when double clicking a column separator to resize to fit, 
+            // the resize messes up with a button column header. Draw two invisible buttons
+            ImGui::EndTable();
+        }
+
+        ImGui::End();
     }
 }
 
@@ -3372,6 +3570,10 @@ int main(int argc, char **argv)
     if (gdb.filename != "" && 
         !GDB_StartProcess(gdb.filename, ""))
     {
+
+        //pthread_t peethread;
+        //auto Func = [](void*) -> void* { GDB_StartProcess(gdb.filename, ""); return NULL; };
+        //int rc = pthread_create(&peethread, NULL, Func, NULL);
         gdb.filename = "";
     }
 
@@ -3501,11 +3703,13 @@ int main(int argc, char **argv)
 
             gui.show_callstack  = ("1" == GetValue("Callstack"  , "1"));
             gui.show_locals     = ("1" == GetValue("Locals"     , "1"));
-            gui.show_registers  = ("1" == GetValue("Registers"  , "0"));
             gui.show_watch      = ("1" == GetValue("Watch"      , "1"));
             gui.show_control    = ("1" == GetValue("Control"    , "1"));
             gui.show_breakpoints= ("1" == GetValue("Breakpoints", "1"));
             gui.show_source     = ("1" == GetValue("Source"     , "1"));
+            gui.show_source     = ("1" == GetValue("Source"     , "1"));
+            gui.show_registers  = ("1" == GetValue("Registers"  , "0"));
+            gui.show_threads    = ("1" == GetValue("Threads"    , "0"));
 
             const auto ToString = [](float value) -> String { return StringPrintf("%f", value); };
             gui.font_filename   = GetValue("FontFilename", "");
@@ -3643,6 +3847,7 @@ int main(int argc, char **argv)
         fprintf(f, "Control=%d\n",  gui.show_control);
         fprintf(f, "Source=%d\n",   gui.show_source);
         fprintf(f, "Breakpoints=%d\n", gui.show_breakpoints);
+        fprintf(f, "Threads=%d\n", gui.show_threads);
         fprintf(f, "FontFilename=%s\n", gui.font_filename.c_str());
         fprintf(f, "FontSize=%.0f\n", gui.font_size);
 
