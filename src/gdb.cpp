@@ -1083,6 +1083,13 @@ static size_t GDB_SendBlockingInternal(const char *cmd, bool remove_after)
                                 {
                                     // convert error record to GDB console output record
                                     String errmsg = GDB_ExtractValue("msg", iter.rec);
+
+                                    // replace bad description of this error
+                                    static const char *needle = "No source file named";
+                                    size_t idx = errmsg.find(needle);
+                                    if (idx < errmsg.size())
+                                        errmsg.replace(idx, strlen(needle), "executable doesn't reference file");
+
                                     errmsg = "&\"GDB MI Error: " + errmsg + "\\n\"\n";
                                     WriteToConsoleBuffer(errmsg.data(), errmsg.size());
                                 }

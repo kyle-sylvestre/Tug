@@ -10,6 +10,7 @@ Control=1
 Breakpoints=0
 Threads=0
 Registers=0
+DirectoryViewer=1
 FontFilename=
 FontSize=
 WindowTheme=DarkBlue

@@ -17,6 +17,7 @@
 #include "gdb.h"
 #include "default_ini.h"
 #include <fstream>
+#include <functional>
 
 //
 // yoinked from glfw_example_opengl2
@@ -300,6 +301,7 @@ struct GUI
     bool show_watch;
     bool show_breakpoints;
     bool show_threads;
+    bool show_directory_viewer;
     WindowTheme window_theme = WindowTheme_DarkBlue;
 };
 
@@ -1658,6 +1660,7 @@ void Draw()
             ImGui::MenuItem("Watch##Checkbox", "", &gui.show_watch);
             ImGui::MenuItem("Breakpoints##Checkbox", "", &gui.show_breakpoints);
             ImGui::MenuItem("Threads##Checkbox", "", &gui.show_threads);
+            ImGui::MenuItem("Directory Viewer##Checkbox", "", &gui.show_directory_viewer);
 
             ImGui::EndMenu();
         }
@@ -2677,9 +2680,17 @@ void Draw()
             // respective button console output
 
             String micommand;
-            if (keyword == "file")
+            if (keyword == "file" && rest != "")
             {
-                GDB_LoadInferior(rest.c_str(), gdb.debug_args.c_str());
+                if (rest != "")
+                {
+                    GDB_LoadInferior(rest.c_str(), gdb.debug_args.c_str());
+                }
+                else
+                {
+                    gdb.debug_filename = "";
+                    micommand = send_command;
+                }
             }
             else if (keyword == "step" || keyword == "s")
             {
@@ -2697,7 +2708,6 @@ void Draw()
             {
                 micommand = send_command;
             }
-
 
             if (micommand == "")
             {
@@ -3377,6 +3387,133 @@ void Draw()
 
         ImGui::End();
     }
+
+    if (gui.show_directory_viewer)
+    {
+        // treenode directory viewer
+        ImGui::SetNextWindowSize(MIN_WINSIZE, ImGuiCond_Once);
+        ImGui::Begin("Directory Viewer", &gui.show_directory_viewer);
+
+        struct FileEntry
+        {
+            unsigned char dirent_d_type; // dirent.d_type
+            String filename;
+            Vector<FileEntry> entries;
+            bool queried;
+            FileEntry(String fn, unsigned char d_type) { dirent_d_type = d_type; filename = fn; queried = false; }
+        };
+
+        static FileEntry root = FileEntry(".", 0);
+        static FileEntry *query_output = &root;
+        static String query_dir = ".";
+
+        // TODO: is there a cleaner way to recurse lambdas
+        typedef std::function<void(FileEntry &root, String &path)> RecurseFilesFn;
+        static RecurseFilesFn RecurseFiles;
+        int id = 0;
+        const RecurseFilesFn _RecurseFiles = [&id, &tmpbuf](FileEntry &parent, String &path)
+        {
+            for (FileEntry &ent : parent.entries)
+            {
+                if (ent.dirent_d_type & DT_DIR)
+                {
+                    if (ImGui::TreeNode(ent.filename.c_str()))
+                    {
+                        if (!ent.queried)
+                        {
+                            query_output = &ent;
+                            query_dir = path + "/" + ent.filename;
+                        }
+                        else if (ent.entries.size() > 0)
+                        {
+                            String next = path + "/" + ent.filename;
+                            RecurseFiles(ent, next);
+                        }
+
+                        ImGui::TreePop();
+                    }
+                }
+                else
+                {
+                    tsnprintf(tmpbuf, "%s##%d", ent.filename.c_str(), id++); 
+                    if (ImGui::Selectable(tmpbuf))
+                    {
+                        String relpath = path + "/" + ent.filename;
+                        char abspath[PATH_MAX];
+                        char *rc = realpath(relpath.c_str(), abspath);
+                        if (rc == NULL)
+                        {
+                            PrintErrorf("realpath %s\n", strerror(errno));
+                        }
+                        else
+                        {
+                            size_t idx = FindOrCreateFile(abspath);
+                            LoadFile(prog.files[idx]);
+                            prog.file_idx = idx;
+                        }
+                    }
+                }
+            }
+        };
+
+        RecurseFiles = _RecurseFiles;
+        RecurseFiles(root, root.filename);
+
+        if (query_output != NULL)
+        {
+            query_output->entries.clear();
+            query_output->queried = true;
+            struct dirent *entry = NULL;
+            DIR *dir = NULL;
+
+            dir = opendir(query_dir.c_str());
+            if (dir == NULL) 
+            {
+                PrintErrorf("opendir on %s: %s\n", query_dir.c_str(), strerror(errno));
+            }
+            else
+            {
+                // TODO: lstat then S_ISREG and S_ISDIR macros for when d_type isn't supported
+                while (NULL != (entry = readdir(dir))) 
+                {
+                    if (0 == strcmp(".", entry->d_name) ||
+                        0 == strcmp("..", entry->d_name))
+                        continue; // skip current and parent dir
+
+                    // insert directories before files, all sorted a-z
+                    bool entry_dir = (entry->d_type & DT_DIR);
+                    size_t insert_idx = query_output->entries.size();
+                    for (size_t i = 0; i < query_output->entries.size(); i++)
+                    {
+                        const FileEntry &iter = query_output->entries[i];
+                        bool iter_dir = (iter.dirent_d_type & DT_DIR);
+                        if (entry_dir == iter_dir)
+                        {
+                            if (-1 == strcmp(entry->d_name, iter.filename.c_str()))
+                            {
+                                insert_idx = i;
+                                break;
+                            }
+                        }
+                        else if (entry_dir && !iter_dir)
+                        {
+                            insert_idx = i;
+                            break;
+                        }
+                    }
+
+                    query_output->entries.insert(query_output->entries.begin() + insert_idx,
+                                                 FileEntry(entry->d_name, entry->d_type) );
+                }
+
+                closedir(dir); dir = NULL;
+            }
+
+            query_output = NULL;
+        }
+
+        ImGui::End();
+    }
 }
 
 bool VerifyFileExecutable(const char *filename)
@@ -3769,6 +3906,7 @@ int main(int argc, char **argv)
                 return result;
             };
 
+            gui.show_directory_viewer = ("1" == GetValue("DirectoryViewer", "1"));
             gui.show_callstack  = ("1" == GetValue("Callstack"  , "1"));
             gui.show_locals     = ("1" == GetValue("Locals"     , "1"));
             gui.show_watch      = ("1" == GetValue("Watch"      , "1"));
@@ -3916,6 +4054,7 @@ int main(int argc, char **argv)
         fprintf(f, "Source=%d\n",   gui.show_source);
         fprintf(f, "Breakpoints=%d\n", gui.show_breakpoints);
         fprintf(f, "Threads=%d\n", gui.show_threads);
+        fprintf(f, "DirectoryViewer=%d\n", gui.show_directory_viewer);
         fprintf(f, "FontFilename=%s\n", gui.font_filename.c_str());
         fprintf(f, "FontSize=%.0f\n", gui.font_size);
 
