@@ -1,5 +1,5 @@
 # Tug
-GDB frontend made with Dear Imgui
+GDB frontend made with Dear ImGui
 
 ![image](https://user-images.githubusercontent.com/25188464/160298425-a5267c22-89fc-4d60-b93a-cd6dd9098924.png)
 
@@ -10,20 +10,22 @@ GDB frontend made with Dear Imgui
 ![image](https://user-images.githubusercontent.com/25188464/171760180-31b82e33-e3db-4731-ad72-208ed8fcd104.png)
 
 # Building the Project
-1. Install GLFW3 from your package system</br>
-   **Debian:** sudo apt-get install libglfw3 libglfw3-dev</br>
-   **Arch:** sudo pacman -S glfw </br>
-   **Fedora:** sudo dnf install glfw glfw-devel </br>
 
-2. If unable to find package, compile from git repo </br>
+1. Install GLFW3, gcc, and gdb </br>
+   **Debian:** sudo apt-get install libglfw3 libglfw3-dev gcc gdb </br>
+   **Arch:** sudo pacman -S glfw gcc gdb </br>
+   **Fedora:** sudo dnf install glfw glfw-devel gcc gdb </br>
+
+3. If unable to find GLFW, compile from git repo </br>
     https://github.com/glfw/glfw </br>
     https://www.glfw.org/docs/latest/compile.html </br>
     **NOTE**: linker flag -lglfw is the shared library, -lglfw3 is the static library </br>
     
-3. Run command "make DEBUG=0", output in generated build_release directory
+4. Run command "make DEBUG=0", output in generated build_release directory
 
-# Debuging an Executable
-have either gdb or gdb-multiarch installed
+# Debugging an Executable
+
+**NOTE**: Tug defaults to the gdb filename returned by the command "which gdb" </br>
 
 1. run program from command line</br>
     tug --exe [program to debug filename] --gdb [gdb filename]</br>
