@@ -411,26 +411,49 @@ bool LoadFile(File &file)
         }
         else
         {
-            char *line = NULL;
-            size_t len = 0;
-            int num = 1;
-            ssize_t chars_read = 0;
-            while (-1 != (chars_read = getline(&line, &len, f)))
+            long lfilesize;
+            if (0 == fseek(f, 0, SEEK_END) &&
+                0 < (lfilesize = ftell(f)) &&
+                0 == fseek(f, 0, SEEK_SET))
             {
-                file.lines.push_back( StringPrintf("%-4d %s", num, line) );
-                num += 1;
+                size_t filesize = (size_t)lfilesize;
+                file.data.resize(filesize);
+                if (0 < fread((void*)file.data.data(), 1, filesize, f))
+                {
+                    // move file up so that the data will be packed
+                    // lines will be accessed by offsetting into one big buf
+                    char *fd = (char*)file.data.data();
+                    size_t i = 0;
+                    char *lst = fd;
+                    size_t num_trunc = 0;
+
+                    while (i < filesize)
+                    {
+                        char c0 = fd[i];
+                        char c1 = (i + 1 < filesize) ? fd[i + 1] : '\0';
+                        size_t end = (c0 == '\n') ? 1 :
+                                     (c0 == '\r' && c1 == '\n') ? 2 :
+                                     (c0 == '\r') ? 1 : 0; // TODO: any there any with just '\r' nowadays?
+
+                        if (end != 0)
+                        {
+                            char *dest = lst - num_trunc;
+                            memmove(dest, lst, (fd + i) - lst);
+                            file.lines.push_back(dest - fd);
+                            num_trunc += end;
+                            i += end;
+                            lst = fd + i;
+                        }
+                        else
+                        {
+                            i++;
+                        }
+                    }
+
+                    file.data.resize(file.data.size() - num_trunc);
+                }
             }
 
-            if (errno != 0)
-            {
-                PrintErrorf("getline %s\n", strerror(errno));
-            }
-            else
-            {
-                result = true;
-            }
-
-            free(line); line = NULL;
             fclose(f); f = NULL;
         }
 
@@ -1354,6 +1377,27 @@ bool IsValidLine(size_t line_idx, size_t file_idx)
 
     return result;
 }
+
+String GetLine(const File &f, size_t line_idx)
+{
+    String result;
+    if (line_idx < f.lines.size())
+    {
+        size_t num_chars = 0;
+        if (line_idx == (f.lines.size() - 1))
+        {
+            num_chars = f.data.size() - f.lines[line_idx];
+        }
+        else
+        {
+            num_chars = f.lines[line_idx + 1] - f.lines[line_idx];
+        }
+
+        result.assign(f.data.data() + f.lines[line_idx], num_chars);
+    }
+
+    return result;
+}
  
 void Draw()
 {
@@ -1626,7 +1670,7 @@ void Draw()
                pick_gdb_file = false;
             }
 
-            if (ImGui::Button("Start##Debug Program Menu"))
+            if (ImGui::Button("Set##Debug Program Menu"))
             {
                 if (gdb.filename != gdb_filename)
                 {
@@ -1642,7 +1686,9 @@ void Draw()
                     GDB_StartProcess(gdb_filename, gdb_args);
                 }
 
-                if (gdb.spawned_pid != 0 && GDB_LoadInferior(debug_filename, debug_args))
+                if (gdb.spawned_pid != 0 && 
+                    GDB_SetInferiorExe(debug_filename) &&
+                    GDB_SetInferiorArgs(debug_args))
                     ImGui::CloseCurrentPopup(); 
             }
 
@@ -1967,7 +2013,7 @@ void Draw()
                 for (size_t i = gui.source_found_line_idx; 
                      i < this_file.lines.size(); i += dir)
                 {
-                    const String &line = this_file.lines[i];
+                    const String &line = GetLine(this_file, i);
                     if ( NULL != strstr(line.c_str(), gui.source_search_keyword) )
                     {
                         gui.source_found_line = true;
@@ -2070,15 +2116,15 @@ void Draw()
                 }
                 ImGui::SetCursorPosY(start_idx * lineheight + start_curpos_y);
 
-                for (size_t i = start_idx; i < end_idx; i++)
+                for (size_t line_idx = start_idx; line_idx < end_idx; line_idx++)
                 {
-                    const String &line = file.lines[i];
+                    const String &line = GetLine(file, line_idx);
 
                     bool is_breakpoint_on_line = false;
                     bool is_breakpoint_disabled = false;
                     for (Breakpoint &iter : prog.breakpoints)
                     {
-                        if (iter.line_idx == i && iter.file_idx == prog.file_idx)
+                        if (iter.line_idx == line_idx && iter.file_idx == prog.file_idx)
                         {
                             is_breakpoint_on_line = true;
                             is_breakpoint_disabled |= !iter.enabled;
@@ -2117,7 +2163,7 @@ void Draw()
                     ImGui::PushStyleColor(ImGuiCol_CheckMark, 
                                           bkpt_active_color.Value);        
 
-                    tsnprintf(tmpbuf, "##bkpt%d", (int)i); 
+                    tsnprintf(tmpbuf, "##bkpt%zu", line_idx); 
                     if (ImGui::RadioButton(tmpbuf, is_breakpoint_on_line))
                     {
                         if (is_breakpoint_on_line)
@@ -2125,7 +2171,7 @@ void Draw()
                             for (size_t b = 0; b < prog.breakpoints.size(); b++)
                             {
                                 Breakpoint &iter = prog.breakpoints[b];
-                                if (iter.line_idx == i && iter.file_idx == prog.file_idx)
+                                if (iter.line_idx == line_idx && iter.file_idx == prog.file_idx)
                                 {
                                     if (!iter.enabled)
                                     {
@@ -2153,7 +2199,7 @@ void Draw()
                         {
                             // create breakpoint
                             tsnprintf(tmpbuf, "-break-insert --source \"%s\" --line %d", 
-                                      file.filename.c_str(), (int)(i + 1));
+                                      file.filename.c_str(), (int)(line_idx + 1));
                             if (GDB_SendBlocking(tmpbuf, rec))
                             {
                                 Breakpoint bkpt = ExtractBreakpoint(rec);
@@ -2176,19 +2222,20 @@ void Draw()
 
                     ImGui::SameLine();
                     ImVec2 textstart = ImGui::GetCursorPos();
-                    if (in_active_frame_file && i == prog.frames[prog.frame_idx].line_idx)
+                    tsnprintf(tmpbuf, "%-4zu %s", line_idx + 1, line.c_str());
+                    if (in_active_frame_file && line_idx == prog.frames[prog.frame_idx].line_idx)
                     {
-                        ImGui::Selectable(line.c_str(), !prog.running);
+                        ImGui::Selectable(tmpbuf, !prog.running);
                     }
                     else
                     {
-                        if (gui.source_search_bar_open && i == gui.source_found_line_idx)
+                        if (gui.source_search_bar_open && line_idx == gui.source_found_line_idx)
                         {
-                            ImGui::TextColored(ImColor(1.0f, 1.0f, 0.0f, 1.0f).Value, "%s", line.c_str());
+                            ImGui::TextColored(ImColor(1.0f, 1.0f, 0.0f, 1.0f).Value, "%s", tmpbuf);
                         }
                         else
                         {
-                            ImGui::Text("%s", line.c_str());
+                            ImGui::Text("%s", tmpbuf);
                         }
                     }
 
@@ -2254,13 +2301,13 @@ void Draw()
 
                                         if (hover_word_idx != word_idx || 
                                             hover_char_idx != char_idx || 
-                                            hover_line_idx != i || 
+                                            hover_line_idx != line_idx || 
                                             hover_num_frames != prog.frames.size() || 
                                             hover_frame_idx != prog.frame_idx)
                                         {
                                             hover_word_idx = word_idx;
                                             hover_char_idx = char_idx;
-                                            hover_line_idx = i;
+                                            hover_line_idx = line_idx;
                                             hover_num_frames = prog.frames.size();
                                             hover_frame_idx = prog.frame_idx;
                                             String word(line.data() + word_idx, char_idx - word_idx);
@@ -2382,7 +2429,8 @@ void Draw()
                                 inst_left = gui.line_disasm_source[src_idx].num_instructions;
                                 if (lidx < file.lines.size())
                                 {
-                                    ImGui::Text("%s", file.lines[lidx].c_str());
+                                    String s = GetLine(file, lidx);
+                                    ImGui::Text("%s", s.c_str());
                                 }
 
                                 src_idx++;
@@ -2672,6 +2720,12 @@ void Draw()
                     result = str.substr(0, space_idx);
                     str = str.substr(space_idx + 1);
                 }
+                else
+                {
+                    // return whole str as word
+                    result = str;
+                    str = "";
+                }
 
                 return result;
             };
@@ -2685,25 +2739,13 @@ void Draw()
             String micommand;
             if (keyword == "file")
             {
-                tsnprintf(tmpbuf, "-file-exec-and-symbols \"%s\"", rest.c_str());
-                if (GDB_SendBlocking(tmpbuf))
-                {
-                    PrintMessagef("set debug program: %s\n", rest.c_str());
-                    gdb.debug_filename = rest;
-                }
+                GDB_SetInferiorExe(rest);
             }
             else if (keyword == "set")
             {
                 String set_target = PopFrontWord(rest);
                 if (set_target == "args")
-                {
-                    tsnprintf(tmpbuf, "-exec-arguments %s", rest.c_str());
-                    if (GDB_SendBlocking(tmpbuf))
-                    {
-                        PrintMessagef("set args %s\n", rest.c_str());
-                        gdb.debug_args = rest;
-                    }
-                }
+                    GDB_SetInferiorArgs(rest);
             }
             else if (keyword == "step" || keyword == "s")
             {
@@ -3822,7 +3864,7 @@ int main(int argc, char **argv)
 
     if (gdb.spawned_pid != 0 && 
         gdb.debug_filename != "" && 
-        !GDB_LoadInferior(gdb.debug_filename, ""))
+        !GDB_SetInferiorExe(gdb.debug_filename))
     {
         gdb.debug_filename = "";
     }

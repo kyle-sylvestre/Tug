@@ -274,6 +274,34 @@ bool GDB_StartProcess(String gdb_filename, String gdb_args)
     return true;
 }
 
+bool GDB_SetInferiorExe(String filename)
+{
+    bool result = false;
+    String s = StringPrintf("-file-exec-and-symbols \"%s\"", filename.c_str());
+    if (GDB_SendBlocking(s.c_str()))
+    {
+        PrintMessagef("set debug exe %s\n", filename.c_str());
+        gdb.debug_filename = filename;
+        result = true;
+    }
+
+    return result;
+}
+
+bool GDB_SetInferiorArgs(String args)
+{
+    bool result = false;
+    String s = StringPrintf("-exec-arguments %s", args.c_str());
+    if (GDB_SendBlocking(s.c_str()))
+    {
+        PrintMessagef("set args %s\n", args.c_str());
+        gdb.debug_args = args;
+        result = true;
+    }
+
+    return result;
+}
+
 bool GDB_LoadInferior(String filename, String args)
 {
     bool result = false;
@@ -989,14 +1017,20 @@ bool GDB_Send(const char *cmd)
         ssize_t written = write(gdb.fd_out_write, cmd, cmdsize);
         if (written != (ssize_t)cmdsize)
         {
-            PrintErrorf("GDB_Send: %s\n", strerror(errno));
+            if (written < 0)
+                PrintErrorf("GDB_Send: %s\n", strerror(errno));
+            else
+                PrintError("GDB_Send truncate\n");
         }
         else
         {
-            ssize_t newline_written = write(gdb.fd_out_write, "\n", 1);
-            if (newline_written != 1)
+            written = write(gdb.fd_out_write, "\n", 1);
+            if (written != 1)
             {
-                PrintErrorf("GDB_Send: %s\n", strerror(errno));
+                if (written < 0)
+                    PrintErrorf("GDB_Send: %s\n", strerror(errno));
+                else
+                    PrintError("GDB_Send truncate\n");
             }
             else
             {
@@ -1036,6 +1070,7 @@ static size_t GDB_SendBlockingInternal(const char *cmd, bool remove_after)
                 {
                     PrintErrorf("sem_timedwait: %s\n", strerror(errno));
                 }
+
                 break;
             }
             else
@@ -1084,7 +1119,7 @@ static size_t GDB_SendBlockingInternal(const char *cmd, bool remove_after)
                                     // convert error record to GDB console output record
                                     String errmsg = GDB_ExtractValue("msg", iter.rec);
 
-                                    // replace bad description of this error
+                                    // replace bad description of when an executable doesn't reference a sourcefile
                                     static const char *needle = "No source file named";
                                     size_t idx = errmsg.find(needle);
                                     if (idx < errmsg.size())
@@ -1152,7 +1187,6 @@ static void GDB_ProcessBlock(char *block, size_t blocksize)
     size_t block_idx = 0;
     while (block_idx < blocksize)
     {
-
         // parse the optional id preceding the record
         uint32_t this_record_id = 0;
         while (block_idx < blocksize)

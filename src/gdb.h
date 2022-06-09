@@ -56,7 +56,9 @@ inline String GetAtomString(Span s, const Record &rec)
 
 bool GDB_StartProcess(String gdb_filename, String gdb_args);
 
-bool GDB_LoadInferior(String filename, String args);
+bool GDB_SetInferiorExe(String filename);
+
+bool GDB_SetInferiorArgs(String args);
 
 void GDB_Shutdown();
 

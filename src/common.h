@@ -200,8 +200,9 @@ struct DisassemblySourceLine
 
 struct File
 {
-    Vector<String> lines;
+    Vector<size_t> lines;   // offset to line within data
     String filename;
+    String data;            // file chars excluding line endings
 };
 
 #define INVALID_BLOCK_STRING_IDX 0
