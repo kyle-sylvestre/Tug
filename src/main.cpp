@@ -1434,23 +1434,22 @@ void Draw()
                 comma = &src[ parse_rec.buf.size() ];
 
             // skip MI prefix char
-            String prefix_word;
+            String record_action;
             char prefix = '\0';
             if (parse_rec.buf.size() > 0)
             {
-                const char *start = src + 1;
-                prefix_word.assign(start, comma - start);
                 prefix = parse_rec.buf[0];
+                record_action = GDB_GetRecordAction(parse_rec);
             }
 
             if (prefix == PREFIX_ASYNC0)
             {
-                if (prefix_word == "breakpoint-created")
+                if (record_action == "breakpoint-created")
                 {
                     // breakpoints created from console ex: "b main.cpp:14"
                     prog.breakpoints.push_back(ExtractBreakpoint(parse_rec));
                 }
-                else if (prefix_word == "breakpoint-modified")
+                else if (record_action == "breakpoint-modified")
                 {
                     // breakpoints created from console ex: "b main.cpp:14"
                     Breakpoint b = ExtractBreakpoint(parse_rec);
@@ -1463,7 +1462,7 @@ void Draw()
                         }
                     }
                 }
-                else if (prefix_word == "breakpoint-deleted")
+                else if (record_action == "breakpoint-deleted")
                 {
                     // breakpoints deleted from console ex: "d 1"
                     size_t id = (size_t)GDB_ExtractInt("id", parse_rec);
@@ -1478,11 +1477,11 @@ void Draw()
                         }
                     }
                 }
-                else if (prefix_word == "thread-group-started")
+                else if (record_action == "thread-group-started")
                 {
                     prog.inferior_process = (pid_t)GDB_ExtractInt("pid", parse_rec);
                 }
-                else if (prefix_word == "thread-group-exited")
+                else if (record_action == "thread-group-exited")
                 {
                     String group_id = GDB_ExtractValue("id", parse_rec);
                     for (size_t end = prog.threads.size(); end > 0; end--)
@@ -1496,7 +1495,7 @@ void Draw()
                         }
                     }
                 }
-                else if (prefix_word == "thread-selected")
+                else if (record_action == "thread-selected")
                 {
                     size_t tid = (size_t)GDB_ExtractInt("id", parse_rec);
                     for (size_t t = 0; t < prog.threads.size(); t++)
@@ -1514,7 +1513,7 @@ void Draw()
                         }
                     }
                 }
-                else if (prefix_word == "thread-created")
+                else if (record_action == "thread-created")
                 {
                     Thread t = {};
                     t.id = (size_t)GDB_ExtractInt("id", parse_rec);
@@ -1524,7 +1523,7 @@ void Draw()
                     if (t.id != 0 && t.group_id != "")
                         prog.threads.push_back(t);
                 }
-                else if (prefix_word == "thread-exited")
+                else if (record_action == "thread-exited")
                 {
                     size_t id = (size_t)GDB_ExtractInt("id", parse_rec);
                     String group_id = GDB_ExtractValue("group-id", parse_rec);
@@ -1540,7 +1539,7 @@ void Draw()
                     }
                 }
             }
-            else if (prefix_word == "running")
+            else if (record_action == "running")
             {
                 prog.running = true;
                 String thread = GDB_ExtractValue("thread-id", parse_rec);
@@ -1557,7 +1556,7 @@ void Draw()
                             t.running = true;
                 }
             }
-            else if (prefix_word == "stopped")
+            else if (record_action == "stopped")
             {
                 // TODO: thread-id vs stopped-threads
                 prog.frame_idx = 0;

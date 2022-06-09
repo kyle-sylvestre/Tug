@@ -1082,63 +1082,21 @@ static size_t GDB_SendBlockingInternal(const char *cmd, bool remove_after)
                 for (size_t i = 0; i < prog.num_recs; i++)
                 {
                     RecordHolder &iter = prog.read_recs[i];
-                    const char *bufstr = iter.rec.buf.c_str();
-
                     if (!iter.parsed && iter.rec.id == this_record_id)
                     {
-                        if (NULL != strstr(bufstr, "^error"))
+                        if ("error" == GDB_GetRecordAction(iter.rec))
                         {
-                            if (NULL != strstr(bufstr, "optimized out"))
-                            {
-                                // @GDB: match up results for optimized out variables
-                                // 1. -data-evaluate-expression argv --> ^done,value="<optimized out>"
-                                // 2. -data-evaluate-expression argv[0] --> ^error,msg="value has been optimized out"
-
-                                const Record OPTIMIZED_OUT_FIX = {
-                                    this_record_id,
-                                    {
-                                        { Atom_Array, {0, 0}, {1,1} }, // root atom
-                                        { Atom_String, /*value*/{6, 5}, /*<optimized out>*/{13, 15} }
-                                    },
-                                    "^done,value=\"<optimized out>\""
-                                };
-
-                                prog.num_recs++;
-                                RecordHolder &last = prog.read_recs[ prog.num_recs - 1 ];
-                                last.rec = OPTIMIZED_OUT_FIX;
-                                last.parsed = false;
-                            }
-                            else 
-                            {
-                                // don't print error on watch variables not in scope (no symbol "xyz" in current context)
-                                // don't print error on hovering mouse over a type name
-                                if (NULL == strstr(bufstr, "in current context.") ||
-                                    gdb.echo_next_no_symbol_in_context)
-                                    //NULL == strstr(bufstr, "Attempt to use a type name as an expression"))
-                                {
-                                    // convert error record to GDB console output record
-                                    String errmsg = GDB_ExtractValue("msg", iter.rec);
-
-                                    // replace bad description of when an executable doesn't reference a sourcefile
-                                    static const char *needle = "No source file named";
-                                    size_t idx = errmsg.find(needle);
-                                    if (idx < errmsg.size())
-                                        errmsg.replace(idx, strlen(needle), "executable doesn't reference file");
-
-                                    errmsg = "&\"GDB MI Error: " + errmsg + "\\n\"\n";
-                                    WriteToConsoleBuffer(errmsg.data(), errmsg.size());
-                                }
-
-                                iter.parsed = true;
-                                return BAD_INDEX;
-                            }
+                            iter.parsed = true;
+                            result = BAD_INDEX;
                         }
                         else
                         {
                             iter.parsed = remove_after;
                             result = i;
-                            found = true;
                         }
+
+                        found = true;
+                        break;
                     }
                 }
             }
@@ -1287,10 +1245,25 @@ static void GDB_ProcessBlock(char *block, size_t blocksize)
     }
 }
 
+String GDB_GetRecordAction(const Record &rec)
+{
+    String result;
+    size_t comma = 0;
+    if (rec.buf.size() > 0 &&
+        rec.buf.size() > (comma = rec.buf.find(',')) )
+    {
+        size_t start = 1;
+        result = rec.buf.substr(start, comma - start);
+    }
+
+    return result;
+}
+
 void GDB_GrabBlockData()
 {
     pthread_mutex_lock(&gdb.modify_block);
 
+    // process the newline terminated records read from the other thread
     for (Span &iter : gdb.block_spans)
     {
         GDB_ProcessBlock(gdb.block_data + iter.index, iter.length);
@@ -1298,5 +1271,61 @@ void GDB_GrabBlockData()
 
     gdb.block_spans.clear();
 
+    // process any errors found
+    size_t last_num_recs = 0;
+    if (prog.num_recs < last_num_recs)
+        last_num_recs = 0;
+
+    for (size_t i = last_num_recs; i < prog.num_recs; i++)
+    {
+        RecordHolder &iter = prog.read_recs[i];
+        const char *bufstr = iter.rec.buf.c_str();
+        if ("error" == GDB_GetRecordAction(iter.rec))
+        {
+            if (NULL != strstr(bufstr, "optimized out"))
+            {
+                // @GDB: match up results for optimized out variables
+                // 1. -data-evaluate-expression argv --> ^done,value="<optimized out>"
+                // 2. -data-evaluate-expression argv[0] --> ^error,msg="value has been optimized out"
+
+                const Record OPTIMIZED_OUT_FIX = {
+                    iter.rec.id,
+                    {
+                        { Atom_Array, {0, 0}, {1,1} }, // root atom
+                        { Atom_String, /*value*/{6, 5}, /*<optimized out>*/{13, 15} }
+                    },
+                    "^done,value=\"<optimized out>\""
+                };
+
+                prog.num_recs++;
+                RecordHolder &last = prog.read_recs[ prog.num_recs - 1 ];
+                last.rec = OPTIMIZED_OUT_FIX;
+                last.parsed = false;
+            }
+            else 
+            {
+                // don't print error on watch variables not in scope (no symbol "xyz" in current context)
+                // don't print error on hovering mouse over a type name
+                if (NULL == strstr(bufstr, "in current context.") ||
+                    gdb.echo_next_no_symbol_in_context)
+                    //NULL == strstr(bufstr, "Attempt to use a type name as an expression"))
+                {
+                    // convert error record to GDB console output record
+                    String errmsg = GDB_ExtractValue("msg", iter.rec);
+
+                    // replace bad description of when an executable doesn't reference a sourcefile
+                    static const char *needle = "No source file named";
+                    size_t idx = errmsg.find(needle);
+                    if (idx < errmsg.size())
+                        errmsg.replace(idx, strlen(needle), "executable doesn't reference file");
+
+                    errmsg = "&\"GDB MI Error: " + errmsg + "\\n\"\n";
+                    WriteToConsoleBuffer(errmsg.data(), errmsg.size());
+                }
+            }
+        }
+    }
+
+    last_num_recs = prog.num_recs;
     pthread_mutex_unlock(&gdb.modify_block);
 }

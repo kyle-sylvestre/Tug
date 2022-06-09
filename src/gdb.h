@@ -74,6 +74,10 @@ bool GDB_SendBlocking(const char *cmd, Record &rec);
 // extract a MI record from a newline terminated line
 bool GDB_ParseRecord(char *buf, size_t bufsize, ParseRecordContext &ctx);
 
+// first word after record type char
+// ex: ^done, *stopped
+String GDB_GetRecordAction(const Record &rec);
+
 void GDB_GrabBlockData();
 
 RecordAtomSequence GDB_RecurseEvaluation(ParseRecordContext &ctx);
