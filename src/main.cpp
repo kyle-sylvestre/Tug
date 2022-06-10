@@ -509,9 +509,6 @@ static void DrawHelpMarker(const char *desc)
 
 void WriteToConsoleBuffer(const char *buf, size_t bufsize)
 {
-    if ( bufsize >= 5 && (0 == memcmp(buf, "(gdb)", 5)) )
-        return;
-
     bool is_mi_record = (bufsize > 0) && 
                         (buf[0] == PREFIX_ASYNC0 || 
                          buf[0] == PREFIX_ASYNC1 ||
@@ -520,30 +517,28 @@ void WriteToConsoleBuffer(const char *buf, size_t bufsize)
     if (is_mi_record && !gui.show_machine_interpreter_commands)
         return;
 
-    // debug
-    //printf("%.*s\n", int(bufsize), buf);
-
-
-    ConsoleLine &dest = prog.log[0];
-    dest.type = ConsoleLineType_None;
+    // truncate messages too large
+    bufsize = GetMin(bufsize, sizeof(prog.log));
 
     const auto PushChar = [&](char c)
     {
-        if (c == '\n')
+        if (prog.log_idx >= sizeof(prog.log))
         {
-            // shift lines up
-            size_t nt_index = GetMin(prog.log_line_char_idx, NUM_LOG_COLS);
-            dest.text[nt_index] = '\0';
-            memmove(&prog.log[1], &prog.log[0], 
-                    sizeof(prog.log) - sizeof(prog.log[0]));
-            dest.type = ConsoleLineType_None;
-            prog.log_line_char_idx = 0;
-            prog.num_log_rows = GetMin(prog.num_log_rows + 1, MAX_LOG_ROWS);
+            // exhaused log data, pop memory from the front
+            size_t i = GetMax(sizeof(prog.log) / 16, bufsize);
+            while (i < prog.log_idx && (prog.log[i] != '\n' && prog.log[i] != '\0'))
+            {
+                i++; // walk until the end of the line or unused data
+            }
+
+            // move line data up, clear moved area
+            memmove(prog.log, prog.log + i, prog.log_idx - i);
+            prog.log_idx -= i;
+            memset(prog.log + prog.log_idx, 0, sizeof(prog.log) - prog.log_idx);
         }
-        else if (prog.log_line_char_idx < NUM_LOG_COLS)
-        {
-            dest.text[ prog.log_line_char_idx++ ] = c;
-        }
+
+        if (c == '\n' || (c >= 32 && c <= 126))
+            prog.log[prog.log_idx++] = c;
     };
 
     if (bufsize > 2 && 
@@ -552,9 +547,6 @@ void WriteToConsoleBuffer(const char *buf, size_t bufsize)
          buf[0] == PREFIX_CONSOLE_LOG ) &&
         buf[1] == '\"')
     {
-        if (buf[0] == PREFIX_DEBUG_LOG)
-            dest.type = ConsoleLineType_UserInput;
-
         // console record, format ~"text text text"\n
         // skip over the beginning/ending characters
         size_t i = 2;
@@ -604,8 +596,6 @@ void WriteToConsoleBuffer(const char *buf, size_t bufsize)
             PushChar('\n');
     }
 
-    size_t nt_index = GetMin(prog.log_line_char_idx, NUM_LOG_COLS);
-    dest.text[nt_index] = '\0';
     prog.log_scroll_to_bottom = true;
 }
 
@@ -812,21 +802,26 @@ bool ExecuteCommand(const char *cmd, bool remove_after = true)
     // or a series of --thread-group or --thread calls
     bool exec_all = true;
     for (Thread &t : prog.threads)
-    {
         exec_all &= t.exec_active;
-    }
 
     String mi;
+    bool result = false;
     if (exec_all)
     {
         mi = StringPrintf("%s --all", cmd);
+        result = GDB_SendBlocking(mi.c_str(), remove_after);
     }
     else
     {
-        mi = StringPrintf("%s --all", cmd);
+        bool all_good = true;
+        for (size_t i = 0; i < prog.threads.size(); i++)
+        {
+            mi = StringPrintf("%s --thread %d", cmd, prog.threads[i].id);
+            all_good &= GDB_SendBlocking(mi.c_str(), remove_after);
+        }
     }
 
-    return GDB_SendBlocking(mi.c_str(), remove_after);
+    return result;
 }
 
 void QueryWatchlist()
@@ -1451,7 +1446,6 @@ void Draw()
                 }
                 else if (record_action == "breakpoint-modified")
                 {
-                    // breakpoints created from console ex: "b main.cpp:14"
                     Breakpoint b = ExtractBreakpoint(parse_rec);
                     for (Breakpoint &bkpt : prog.breakpoints)
                     {
@@ -1497,7 +1491,7 @@ void Draw()
                 }
                 else if (record_action == "thread-selected")
                 {
-                    size_t tid = (size_t)GDB_ExtractInt("id", parse_rec);
+                    int tid = GDB_ExtractInt("id", parse_rec);
                     for (size_t t = 0; t < prog.threads.size(); t++)
                         if (prog.threads[t].id == tid)
                             prog.thread_idx = t; 
@@ -1516,7 +1510,7 @@ void Draw()
                 else if (record_action == "thread-created")
                 {
                     Thread t = {};
-                    t.id = (size_t)GDB_ExtractInt("id", parse_rec);
+                    t.id = GDB_ExtractInt("id", parse_rec);
                     t.group_id = GDB_ExtractValue("group-id", parse_rec);
                     t.exec_active = true;
 
@@ -1525,7 +1519,7 @@ void Draw()
                 }
                 else if (record_action == "thread-exited")
                 {
-                    size_t id = (size_t)GDB_ExtractInt("id", parse_rec);
+                    int id = GDB_ExtractInt("id", parse_rec);
                     String group_id = GDB_ExtractValue("group-id", parse_rec);
                     for (size_t t = 0; t < prog.threads.size(); t++)
                     {
@@ -1550,7 +1544,7 @@ void Draw()
                 }
                 else
                 {
-                    size_t tid = atoi(thread.c_str());
+                    int tid = atoi(thread.c_str());
                     for (Thread &t : prog.threads)
                         if (t.id == tid)
                             t.running = true;
@@ -1562,7 +1556,7 @@ void Draw()
                 prog.frame_idx = 0;
                 prog.running = false;
                 String reason = GDB_ExtractValue("reason", parse_rec);
-                size_t tid = (size_t)GDB_ExtractInt("thread-id", parse_rec);
+                int tid = GDB_ExtractInt("thread-id", parse_rec);
                 for (size_t t = 0; t < prog.threads.size(); t++)
                 {
                     if (prog.threads[t].id == tid)
@@ -2697,7 +2691,11 @@ void Draw()
             // emulate GDB, repeat last executed command upon hitting
             // enter on an empty line
             bool use_last_command = (input_command[0] == '\0' && prog.num_input_cmds > 0);
-            const char *send_command = (use_last_command) ? &prog.input_cmd[0][0] : input_command;
+            String send_command = (use_last_command) ? &prog.input_cmd[0][0] : input_command;
+            TrimWhitespace(send_command);
+            String tagged_send_command = StringPrintf("(gdb) %s", send_command.c_str());
+            WriteToConsoleBuffer(tagged_send_command.c_str(), 
+                                 tagged_send_command.size());
 
             query_phrase = "";
             if (phrase_idx < phrases.size())
@@ -2735,7 +2733,7 @@ void Draw()
             // inject MI commands for program control commands to match their 
             // respective button console output
 
-            String micommand;
+            String exec_mi;
             if (keyword == "file")
             {
                 GDB_SetInferiorExe(rest);
@@ -2748,38 +2746,45 @@ void Draw()
             }
             else if (keyword == "step" || keyword == "s")
             {
-                micommand = "-exec-step " + rest;
+                exec_mi = "-exec-step";
+            }
+            else if (keyword == "stepi")
+            {
+                exec_mi = "-exec-step-instruction";
             }
             else if (keyword == "continue" || keyword == "c")
             {
-                micommand = "-exec-continue " + rest;
+                exec_mi = "-exec-continue";
             }
             else if (keyword == "next" || keyword == "n")
             {
-                micommand = "-exec-next " + rest;
+                exec_mi = "-exec-next";
             }
-            else
+            else if (keyword == "nexti")
             {
-                micommand = send_command;
+                exec_mi = "-exec-next-instruction";
             }
 
 
-            if (micommand == "")
+            if (exec_mi != "")
             {
-                // do nothing, cases like file where the command
-                // is already completed
+                // run the command with the current thread layout
+                if (rest != "") 
+                    exec_mi += " " + rest;
+
+                ExecuteCommand(exec_mi.c_str());
             }
-            else if (micommand[0] == '-')
+            else if (send_command.size() > 0 && send_command[0] == '-')
             {
                 // send the machine interpreter command as is
-                GDB_SendBlocking(micommand.c_str()); 
+                GDB_SendBlocking(send_command.c_str()); 
             }
             else
             {
                 // wrap command in machine interpreter statement
-                micommand = StringPrintf("-interpreter-exec console \"%s\"", 
-                                         micommand.c_str());
-                GDB_SendBlocking(micommand.c_str());
+                String s = StringPrintf("-interpreter-exec console \"%s\"", 
+                                        send_command.c_str());
+                GDB_SendBlocking(s.c_str());
             }
 
 
@@ -2921,15 +2926,9 @@ void Draw()
             ImGui::BeginChild("##GDB_Console", logsize, true, ImGuiWindowFlags_HorizontalScrollbar);
 
             // draw the log lines upwards from the bottom of the child window
-            ImGui::SetCursorPosY( GetMax(ImGui::GetCursorPosY(), logsize.y - prog.num_log_rows * ImGui::GetTextLineHeightWithSpacing()) );
+            // @@@ ImGui::SetCursorPosY( GetMax(ImGui::GetCursorPosY(), logsize.y - prog.num_log_rows * ImGui::GetTextLineHeightWithSpacing()) );
 
-            for (size_t i = prog.num_log_rows; i > 0; i--)
-            {
-                ConsoleLine &line = prog.log[i - 1];
-                const char *prefix = (line.type == ConsoleLineType_UserInput)
-                    ? "(gdb) " : "";
-                ImGui::Text("%s%s", prefix, line.text);
-            }
+            ImGui::TextUnformatted(prog.log, prog.log + prog.log_idx);
 
             if (prog.log_scroll_to_bottom) 
             {
@@ -2993,7 +2992,7 @@ void Draw()
         {
             const Thread &t = prog.threads[prog.thread_idx];
             thread_preview = StringPrintf("Thread ID %d Group ID %s", 
-                                          (int)t.id, t.group_id.c_str());
+                                          t.id, t.group_id.c_str());
         }
 
 
@@ -3002,7 +3001,7 @@ void Draw()
             for (size_t i = 0; i < prog.threads.size(); i++)
             {
                 const Thread &t = prog.threads[i];
-                String str = StringPrintf("Thread ID %d Group ID %s", (int)t.id, t.group_id.c_str());
+                String str = StringPrintf("Thread ID %d Group ID %s", t.id, t.group_id.c_str());
                 if (ImGui::Selectable(str.c_str(), prog.thread_idx == i) && prog.thread_idx != i)
                 {
                     prog.thread_idx = i;
@@ -3414,7 +3413,7 @@ void Draw()
                 ImGuiDisabled(thread.running, clicked_run = ImGui::Button(tmpbuf));
                 if (clicked_run)
                 {
-                    tsnprintf(tmpbuf, "-exec-continue --thread %d", (int)thread.id);
+                    tsnprintf(tmpbuf, "-exec-continue --thread %d", thread.id);
                     GDB_SendBlocking(tmpbuf);
                 }
 
@@ -3424,13 +3423,13 @@ void Draw()
                 ImGuiDisabled(!thread.running, clicked_pause = ImGui::Button(tmpbuf));
                 if (clicked_pause)
                 {
-                    tsnprintf(tmpbuf, "-exec-interrupt --thread %d", (int)thread.id); 
+                    tsnprintf(tmpbuf, "-exec-interrupt --thread %d", thread.id); 
                     GDB_SendBlocking(tmpbuf);
                 }
 
                 ImGui::TableSetColumnIndex(2);
                 ImGui::Text("Thread ID %d Group ID %s", 
-                            (int)thread.id, thread.group_id.c_str());
+                            thread.id, thread.group_id.c_str());
             }
 
             // @ImGui:: when double clicking a column separator to resize to fit, 

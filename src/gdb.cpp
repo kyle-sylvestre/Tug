@@ -1182,7 +1182,9 @@ static void GDB_ProcessBlock(char *block, size_t blocksize)
         }
 
         size_t linesize = eol - start;
-        WriteToConsoleBuffer(start, linesize);
+        bool is_prompt = (linesize >= 5 && (0 == memcmp(start, "(gdb)", 5)) );
+        if (!is_prompt)
+            WriteToConsoleBuffer(start, linesize);
 
         // get the record type
         char prefix = start[0];
