@@ -96,7 +96,6 @@ String _StringPrintf(int /* vargs_check */, const char *fmt, ...)
     return result;
 }
 
-
 bool InvokeShellCommand(String command, String &output)
 {
     bool result = false;
@@ -522,16 +521,18 @@ void WriteToConsoleBuffer(const char *buf, size_t bufsize)
 
     const auto PushChar = [&](char c)
     {
-        if (prog.log_idx >= sizeof(prog.log))
+        Assert(prog.log_idx <= sizeof(prog.log));
+        if (prog.log_idx == sizeof(prog.log))
         {
             // exhaused log data, pop memory from the front
-            size_t i = GetMax(sizeof(prog.log) / 16, bufsize);
-            while (i < prog.log_idx && (prog.log[i] != '\n' && prog.log[i] != '\0'))
+            size_t i = sizeof(prog.log) / 16;
+            while (i < sizeof(prog.log) && (prog.log[i] != '\n' && prog.log[i] != '\0'))
             {
-                i++; // walk until the end of the line or unused data
+                i++; // walk until the end of a line or unused data
             }
 
             // move line data up, clear moved area
+            Assert(prog.log_idx >= i);
             memmove(prog.log, prog.log + i, prog.log_idx - i);
             prog.log_idx -= i;
             memset(prog.log + prog.log_idx, 0, sizeof(prog.log) - prog.log_idx);
@@ -798,30 +799,17 @@ int GetActiveThreadID()
 
 bool ExecuteCommand(const char *cmd, bool remove_after = true)
 {
-    // execute command for --all, --thread-group, --thread,
-    // or a series of --thread-group or --thread calls
-    bool exec_all = true;
-    for (Thread &t : prog.threads)
-        exec_all &= t.exec_active;
-
     String mi;
-    bool result = false;
-    if (exec_all)
+    for (size_t i = 0; i < prog.threads.size(); i++)
     {
-        mi = StringPrintf("%s --all", cmd);
-        result = GDB_SendBlocking(mi.c_str(), remove_after);
-    }
-    else
-    {
-        bool all_good = true;
-        for (size_t i = 0; i < prog.threads.size(); i++)
+        if (prog.threads[i].exec_active)
         {
-            mi = StringPrintf("%s --thread %d", cmd, prog.threads[i].id);
-            all_good &= GDB_SendBlocking(mi.c_str(), remove_after);
+            if (mi.size() > 0) mi += "\n";
+            mi += StringPrintf("%s --thread %d", cmd, prog.threads[i].id);
         }
     }
 
-    return result;
+    return GDB_SendBlocking(mi.c_str(), remove_after);
 }
 
 void QueryWatchlist()
@@ -1552,8 +1540,12 @@ void Draw()
             }
             else if (record_action == "stopped")
             {
-                // TODO: thread-id vs stopped-threads
-                prog.frame_idx = 0;
+                // jump to the stopped thread if the current index is running
+                bool jump_to_thread = true;
+                if (prog.thread_idx < prog.threads.size() &&
+                    !prog.threads[prog.thread_idx].running)
+                    jump_to_thread = false;
+
                 prog.running = false;
                 String reason = GDB_ExtractValue("reason", parse_rec);
                 int tid = GDB_ExtractInt("thread-id", parse_rec);
@@ -1561,8 +1553,12 @@ void Draw()
                 {
                     if (prog.threads[t].id == tid)
                     {
-                        prog.thread_idx = t; 
                         prog.threads[t].running = false;
+                        if (jump_to_thread)
+                        {
+                            prog.thread_idx = t; 
+                            prog.frame_idx = 0;
+                        }
                     }
                 }
 
@@ -1573,7 +1569,8 @@ void Draw()
                 else
                 {
                     prog.started = true;
-                    QueryFrame(false);
+                    if (jump_to_thread)
+                        QueryFrame(false);
                 }
             }
         }
@@ -2561,7 +2558,7 @@ void Draw()
         {
             if (!prog.started)
             {
-                ExecuteCommand("-exec-run");
+                GDB_SendBlocking("-exec-run");
             }
             else
             {
@@ -3382,8 +3379,9 @@ void Draw()
     {
         ImGui::SetNextWindowSize(MIN_WINSIZE, ImGuiCond_Once);
         ImGui::Begin("Threads", &gui.show_threads);
-        if (ImGui::BeginTable("##BreakpointsTable", 3, TABLE_FLAGS))
+        if (ImGui::BeginTable("##BreakpointsTable", 4, TABLE_FLAGS))
         {
+            ImGui::TableSetupColumn(""); // lock/unlock all
             ImGui::TableSetupColumn(""); // resume all
             ImGui::TableSetupColumn(""); // pause all
             ImGui::TableSetupColumn("Name", ImGuiTableColumnFlags_NoResize);
@@ -3392,23 +3390,49 @@ void Draw()
             // custom headers row, |> and || resume and pause all respectively
             // @GDB: becomes unresponsive if sending -exec-continue --all with no threads available
             ImGui::TableSetColumnIndex(0);
+            bool tmp = true;
+            if (ImGui::Checkbox("##ThreadLockAll", &tmp))
+                for (Thread &t : prog.threads)
+                    t.exec_active = true;
+
+            tmp = false;
+            ImGui::SameLine();
+            if (ImGui::Checkbox("##ThreadUnlockAll", &tmp))
+                for (Thread &t : prog.threads)
+                    t.exec_active = false;
+
+            ImGui::TableSetColumnIndex(1);
             if (ImGui::Button("|>##ResumeAll") && prog.threads.size() > 0) 
                 GDB_SendBlocking("-exec-continue --all");
 
-            ImGui::TableSetColumnIndex(1);
+            ImGui::TableSetColumnIndex(2);
             if (ImGui::Button("||##PauseAll"))
                 GDB_SendBlocking("-exec-interrupt --all");
             
-            ImGui::TableSetColumnIndex(2);
+            ImGui::TableSetColumnIndex(3);
             ImGui::TableHeader("Name");
 
             for (size_t i = 0; i < prog.threads.size(); i++)
             {
-                const Thread &thread = prog.threads[i];
+                Thread &thread = prog.threads[i];
                 ImGui::TableNextRow();
+
+                ImGui::TableSetColumnIndex(0);
+                tsnprintf(tmpbuf, "##ThreadLockUnlock%zu", i);
+                if (ImGui::Checkbox(tmpbuf, &thread.exec_active))
+                {
+                    // lower all other checkboxes except this one 
+                    if (ImGui::GetIO().KeyShift)
+                    {
+                        thread.exec_active = true;
+                        for (size_t j = 0; j < prog.threads.size(); j++)
+                            if (i != j)
+                                prog.threads[j].exec_active = false;
+                    }
+                }
                 
                 bool clicked_run = false;
-                ImGui::TableSetColumnIndex(0);
+                ImGui::TableSetColumnIndex(1);
                 tsnprintf(tmpbuf, "|>##Thread%i", (int)i);
                 ImGuiDisabled(thread.running, clicked_run = ImGui::Button(tmpbuf));
                 if (clicked_run)
@@ -3418,7 +3442,7 @@ void Draw()
                 }
 
                 bool clicked_pause = false;
-                ImGui::TableSetColumnIndex(1);
+                ImGui::TableSetColumnIndex(2);
                 tsnprintf(tmpbuf, "||##Thread%i", (int)i);
                 ImGuiDisabled(!thread.running, clicked_pause = ImGui::Button(tmpbuf));
                 if (clicked_pause)
@@ -3427,7 +3451,7 @@ void Draw()
                     GDB_SendBlocking(tmpbuf);
                 }
 
-                ImGui::TableSetColumnIndex(2);
+                ImGui::TableSetColumnIndex(3);
                 ImGui::Text("Thread ID %d Group ID %s", 
                             thread.id, thread.group_id.c_str());
             }
