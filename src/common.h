@@ -276,7 +276,7 @@ struct Thread
     int id;
     String group_id;
     bool running;
-    bool exec_active;   // targeted in ExecuteCommand
+    bool focused;   // thread is included in ExecuteCommand
 };
 
 

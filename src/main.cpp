@@ -16,12 +16,9 @@
 #include "common.h"
 #include "gdb.h"
 #include "default_ini.h"
+
 #include <fstream>
 #include <functional>
-
-//
-// yoinked from glfw_example_opengl2
-//
 
 // third party
 #include <imgui/imconfig.h>
@@ -31,12 +28,7 @@
 #include <imgui/imgui_impl_opengl2.h>
 #include <glfw/glfw3.h>
 #include <imgui_file_window.h>
-
-#define WINDOW_WIDTH 1280
-#define WINDOW_HEIGHT 640
-
-#define SOURCE_WIDTH 800
-#define SOURCE_HEIGHT 450
+#include "liberation_mono.h"
 
 // dynamic colors that change upon the brightness of the background
 ImVec4 IM_COL32_WIN_RED;
@@ -257,7 +249,7 @@ enum Jump
     Jump_Stopped,
 };
 
-#define DEFAULT_FONT_SIZE 13.0f
+#define DEFAULT_FONT_SIZE 16.0f
 #define MIN_FONT_SIZE 8.0f
 #define MAX_FONT_SIZE 72.0f
 struct GUI
@@ -398,19 +390,18 @@ static void SetWindowTheme(WindowTheme theme)
 
 bool LoadFile(File &file)
 {
-    // load the file if file lines Vector is empty
     bool result = false;
     if (file.lines.size() == 0 && 
         0 == access(file.filename.c_str(), F_OK))
     {
-        FILE *f = fopen(file.filename.c_str(), "r");
+        FILE *f = fopen(file.filename.c_str(), "rb");
         if (f == NULL)
         {
             PrintErrorf("fopen %s\n", strerror(errno));
         }
         else
         {
-            long lfilesize;
+            long lfilesize = 0;
             if (0 == fseek(f, 0, SEEK_END) &&
                 0 < (lfilesize = ftell(f)) &&
                 0 == fseek(f, 0, SEEK_SET))
@@ -432,7 +423,7 @@ bool LoadFile(File &file)
                         char c1 = (i + 1 < filesize) ? fd[i + 1] : '\0';
                         size_t end = (c0 == '\n') ? 1 :
                                      (c0 == '\r' && c1 == '\n') ? 2 :
-                                     (c0 == '\r') ? 1 : 0; // TODO: any there any with just '\r' nowadays?
+                                     (c0 == '\r') ? 1 : 0;
 
                         if (end != 0)
                         {
@@ -449,6 +440,7 @@ bool LoadFile(File &file)
                         }
                     }
 
+                    // truncate file to size minus sum of line endings
                     file.data.resize(file.data.size() - num_trunc);
                 }
             }
@@ -799,17 +791,35 @@ int GetActiveThreadID()
 
 bool ExecuteCommand(const char *cmd, bool remove_after = true)
 {
+    // @GDB: interpreter bugs out with -exec-continue --all with no threads to contiue
+    if (prog.threads.size() == 0) return false;
+
+    bool result = false;
     String mi;
-    for (size_t i = 0; i < prog.threads.size(); i++)
+    bool focused_all = true;
+    for (Thread &t : prog.threads)
+        if (!t.focused)
+            focused_all = false;
+    
+    if (focused_all)
     {
-        if (prog.threads[i].exec_active)
+        mi = StringPrintf("%s --all", cmd);
+        result = GDB_SendBlocking(mi.c_str(), remove_after);
+    }
+    else
+    {
+        result = true;
+        for (size_t i = 0; i < prog.threads.size(); i++)
         {
-            if (mi.size() > 0) mi += "\n";
-            mi += StringPrintf("%s --thread %d", cmd, prog.threads[i].id);
+            if (prog.threads[i].focused)
+            {
+                mi += StringPrintf("%s --thread %d", cmd, prog.threads[i].id);
+                result &= GDB_SendBlocking(mi.c_str(), remove_after);
+            }
         }
     }
 
-    return GDB_SendBlocking(mi.c_str(), remove_after);
+    return result; 
 }
 
 void QueryWatchlist()
@@ -1500,7 +1510,7 @@ void Draw()
                     Thread t = {};
                     t.id = GDB_ExtractInt("id", parse_rec);
                     t.group_id = GDB_ExtractValue("group-id", parse_rec);
-                    t.exec_active = true;
+                    t.focused = true;
 
                     if (t.id != 0 && t.group_id != "")
                         prog.threads.push_back(t);
@@ -1542,23 +1552,49 @@ void Draw()
             {
                 // jump to the stopped thread if the current index is running
                 bool jump_to_thread = true;
-                if (prog.thread_idx < prog.threads.size() &&
-                    !prog.threads[prog.thread_idx].running)
-                    jump_to_thread = false;
+                if (prog.thread_idx < prog.threads.size())
+                {
+                    bool no_lines_shown = false;
+                    if (prog.frame_idx < prog.frames.size())
+                    {
+                        size_t idx = prog.frames[prog.frame_idx].file_idx;
+                        if (idx < prog.files.size() && prog.files[idx].lines.size() == 0)
+                            no_lines_shown = true;
+                    }
+
+                    if (!prog.threads[prog.thread_idx].running && !no_lines_shown)
+                        jump_to_thread = false;
+                }
 
                 prog.running = false;
                 String reason = GDB_ExtractValue("reason", parse_rec);
                 int tid = GDB_ExtractInt("thread-id", parse_rec);
+
+                // wonky: sometimes it's stopped-threads="all", and sometimes it's stopped-threads=["all"]
+                bool stopped_all = false;
+                const RecordAtom *stopped_threads = GDB_ExtractAtom("stopped-threads", parse_rec);
+                if (stopped_threads != NULL)
+                {
+                    if (stopped_threads->type == Atom_String)
+                    {
+                        stopped_all = ("all" == GetAtomString(stopped_threads->value, parse_rec));
+                    }
+                    else if (stopped_threads->type == Atom_Array)
+                    {
+                        for (const RecordAtom &stopped : GDB_IterChild(rec, stopped_threads))
+                            stopped_all |= ("all" == GetAtomString(stopped.value, rec));
+                    }
+                }
+
                 for (size_t t = 0; t < prog.threads.size(); t++)
                 {
-                    if (prog.threads[t].id == tid)
-                    {
+                    if (prog.threads[t].id == tid || stopped_all)
                         prog.threads[t].running = false;
-                        if (jump_to_thread)
-                        {
-                            prog.thread_idx = t; 
-                            prog.frame_idx = 0;
-                        }
+
+                    if (prog.threads[t].id == tid && jump_to_thread)
+                    {
+                        prog.thread_idx = t; 
+                        prog.frame_idx = 0;
                     }
                 }
 
@@ -1763,7 +1799,7 @@ void Draw()
                 tsnprintf(font_filename, "%s", gui.font_filename.c_str());
             }
 
-            if (ImGui::Checkbox("Use Default Font (Proggy Clean.ttf)", &gui.use_default_font))
+            if (ImGui::Checkbox("Use Default Font (Liberation Mono)", &gui.use_default_font))
             {
                 if (gui.use_default_font || (gui.font_filename != "" && DoesFileExist(gui.font_filename.c_str())))
                 {
@@ -1774,7 +1810,7 @@ void Draw()
             float fsz = gui.font_size;
             bool changed_font_point = false;
             ImGuiDisabled(!gui.use_default_font && gui.font_filename == "",
-                          changed_font_point = ImGui::InputFloat("Font Point", &fsz, 1.0f, 0.0f, "%.0f", ImGuiInputTextFlags_EnterReturnsTrue));
+                          changed_font_point = ImGui::InputFloat("Font Size", &fsz, 1.0f, 0.0f, "%.0f", ImGuiInputTextFlags_EnterReturnsTrue));
             if (changed_font_point)
             {
                 gui.font_size = GetPinned(fsz, MIN_FONT_SIZE, MAX_FONT_SIZE);
@@ -1785,7 +1821,7 @@ void Draw()
             float sfsz = gui.source_font_size;
             bool changed_source_font_point = false;
             ImGuiDisabled(!gui.use_default_font && gui.font_filename == "",
-                          changed_source_font_point = ImGui::InputFloat("Source Font Point", &sfsz, 1.0f, 0.0f, "%.0f", ImGuiInputTextFlags_EnterReturnsTrue));
+                          changed_source_font_point = ImGui::InputFloat("Source Font Size", &sfsz, 1.0f, 0.0f, "%.0f", ImGuiInputTextFlags_EnterReturnsTrue));
             if (changed_source_font_point) 
             {
                 gui.source_font_size = GetPinned(sfsz, MIN_FONT_SIZE, MAX_FONT_SIZE);
@@ -2042,9 +2078,6 @@ void Draw()
 
             // @Optimization: only draw the visible lines then SetCursorPosY to 
             // be lineheight * height per line to set the total scroll
-
-            // display file lines, skip over designated blank zero index to sync
-            // up line indices with line numbers
             if (gui.line_display == LineDisplay_Source)
             {
                 bool in_active_frame_file = prog.frame_idx < prog.frames.size() &&
@@ -2211,8 +2244,10 @@ void Draw()
                     ImGui::PopStyleColor(4);
 
                     ImGui::SameLine();
+                    int line_written = tsnprintf(tmpbuf, "%-4zu %s", line_idx + 1, line.c_str());
                     ImVec2 textstart = ImGui::GetCursorPos();
-                    tsnprintf(tmpbuf, "%-4zu %s", line_idx + 1, line.c_str());
+                    textstart.x += ImGui::CalcTextSize(tmpbuf, tmpbuf + line_written - line.size()).x; // skip line number for hover eval
+
                     if (in_active_frame_file && line_idx == prog.frames[prog.frame_idx].line_idx)
                     {
                         ImGui::Selectable(tmpbuf, !prog.running);
@@ -2387,9 +2422,7 @@ void Draw()
                 // automatically scroll to the next executed line if it is far enough away
                 // and we've just stopped execution
                 if (gui.jump_type == Jump_Stopped)
-                {
                     gui.jump_type = Jump_None;
-                }
 
                 size_t start_idx = (ImGui::GetScrollY() / lineheight);
                 size_t end_idx = GetMin(start_idx + perscreen, gui.line_disasm.size());
@@ -2541,10 +2574,7 @@ void Draw()
         ImGui::Begin("Control", &gui.show_control);
 
         // continue
-        bool clicked = false;
-        //ImGuiDisabled(prog.running, clicked = ImGui::Button("---"));
-        clicked = ImGui::Button("---");
-        if (clicked && prog.frame_idx < prog.frames.size())
+        if (ImGui::Button("---") && prog.frame_idx < prog.frames.size())
         {
             gui.jump_type = Jump_Goto;
             gui.goto_line_idx = prog.frames[prog.frame_idx].line_idx;
@@ -2552,9 +2582,7 @@ void Draw()
 
         // start
         ImGui::SameLine();
-        //ImGuiDisabled(prog.running, clicked = ImGui::Button("|>"));
-        clicked = ImGui::Button("|>");
-        if (clicked || (!prog.running && IsKeyPressed(ImGuiKey_F5)))
+        if (ImGui::Button("|>") || (!prog.running && IsKeyPressed(ImGuiKey_F5)))
         {
             if (!prog.started)
             {
@@ -2568,37 +2596,31 @@ void Draw()
 
         // send SIGINT 
         ImGui::SameLine();
-        //ImGuiDisabled(!prog.running, clicked = ImGui::Button("||"));
-        clicked = ImGui::Button("||");
-        if (clicked)
+        if (ImGui::Button("||##Pause"))
         {
             if (prog.inferior_process != 0)
                 kill(prog.inferior_process, SIGINT);
+
+            GDB_SendBlocking("-exec-interrupt --all");
         }
 
         // step line
         ImGui::SameLine();
-        //ImGuiDisabled(prog.running, clicked = ImGui::Button("-->"));
-        clicked = ImGui::Button("-->");
-        if (clicked)
+        if (ImGui::Button("-->"))
         {
             ExecuteCommand("-exec-step", false);
         }
 
         // step over
         ImGui::SameLine();
-        //ImGuiDisabled(prog.running, clicked = ImGui::Button("/\\>"));
-        clicked = ImGui::Button("/\\>");
-        if (clicked)
+        if (ImGui::Button("/\\>"))
         {
             ExecuteCommand("-exec-next", false);
         }
 
         // step out
         ImGui::SameLine();
-        //ImGuiDisabled(prog.running, clicked = ImGui::Button("</\\"));
-        clicked = ImGui::Button("</\\");
-        if (clicked)
+        if (ImGui::Button("</\\"))
         {
             if (prog.frame_idx == prog.frames.size() - 1)
             {
@@ -2675,6 +2697,29 @@ void Draw()
         ImGui::SetCursorPos( ImVec2(logstart.x, ImGui::GetWindowHeight() - CONSOLE_BAR_HEIGHT) );
         const ImVec2 AUTOCOMPLETE_START = ImVec2(ImGui::GetCursorScreenPos().x,
                                                  ImGui::GetCursorScreenPos().y - (phrases.size() + 1) * ImGui::GetTextLineHeightWithSpacing());
+
+        bool is_autocomplete_selected = false;
+        if (phrases.size() > 0)
+        {
+            ImGui::SetNextWindowPos(AUTOCOMPLETE_START);
+            ImGui::BeginTooltip();
+            for (size_t i = 0; i < phrases.size(); i++)
+            {
+                if (i == phrase_idx)
+                {
+                    ImGui::Selectable(phrases[i].c_str(), i == phrase_idx);
+                    if (IsKeyPressed(ImGuiKey_Enter))
+                        is_autocomplete_selected = true;
+                }
+                else
+                {
+                    ImGui::Text("%s", phrases[i].c_str());
+                }
+            }
+
+
+            ImGui::EndTooltip();
+        }
         
         if (ImGui::InputText("##input_command", input_command, 
                              sizeof(input_command), 
@@ -2684,9 +2729,11 @@ void Draw()
         {
             // retain focus on the input line
             ImGui::SetKeyboardFocusHere(-1);
+
+            if (is_autocomplete_selected)
+                tsnprintf(input_command, "%s", phrases[phrase_idx].c_str());
             
-            // emulate GDB, repeat last executed command upon hitting
-            // enter on an empty line
+            // emulate GDB, repeat last executed command upon hitting enter on an empty line
             bool use_last_command = (input_command[0] == '\0' && prog.num_input_cmds > 0);
             String send_command = (use_last_command) ? &prog.input_cmd[0][0] : input_command;
             TrimWhitespace(send_command);
@@ -2862,17 +2909,6 @@ void Draw()
         {
             phrase_idx = 0;
             phrases.clear();
-        }
-
-        if (phrases.size() > 0)
-        {
-            ImGui::SetNextWindowPos(AUTOCOMPLETE_START);
-            ImGui::BeginTooltip();
-            for (size_t i = 0; i < phrases.size(); i++)
-            {
-                ImGui::Selectable(phrases[i].c_str(), i == phrase_idx);
-            }
-            ImGui::EndTooltip();
         }
 
 
@@ -3391,15 +3427,15 @@ void Draw()
             // @GDB: becomes unresponsive if sending -exec-continue --all with no threads available
             ImGui::TableSetColumnIndex(0);
             bool tmp = true;
-            if (ImGui::Checkbox("##ThreadLockAll", &tmp))
+            if (ImGui::Checkbox("##ThreadFocusAll", &tmp))
                 for (Thread &t : prog.threads)
-                    t.exec_active = true;
+                    t.focused = true;
 
             tmp = false;
             ImGui::SameLine();
-            if (ImGui::Checkbox("##ThreadUnlockAll", &tmp))
+            if (ImGui::Checkbox("##ThreadUnfocusAll", &tmp))
                 for (Thread &t : prog.threads)
-                    t.exec_active = false;
+                    t.focused = false;
 
             ImGui::TableSetColumnIndex(1);
             if (ImGui::Button("|>##ResumeAll") && prog.threads.size() > 0) 
@@ -3418,16 +3454,16 @@ void Draw()
                 ImGui::TableNextRow();
 
                 ImGui::TableSetColumnIndex(0);
-                tsnprintf(tmpbuf, "##ThreadLockUnlock%zu", i);
-                if (ImGui::Checkbox(tmpbuf, &thread.exec_active))
+                tsnprintf(tmpbuf, "##ThreadToggleFocus%zu", i);
+                if (ImGui::Checkbox(tmpbuf, &thread.focused))
                 {
                     // lower all other checkboxes except this one 
                     if (ImGui::GetIO().KeyShift)
                     {
-                        thread.exec_active = true;
+                        thread.focused = true;
                         for (size_t j = 0; j < prog.threads.size(); j++)
                             if (i != j)
-                                prog.threads[j].exec_active = false;
+                                prog.threads[j].focused = false;
                     }
                 }
                 
@@ -3734,6 +3770,32 @@ void DrawDebugOverlay()
 
 int main(int argc, char **argv)
 {
+    static const auto Shutdown = []()
+    {
+        if (gui.window != NULL)
+        {
+            glfwDestroyWindow(gui.window);
+            glfwTerminate();
+        }
+
+        if (gdb.thread_read_interp)
+        {
+            pthread_cancel(gdb.thread_read_interp);
+            pthread_join(gdb.thread_read_interp, NULL);
+        }
+
+        if (gdb.recv_block)     sem_close(gdb.recv_block);
+        if (gdb.fd_ptty_master) close(gdb.fd_ptty_master);
+        if (gdb.fd_in_read)     close(gdb.fd_in_read);
+        if (gdb.fd_out_read)    close(gdb.fd_out_read);
+        if (gdb.fd_in_write)    close(gdb.fd_in_write);
+        if (gdb.fd_out_write)   close(gdb.fd_out_write);
+        if (gdb.spawned_pid)    EndProcess(gdb.spawned_pid);
+
+        pthread_mutex_destroy(&gdb.modify_block);
+    };
+
+    atexit(Shutdown);
     ImGui::SetAllocatorFunctions(
         [](size_t sz, void * /*user_data*/){ return dlmalloc(sz); },
         [](void *ptr, void * /*user_data*/){ dlfree(ptr); }
@@ -3824,8 +3886,15 @@ int main(int argc, char **argv)
                 glfwSetWindowShouldClose(gui.window, 1); 
         };
 
+        struct sigaction act_abrt = {};
+        act_abrt.sa_handler = [](int)
+        { 
+            Shutdown();
+        };
+
         if (0 > sigaction(SIGINT, &act, NULL) ||
-            0 > sigaction(SIGTERM, &act, NULL))
+            0 > sigaction(SIGTERM, &act, NULL) ||
+            0 > sigaction(SIGABRT, &act_abrt, NULL))
         {
             PrintErrorf("sigaction %s\n", strerror(errno));
             return 1;
@@ -3925,7 +3994,6 @@ int main(int argc, char **argv)
 
     if (!imgui_started)
         return 1;
-
 
     ImGuiIO& io = ImGui::GetIO();
     io.IniFilename = NULL; // manually load/save imgui.ini file
@@ -4086,16 +4154,25 @@ int main(int argc, char **argv)
 
                 if (use_default_font)
                 {
-                    ImFontConfig tmp = ImFontConfig();
-                    tmp.SizePixels = font_size;
-                    tmp.OversampleH = tmp.OversampleV = 1;
-                    tmp.PixelSnapH = true;
-                    result = io.Fonts->AddFontDefault(&tmp);
+                    ImFontConfig cfg = {};
+                    cfg.FontDataOwnedByAtlas = false; // static memory
+                    result = io.Fonts->AddFontFromMemoryTTF(liberation_mono_ttf, sizeof(liberation_mono_ttf), font_size, &cfg);
                     if (result == NULL)
-                    {
                         PrintError("error loading default font?!?!?");
-                    }
                 }
+
+                //if (use_default_font)
+                //{
+                //    ImFontConfig tmp = ImFontConfig();
+                //    tmp.SizePixels = font_size;
+                //    tmp.OversampleH = tmp.OversampleV = 1;
+                //    tmp.PixelSnapH = true;
+                //    result = io.Fonts->AddFontDefault(&tmp);
+                //    if (result == NULL)
+                //    {
+                //        PrintError("error loading default font?!?!?");
+                //    }
+                //}
 
                 return result;
             };
@@ -4175,21 +4252,6 @@ int main(int argc, char **argv)
     ImGui_ImplOpenGL2_Shutdown();
     ImGui_ImplGlfw_Shutdown();
     ImGui::DestroyContext();
-
-    glfwDestroyWindow(gui.window);
-    glfwTerminate();
-    gui.window = NULL;
-
-    pthread_cancel(gdb.thread_read_interp);
-    pthread_join(gdb.thread_read_interp, NULL);
-    pthread_mutex_destroy(&gdb.modify_block);
-    sem_close(gdb.recv_block);
-    close(gdb.fd_ptty_master);
-    close(gdb.fd_in_read);
-    close(gdb.fd_out_read);
-    close(gdb.fd_in_write);
-    close(gdb.fd_out_write);
-    EndProcess(gdb.spawned_pid);
 
     return 0;
 }
