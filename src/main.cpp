@@ -297,7 +297,7 @@ struct GUI
     bool show_breakpoints;
     bool show_threads;
     bool show_directory_viewer;
-    bool show_tutorial = true;
+    bool show_tutorial;
     WindowTheme window_theme = WindowTheme_DarkBlue;
 };
 
@@ -2711,22 +2711,41 @@ void Draw()
         if (phrases.size() > 0)
         {
             ImGui::SetNextWindowPos(AUTOCOMPLETE_START);
-            ImGui::BeginTooltip();
+            ImGuiWindowFlags flags =    ImGuiWindowFlags_Tooltip | 
+                                        //ImGuiWindowFlags_NoInputs | 
+                                        ImGuiWindowFlags_NoTitleBar | 
+                                        ImGuiWindowFlags_NoMove | 
+                                        ImGuiWindowFlags_NoResize | 
+                                        ImGuiWindowFlags_NoSavedSettings | 
+                                        ImGuiWindowFlags_AlwaysAutoResize | 
+                                        ImGuiWindowFlags_NoDocking;
+            ImGui::Begin("##Autocomplete", NULL, flags);
             for (size_t i = 0; i < phrases.size(); i++)
             {
-                if (ImGui::Selectable(phrases[i].c_str(), i == phrase_idx) ||
-                    IsKeyPressed(ImGuiKey_Enter))
+                if (i == phrase_idx)
                 {
-                    phrase_idx = i; // clicked an unselected autocompletion
-                    is_autocomplete_selected = true;
+                    ImVec2 pos = ImGui::GetWindowPos();
+                    ImVec2 sz = ImGui::GetWindowSize();
+                    bool hovered = (ImGui::IsMouseHoveringRect(pos, pos + sz));
+                    ImGui::Selectable(phrases[i].c_str(), !hovered);
+                    if (IsKeyPressed(ImGuiKey_Enter))
+                        is_autocomplete_selected = true;
+                }
+                else
+                {
+                    if (ImGui::Selectable(phrases[i].c_str(), false))
+                    {
+                        phrase_idx = i;
+                        is_autocomplete_selected = true;
+                    }
                 }
             }
 
-
-            ImGui::EndTooltip();
+            ImGui::End();
         }
         
-        if (ImGui::InputText("##input_command", input_command, 
+        if (is_autocomplete_selected ||
+            ImGui::InputText("##input_command", input_command, 
                              sizeof(input_command), 
                              ImGuiInputTextFlags_EnterReturnsTrue | 
                              ImGuiInputTextFlags_CallbackHistory, 
