@@ -2714,15 +2714,11 @@ void Draw()
             ImGui::BeginTooltip();
             for (size_t i = 0; i < phrases.size(); i++)
             {
-                if (i == phrase_idx)
+                if (ImGui::Selectable(phrases[i].c_str(), i == phrase_idx) ||
+                    IsKeyPressed(ImGuiKey_Enter))
                 {
-                    ImGui::Selectable(phrases[i].c_str(), i == phrase_idx);
-                    if (IsKeyPressed(ImGuiKey_Enter))
-                        is_autocomplete_selected = true;
-                }
-                else
-                {
-                    ImGui::Text("%s", phrases[i].c_str());
+                    phrase_idx = i; // clicked an unselected autocompletion
+                    is_autocomplete_selected = true;
                 }
             }
 
