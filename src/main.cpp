@@ -2727,8 +2727,8 @@ void Draw()
                     ImVec2 pos = ImGui::GetWindowPos();
                     ImVec2 sz = ImGui::GetWindowSize();
                     bool hovered = (ImGui::IsMouseHoveringRect(pos, pos + sz));
-                    ImGui::Selectable(phrases[i].c_str(), !hovered);
-                    if (IsKeyPressed(ImGuiKey_Enter))
+                    if (ImGui::Selectable(phrases[i].c_str(), !hovered) ||
+                        IsKeyPressed(ImGuiKey_Enter))
                         is_autocomplete_selected = true;
                 }
                 else
