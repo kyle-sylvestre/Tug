@@ -434,7 +434,9 @@ bool LoadFile(File &file)
                         {
                             char *dest = lst - num_trunc;
                             memmove(dest, lst, (fd + i) - lst);
+
                             file.lines.push_back(dest - fd);
+
                             num_trunc += end;
                             i += end;
                             lst = fd + i;
@@ -448,6 +450,22 @@ bool LoadFile(File &file)
                     // truncate file to size minus sum of line endings
                     file.data.resize(file.data.size() - num_trunc);
                 }
+            }
+
+            // TODO: possibly not the longest line when line number is large enough
+            // format is [breakpoint] [ %-4d line number] [line]
+            file.longest_line_idx = 0;
+            size_t max_chars = 0;
+            size_t len = file.data.size();
+            for (size_t i = file.lines.size() - 1; i < file.lines.size(); i--)
+            {
+                if (max_chars < len - file.lines[i])
+                {
+                    max_chars = len - file.lines[i];
+                    file.longest_line_idx = i;
+                }
+
+                len = file.lines[i];
             }
 
             fclose(f); f = NULL;
@@ -1947,7 +1965,7 @@ void Draw()
         ImGui::PushFont(gui.source_font);
         ImGui::SetNextWindowBgAlpha(1.0);   // @Imgui: bug where GetStyleColor doesn't respect window opacity
         ImGui::SetNextWindowSize(MIN_WINSIZE, ImGuiCond_Once);
-        ImGui::Begin("Source", &gui.show_source);
+        ImGui::Begin("Source", &gui.show_source, ImGuiWindowFlags_HorizontalScrollbar);
 
         if (ImGui::IsWindowFocused() && gui.this_frame.vert_scroll_increments != 0.0f)
         {
@@ -2088,7 +2106,17 @@ void Draw()
             ImGui::RadioButton("##MeasureRadioHeight", false); ImGui::SameLine(); ImGui::Text("MeasureText");
             float lineheight = ImGui::GetCursorPosY() - ystartoffscreen;
             size_t perscreen = ceilf(ImGui::GetWindowHeight() / lineheight) + 1;
+
+            // set the max horizontal scrollbar size
+            String longest = GetLine(file, file.longest_line_idx);
+            float start_curpos_x = ImGui::GetCursorPosX();
+            ImGui::SetCursorPosX(start_curpos_x + ImGui::CalcTextSize(longest.data(), longest.data() + longest.size()).x);
+            ImGui::Text("foobarbaz");
+
+            // reset the draw position
             ImGui::SetCursorPosY(start_curpos_y);
+            ImGui::SetCursorPosX(start_curpos_x);
+
 
             // @Optimization: only draw the visible lines then SetCursorPosY to 
             // be lineheight * height per line to set the total scroll

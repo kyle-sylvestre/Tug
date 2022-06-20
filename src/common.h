@@ -201,6 +201,7 @@ struct File
     Vector<size_t> lines;   // offset to line within data
     String filename;
     String data;            // file chars excluding line endings
+    size_t longest_line_idx;// line with most chars, used for horizontal scrollbar 
 };
 
 #define INVALID_BLOCK_STRING_IDX 0
