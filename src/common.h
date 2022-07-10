@@ -112,8 +112,8 @@ if ( !(cond) )\
 #define Assert(cond) (void)0;
 #endif
 
-#define PrintMessagef(fmt, ...) do { String _msg = StringPrintf(fmt, __VA_ARGS__); WriteToConsoleBuffer(_msg.data(), _msg.size()); } while(0)
-#define PrintMessage(msg) PrintMessagef("%s", msg)
+#define Printf(fmt, ...) do { String _msg = StringPrintf(fmt, __VA_ARGS__); WriteToConsoleBuffer(_msg.data(), _msg.size()); } while(0)
+#define Print(msg) Printf("%s", msg)
 
 // log user error message
 #define PrintError(str) PrintErrorf("%s", str)

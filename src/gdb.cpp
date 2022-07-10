@@ -201,7 +201,7 @@ bool GDB_StartProcess(String gdb_filename, String gdb_args)
         }
         else
         {
-            PrintMessagef("spawned %s %s\n", gdb_filename.c_str(), gdb_args.c_str());
+            Printf("spawned %s %s\n", gdb_filename.c_str(), gdb_args.c_str());
         }
     }
 
@@ -262,7 +262,7 @@ bool GDB_StartProcess(String gdb_filename, String gdb_args)
     String set_tty = StringPrintf("-inferior-tty-set %s", ptsname(gdb.fd_ptty_master));
     if (GDB_SendBlocking(set_tty.c_str()))
     {
-        PrintMessagef("set inferior-tty to %s\n", ptsname(gdb.fd_ptty_master));
+        Printf("set inferior-tty to %s\n", ptsname(gdb.fd_ptty_master));
     }
     else
     {
@@ -280,7 +280,7 @@ bool GDB_SetInferiorExe(String filename)
     String s = StringPrintf("-file-exec-and-symbols \"%s\"", filename.c_str());
     if (GDB_SendBlocking(s.c_str()))
     {
-        PrintMessagef("set debug exe %s\n", filename.c_str());
+        Printf("set debug exe %s\n", filename.c_str());
         gdb.debug_filename = filename;
         result = true;
     }
@@ -294,7 +294,7 @@ bool GDB_SetInferiorArgs(String args)
     String s = StringPrintf("-exec-arguments %s", args.c_str());
     if (GDB_SendBlocking(s.c_str()))
     {
-        PrintMessagef("set args %s\n", args.c_str());
+        Printf("set args %s\n", args.c_str());
         gdb.debug_args = args;
         result = true;
     }
@@ -323,7 +323,7 @@ bool GDB_LoadInferior(String filename, String args)
         result = good_args;
         if (result)
         {
-            PrintMessagef("set debug program: %s %s\n", filename.c_str(), args.c_str());
+            Printf("set debug program: %s %s\n", filename.c_str(), args.c_str());
             gdb.debug_filename = filename;
             gdb.debug_args = args;
         }
@@ -1005,11 +1005,11 @@ bool GDB_Send(const char *cmd)
 
     if (gdb.spawned_pid == 0)
     {
-        PrintMessage("GDB process not started\n");
+        Print("GDB process not started\n");
     }
     else if (prog.running && !gdb.supports_async_execution)
     {
-        PrintMessage("target doesn't support async execution\n");
+        Print("target doesn't support async execution\n");
     }
     else
     {

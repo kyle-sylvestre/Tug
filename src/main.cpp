@@ -169,7 +169,7 @@ void EndProcess(pid_t p)
             }
             else if (tmp == p)
             {
-                PrintMessagef("ended process %d: exit code %d\n",
+                Printf("ended process %d: exit code %d\n",
                               (int)p, WEXITSTATUS(status));
             }
         }
@@ -459,9 +459,10 @@ bool LoadFile(File &file)
             size_t len = file.data.size();
             for (size_t i = file.lines.size() - 1; i < file.lines.size(); i--)
             {
-                if (max_chars < len - file.lines[i])
+                size_t this_line_len = len - file.lines[i];
+                if (max_chars < this_line_len)
                 {
-                    max_chars = len - file.lines[i];
+                    max_chars = this_line_len;
                     file.longest_line_idx = i;
                 }
 
@@ -613,7 +614,7 @@ void WriteToConsoleBuffer(const char *buf, size_t bufsize)
             PushChar(buf[i]);
 
         // newline is chopped in user input, parsed as MI record
-        // PrintMessagef newline isn't chopped, check last char 
+        // Printf newline isn't chopped, check last char 
         if (bufsize > 0 && buf[bufsize - 1] != '\n')
             PushChar('\n');
     }
@@ -1731,7 +1732,7 @@ void Draw()
                 {
                     if (gdb.spawned_pid != 0)
                     {
-                        PrintMessagef("ending %s...", gdb.filename.c_str());
+                        Printf("ending %s...", gdb.filename.c_str());
                         gdb.filename = "";
                         EndProcess(gdb.spawned_pid);
                         ResetProgramState();
@@ -2276,7 +2277,7 @@ void Draw()
 
                                 // add console message matching what GDB would send
                                 //Breakpoint 2 at 0x555555555185: file debug.c, line 13.
-                                PrintMessagef("Breakpoint %d at 0x%" PRIx64": file %s, line %d",
+                                Printf("Breakpoint %d at 0x%" PRIx64": file %s, line %d",
                                               (int)bkpt.number, bkpt.addr, filename, (int)(bkpt.line_idx + 1));
                             }
                         }
@@ -4044,7 +4045,7 @@ int main(int argc, char **argv)
             return 1;
         }
 
-        PrintMessagef("pty slave: %s\n", ptsname(gdb.fd_ptty_master));
+        Printf("pty slave: %s\n", ptsname(gdb.fd_ptty_master));
 
         String tmp;
         if (InvokeShellCommand("which gdb", tmp))
