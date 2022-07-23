@@ -299,6 +299,11 @@ struct GUI
     bool show_directory_viewer;
     bool show_tutorial;
     WindowTheme window_theme = WindowTheme_DarkBlue;
+
+    // shutdown variables
+    bool started_imgui_opengl2;
+    bool started_imgui_glfw;
+    bool created_imgui_context;
 };
 
 Program prog;
@@ -3928,16 +3933,16 @@ void DrawDebugOverlay()
 
 int main(int argc, char **argv)
 {
+#define ExitMessagef(fmt, ...) do { PrintErrorf(fmt, __VA_ARGS__); exit(EXIT_FAILURE); } while(0)
+#define ExitMessage(msg) ExitMessagef("%s", msg)
     {
         // show the tutorial if the tug executable is new enough
         // and no tug.ini is found in the CWD
         time_t sec = time(NULL);
         struct stat st = {};
         if (0 > stat(argv[0], &st))
-        {
-            PrintErrorf("stat %s\n", strerror(errno));
-            return 1;
-        }
+            ExitMessagef("stat %s\n", strerror(errno));
+
         else if (sec >= st.st_mtim.tv_sec &&
                  sec - st.st_mtim.tv_sec <= 2 * 60 &&
                  !DoesFileExist("tug.ini"))
@@ -3948,12 +3953,18 @@ int main(int argc, char **argv)
 
     static const auto Shutdown = []()
     {
+        // shutdown imgui and glfw
+        if (gui.started_imgui_opengl2)  ImGui_ImplOpenGL2_Shutdown();
+        if (gui.started_imgui_glfw)     ImGui_ImplGlfw_Shutdown();
+        if (gui.created_imgui_context)  ImGui::DestroyContext();
+
         if (gui.window != NULL)
         {
             glfwDestroyWindow(gui.window);
             glfwTerminate();
         }
 
+        // shutdown GDB
         if (gdb.thread_read_interp)
         {
             pthread_cancel(gdb.thread_read_interp);
@@ -3984,66 +3995,42 @@ int main(int argc, char **argv)
         int pipes[2] = {};
         rc = pipe(pipes);
         if (rc < 0)
-        {
-            PrintErrorf("from gdb pipe: %s\n", strerror(errno));
-            return 1;
-        }
+            ExitMessagef("from gdb pipe: %s\n", strerror(errno));
 
         gdb.fd_in_read = pipes[0];
         gdb.fd_in_write = pipes[1];
 
         rc = pipe(pipes);
         if (rc < 0)
-        {
-            PrintErrorf("to gdb pipe: %s\n", strerror(errno));
-            return 1;
-        }
+            ExitMessagef("to gdb pipe: %s\n", strerror(errno));
 
         gdb.fd_out_read = pipes[0];
         gdb.fd_out_write = pipes[1];
 
         rc = pthread_mutex_init(&gdb.modify_block, NULL);
         if (rc < 0) 
-        {
-            PrintErrorf("pthread_mutex_init: %s\n", strerror(errno));
-            return 1;
-        }
+            ExitMessagef("pthread_mutex_init: %s\n", strerror(errno));
 
         gdb.recv_block = sem_open("recv_gdb_block", O_CREAT, S_IRWXU, 0);
         if (gdb.recv_block == NULL) 
-        {
-            PrintErrorf("sem_open: %s\n", strerror(errno));
-            return 1;
-        }
+            ExitMessagef("sem_open: %s\n", strerror(errno));
 
         extern void *GDB_ReadInterpreterBlocks(void *);
         rc = pthread_create(&gdb.thread_read_interp, NULL, GDB_ReadInterpreterBlocks, (void*) NULL);
         if (rc < 0) 
-        {
-            PrintErrorf("pthread_create: %s\n", strerror(errno));
-            return 1;
-        }
+            ExitMessagef("pthread_create: %s\n", strerror(errno));
 
         gdb.fd_ptty_master = posix_openpt(O_RDWR | O_NOCTTY);// | O_NONBLOCK);
         if (gdb.fd_ptty_master < 0)
-        {
-            PrintErrorf("posix_openpt: %s\n", strerror(errno));
-            return 1;
-        }
+            ExitMessagef("posix_openpt: %s\n", strerror(errno));
 
         rc = grantpt(gdb.fd_ptty_master);
         if (rc < 0)
-        {
-            PrintErrorf("grantpt: %s\n", strerror(errno));
-            return 1;
-        }
+            ExitMessagef("grantpt: %s\n", strerror(errno));
 
         rc = unlockpt(gdb.fd_ptty_master);
         if (rc < 0)
-        {
-            PrintErrorf("grantpt: %s\n", strerror(errno));
-            return 1;
-        }
+            ExitMessagef("grantpt: %s\n", strerror(errno));
 
         Printf("pty slave: %s\n", ptsname(gdb.fd_ptty_master));
 
@@ -4072,8 +4059,7 @@ int main(int argc, char **argv)
             0 > sigaction(SIGTERM, &act, NULL) ||
             0 > sigaction(SIGABRT, &act_abrt, NULL))
         {
-            PrintErrorf("sigaction %s\n", strerror(errno));
-            return 1;
+            ExitMessagef("sigaction %s\n", strerror(errno));
         }
     }
 
@@ -4095,26 +4081,23 @@ int main(int argc, char **argv)
         {
             // flag requires an additional arg passed in
             if (i >= argc)
-            {
-                PrintErrorf("missing %s param\n", flag.c_str());
-                return 1;
-            }
+                ExitMessagef("missing %s param\n", flag.c_str());
+
             else if (flag == "--gdb")
             {
                 gdb.filename = argv[i++];
                 if (!VerifyFileExecutable(gdb.filename.c_str()))
-                    return 1;
+                    return EXIT_FAILURE;
             }
             else if (flag == "--exe")
             {
                 gdb.debug_filename = argv[i++];
                 if (!VerifyFileExecutable(gdb.debug_filename.c_str()))
-                    return 1;
+                    return EXIT_FAILURE;
             }
             else
             {
-                PrintErrorf("unknown flag: %s\n", flag.c_str());
-                return 1;
+                ExitMessagef("unknown flag: %s\n", flag.c_str());
             }
         }
     }
@@ -4140,11 +4123,11 @@ int main(int argc, char **argv)
         // GLFW init
         glfwSetErrorCallback(glfw_error_callback);
         if (!glfwInit())
-            return 1;
+            ExitMessage("glfwInit\n");
 
         gui.window = glfwCreateWindow(1280, 720, "Tug", NULL, NULL);
         if (gui.window == NULL)
-            return 1;
+            ExitMessage("glfwCreateWindow\n");
 
         glfwMakeContextCurrent(gui.window);
         glfwSwapInterval(1); // Enable vsync
@@ -4162,14 +4145,21 @@ int main(int argc, char **argv)
     }
 
 
-    // Setup Dear ImGui context
-    bool imgui_started = IMGUI_CHECKVERSION() &&
-                         NULL != ImGui::CreateContext() &&
-                         ImGui_ImplGlfw_InitForOpenGL(gui.window, true) &&
-                         ImGui_ImplOpenGL2_Init();
+    // Startup Dear ImGui
+    if (!IMGUI_CHECKVERSION()) 
+        ExitMessage("IMGUI_CHECKVERSION\n");
 
-    if (!imgui_started)
-        return 1;
+    gui.created_imgui_context = ImGui::CreateContext();
+    if (!gui.created_imgui_context)
+        ExitMessage("ImGui::CreateContext\n");
+
+    gui.started_imgui_glfw = ImGui_ImplGlfw_InitForOpenGL(gui.window, true);
+    if (!gui.started_imgui_glfw)
+        ExitMessage("ImGui_ImplGlfw_InitForOpenGL\n");
+
+    gui.started_imgui_opengl2 = ImGui_ImplOpenGL2_Init();
+    if (!gui.started_imgui_opengl2)
+        ExitMessage("ImGui_ImplOpenGL2_Init\n");
 
     ImGuiIO& io = ImGui::GetIO();
     io.IniFilename = NULL; // manually load/save imgui.ini file
@@ -4425,9 +4415,6 @@ int main(int argc, char **argv)
         fclose(f); f = NULL;
     }
 
-    ImGui_ImplOpenGL2_Shutdown();
-    ImGui_ImplGlfw_Shutdown();
-    ImGui::DestroyContext();
-
-    return 0;
+    // Shutdown lambda called here from atexit
+    return EXIT_SUCCESS;
 }
