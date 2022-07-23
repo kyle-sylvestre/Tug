@@ -46,9 +46,20 @@
 // STL Switcheroo
 //
 
-// doug lea allocator, used for imgui, Vector, and String
-extern "C" void* dlmalloc(size_t bytes);
-extern "C" void dlfree(void *mem);
+struct Profile
+{
+    struct MemoryUsage
+    {
+        size_t alloc;       // current allocated: bytes + padding/alignment
+        size_t max_alloc;   // max allocated
+    };
+
+    MemoryUsage imgui;
+    MemoryUsage stl; // string and vector
+};
+extern Profile profile;
+void *MemoryAllocate(Profile::MemoryUsage *usage, size_t bytes);
+void MemoryFree(Profile::MemoryUsage *usage, void *ptr);
 
 template <class T>
 struct DL_Allocator
@@ -69,13 +80,17 @@ struct DL_Allocator
     }
 
     // the good stuff
-    T* allocate(const size_t n)
+    T* allocate(const size_t count)
     {
-        return (T *)dlmalloc(n * sizeof(T));
+        size_t bytes = count * sizeof(T);
+        //void *result = dlmalloc(bytes);
+        void *result = (T *)MemoryAllocate(&profile.stl, bytes);
+        return (T *)result;
     }
-    void deallocate(T* const p, size_t)
+    void deallocate(T* const ptr, size_t)
     {
-        dlfree(p);
+        //dlfree(ptr);
+        MemoryFree(&profile.stl, ptr);
     }
 };
 
@@ -400,6 +415,7 @@ struct Program
     String stack_sig;               // string of all function names combined
 };
 
+extern Profile profile;
 extern Program prog;
 extern GDB gdb;
 
