@@ -2779,12 +2779,11 @@ void Draw()
             ImGui::End();
         }
         
-        if (is_autocomplete_selected ||
-            ImGui::InputText("##input_command", input_command, 
+        if (ImGui::InputText("##input_command", input_command, 
                              sizeof(input_command), 
                              ImGuiInputTextFlags_EnterReturnsTrue | 
                              ImGuiInputTextFlags_CallbackHistory, 
-                             HistoryCallback, NULL))
+                             HistoryCallback, NULL) || is_autocomplete_selected)
         {
             // retain focus on the input line
             ImGui::SetKeyboardFocusHere(-1);
