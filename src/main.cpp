@@ -2448,19 +2448,6 @@ void Draw()
                         }
                     }
                 }
-
-                // scroll with up/down arrow key
-                //float line_height = ImGui::GetScrollMaxY() / (float)file.lines.size();
-                //float scroll_y = ImGui::GetScrollY();
-
-                //if (glfwGetKey(window,GLFW_KEY_UP) == GLFW_PRESS)
-                //{
-                //    ImGui::SetScrollY(scroll_y - line_height);
-                //}
-                //else if (glfwGetKey(window,GLFW_KEY_DOWN) == GLFW_PRESS)
-                //{
-                //    ImGui::SetScrollY(scroll_y + line_height);
-                //}
             }
             else if ((gui.line_display == LineDisplay_Disassembly ||
                       gui.line_display == LineDisplay_Source_And_Disassembly) &&
@@ -2606,7 +2593,55 @@ void Draw()
                     }
                 }
             }
+
+
+            // scroll once then repeat after delay
+            if (ImGui::IsWindowFocused())
+            {
+                int scroll_dir = 0;
+                if (ImGui::IsKeyPressed(ImGuiKey_DownArrow))
+                    scroll_dir = 1;
+                else if (ImGui::IsKeyPressed(ImGuiKey_UpArrow))
+                    scroll_dir = -1;
+
+                static double first_down_milliseconds;
+                if (scroll_dir != 0)
+                {
+                    timeval tv = {};
+                    gettimeofday(&tv, NULL); // get current time
+                    double ms = (tv.tv_sec) * 1000 + (tv.tv_usec) / 1000 ; // convert tv_sec & tv_usec to millisecond
+
+                    if (first_down_milliseconds == 0)
+                    {
+                        // first time pressing up/down
+                        // move one line then delay until repeating
+                        first_down_milliseconds = ms;
+                    }
+                    else 
+                    {
+                        // don't repeat the scroll until delay is met
+                        if (ms - first_down_milliseconds < 250.0)
+                            scroll_dir = 0;
+                    }
+                }
+                else
+                {
+                    first_down_milliseconds = 0;
+                }
+
+                if (scroll_dir)
+                {
+                    size_t line_idx = ImGui::GetScrollY() / lineheight;
+                    if ((line_idx > 0 && scroll_dir == -1) ||
+                        (line_idx + 1 < file.lines.size() && scroll_dir == 1))
+                    {
+                        // TODO: vsync frequency dependent, get consistent scroll
+                        ImGui::SetScrollY((line_idx + scroll_dir) * lineheight);
+                    }
+                }
+            }
         }
+
 
         if (gui.source_search_bar_open)
             ImGui::EndChild();
