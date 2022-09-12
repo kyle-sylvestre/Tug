@@ -3981,9 +3981,9 @@ int main(int argc, char **argv)
     static const auto Shutdown = []()
     {
         // shutdown imgui and glfw
-        if (gui.started_imgui_opengl2)  ImGui_ImplOpenGL2_Shutdown();
-        if (gui.started_imgui_glfw)     ImGui_ImplGlfw_Shutdown();
-        if (gui.created_imgui_context)  ImGui::DestroyContext();
+        if (gui.started_imgui_opengl2)  { ImGui_ImplOpenGL2_Shutdown(); gui.started_imgui_opengl2 = false; }
+        if (gui.started_imgui_glfw)     { ImGui_ImplGlfw_Shutdown(); gui.started_imgui_glfw = false; }
+        if (gui.created_imgui_context)  { ImGui::DestroyContext(); gui.created_imgui_context = false; }
 
         if (gui.window != NULL)
         {
@@ -3996,23 +3996,24 @@ int main(int argc, char **argv)
         {
             pthread_cancel(gdb.thread_read_interp);
             pthread_join(gdb.thread_read_interp, NULL);
+            gdb.thread_read_interp = 0;
         }
 
-        if (gdb.recv_block)     sem_close(gdb.recv_block);
-        if (gdb.fd_ptty_master) close(gdb.fd_ptty_master);
-        if (gdb.fd_in_read)     close(gdb.fd_in_read);
-        if (gdb.fd_out_read)    close(gdb.fd_out_read);
-        if (gdb.fd_in_write)    close(gdb.fd_in_write);
-        if (gdb.fd_out_write)   close(gdb.fd_out_write);
-        if (gdb.spawned_pid)    EndProcess(gdb.spawned_pid);
+        if (gdb.recv_block)     { sem_close(gdb.recv_block); gdb.recv_block = 0; }
+        if (gdb.fd_ptty_master) { close(gdb.fd_ptty_master); gdb.fd_ptty_master = 0; }
+        if (gdb.fd_in_read)     { close(gdb.fd_in_read); gdb.fd_in_read = 0; }
+        if (gdb.fd_out_read)    { close(gdb.fd_out_read); gdb.fd_out_read = 0; }
+        if (gdb.fd_in_write)    { close(gdb.fd_in_write); gdb.fd_in_write = 0; }
+        if (gdb.fd_out_write)   { close(gdb.fd_out_write); gdb.fd_out_write = 0; }
+        if (gdb.spawned_pid)    { EndProcess(gdb.spawned_pid); gdb.spawned_pid = 0; }
 
         pthread_mutex_destroy(&gdb.modify_block);
 
-        const float MB = (float)(1024 * 1024);
+        //const float MB = (float)(1024 * 1024);
         //printf("imgui usage: %.2fMB\n", profile.imgui.alloc / MB);
-        printf("imgui max usage: %.2fMB\n", profile.imgui.max_alloc / MB);
+        //printf("imgui max usage: %.2fMB\n", profile.imgui.max_alloc / MB);
         //printf("STL usage: %.2fMB\n", profile.stl.alloc / MB);
-        printf("STL max usage: %.2fMB\n", profile.stl.max_alloc / MB);
+        //printf("STL max usage: %.2fMB\n", profile.stl.max_alloc / MB);
 
     };
 
