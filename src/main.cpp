@@ -3964,14 +3964,17 @@ int main(int argc, char **argv)
         // and no tug.ini is found in the CWD
         time_t sec = time(NULL);
         struct stat st = {};
-        if (0 > stat(argv[0], &st))
-            ExitMessagef("stat %s\n", strerror(errno));
+        char tug_abspath[PATH_MAX] = {};
 
-        else if (sec >= st.st_mtim.tv_sec &&
-                 sec - st.st_mtim.tv_sec <= 2 * 60 &&
-                 !DoesFileExist("tug.ini"))
+        if (0 < readlink("/proc/self/exe", tug_abspath, sizeof(tug_abspath)))
         {
-            gui.show_tutorial = true;
+            if (0 < stat(tug_abspath, &st) &&
+                sec >= st.st_mtim.tv_sec &&
+                sec - st.st_mtim.tv_sec <= 2 * 60 &&
+                !DoesFileExist("tug.ini", false))
+            {
+                gui.show_tutorial = true;
+            }
         }
     }
 
