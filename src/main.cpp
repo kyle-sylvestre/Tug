@@ -1732,7 +1732,9 @@ void Draw()
                pick_gdb_file = false;
             }
 
-            if (ImGui::Button("Set##Debug Program Menu"))
+            bool started = false;
+            ImGuiDisabled(prog.started, started = ImGui::Button("Start##Debug Program Menu"));
+            if (started)
             {
                 if (gdb.filename != gdb_filename)
                 {
@@ -1751,7 +1753,11 @@ void Draw()
                 if (gdb.spawned_pid != 0 && 
                     GDB_SetInferiorExe(debug_filename) &&
                     GDB_SetInferiorArgs(debug_args))
+                {
                     ImGui::CloseCurrentPopup(); 
+                    if (gdb.has_exec_run_start)
+                        GDB_SendBlocking("-exec-run --start");
+                }
             }
 
             ImGui::EndMenu();
@@ -2655,9 +2661,9 @@ void Draw()
     {
         ImGui::SetNextWindowBgAlpha(1.0);   // @Imgui: bug where GetStyleColor doesn't respect window opacity
         ImGui::SetNextWindowSize(MIN_WINSIZE, ImGuiCond_Once);
-        ImGui::Begin("Control", &gui.show_control);
+        ImGui::Begin("Control", &gui.show_control, ImGuiWindowFlags_NoScrollbar);
 
-        // continue
+        // jump to next executed line
         if (ImGui::Button("---") && prog.frame_idx < prog.frames.size())
         {
             gui.jump_type = Jump_Goto;
@@ -2665,13 +2671,18 @@ void Draw()
         }
         HelpText("Jump to the next line to be executed");
 
-        // start
+        // resume execution
         ImGui::SameLine();
         if (ImGui::Button("|>") || (!prog.running && IsKeyPressed(ImGuiKey_F5)))
-            ExecuteCommand("-exec-continue");
+        {
+            if (prog.started)
+                ExecuteCommand("-exec-continue");
+            else
+                GDB_SendBlocking("-exec-run");
+        }
 
-        HelpText("Continue execution of the program.\n"
-                 "gdb equivalent is \"continue\""); 
+        HelpText("start executing the program.\n"
+                 "gdb equivalent is \"run\" on startup and \"continue\" on resuming execution"); 
 
         // send SIGINT 
         ImGui::SameLine();
@@ -4184,18 +4195,20 @@ int main(int argc, char **argv)
     if (gdb.filename != "" && 
         !GDB_StartProcess(gdb.filename, ""))
     {
-
-        //pthread_t peethread;
-        //auto Func = [](void*) -> void* { GDB_StartProcess(gdb.filename, ""); return NULL; };
-        //int rc = pthread_create(&peethread, NULL, Func, NULL);
         gdb.filename = "";
     }
 
-    if (gdb.spawned_pid != 0 && 
-        gdb.debug_filename != "" && 
-        !GDB_SetInferiorExe(gdb.debug_filename))
+    if (gdb.spawned_pid != 0 && gdb.debug_filename != "")
     {
-        gdb.debug_filename = "";
+        if (GDB_SetInferiorExe(gdb.debug_filename))
+        {
+            if (gdb.has_exec_run_start)
+                GDB_SendBlocking("-exec-run --start");
+        }
+        else
+        {
+            gdb.debug_filename = "";
+        }
     }
 
     {
@@ -4362,6 +4375,7 @@ int main(int argc, char **argv)
 
     // Setup Dear ImGui style
     SetWindowTheme(gui.window_theme);
+    ImGui::GetStyle().ScrollbarSize = 20.0f;
 
     // Main loop
     while (!glfwWindowShouldClose(gui.window))
