@@ -121,7 +121,7 @@ inline void Zeroize(T &value)
 #define Assert(cond)\
 if ( !(cond) )\
 {\
-    char _gdb_buf[128]; tsnprintf(_gdb_buf, "gdb --pid %d", (int)getpid()); system(_gdb_buf); exit(1);\
+    char _gdb_buf[128]; tsnprintf(_gdb_buf, "gdb --pid %d", (int)getpid()); int _rc = system(_gdb_buf); (void)_rc; exit(1);\
 }
 #else
 #define Assert(cond) (void)0;
