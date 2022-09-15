@@ -1,6 +1,7 @@
 debug_misc
 *.ini
 build_debug
+ignore
 build_release
 tags
 *.o
