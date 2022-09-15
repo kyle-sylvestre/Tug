@@ -2323,7 +2323,7 @@ void Draw()
                     {
                         // convert absolute mouse to window relative position
                         ImVec2 relpos = {};
-                        relpos.x = ImGui::GetMousePos().x - ImGui::GetWindowPos().x;
+                        relpos.x = ImGui::GetMousePos().x - ImGui::GetWindowPos().x + ImGui::GetScrollX();
                         relpos.y = ImGui::GetMousePos().y - ImGui::GetWindowPos().y;
 
                         // enumerate words of the line
