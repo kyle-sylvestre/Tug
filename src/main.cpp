@@ -306,7 +306,6 @@ struct GUI
     bool created_imgui_context;
 };
 
-Profile profile;
 Program prog;
 GDB gdb;
 GUI gui;
@@ -3980,30 +3979,6 @@ void DrawDebugOverlay()
     }
 }
 
-// doug lea allocator, used for imgui, Vector, and String
-extern "C" void* dlmalloc(size_t bytes);
-extern "C" void dlfree(void *mem);
-extern "C" size_t dlmalloc_usable_size(void*);
-
-void *MemoryAllocate(Profile::MemoryUsage *usage, size_t bytes)
-{
-    char *result = (char *)dlmalloc(bytes);
-    size_t total_alloc = dlmalloc_usable_size(result); // allocation + padding/alignment
-    usage->alloc += total_alloc;
-    if (usage->max_alloc < usage->alloc)
-        usage->max_alloc = usage->alloc;
-
-    return result;
-}
-void MemoryFree(Profile::MemoryUsage *usage, void *ptr)
-{
-    if (!ptr) return;
-    size_t total_alloc = dlmalloc_usable_size(ptr); // allocation + padding/alignment
-    Assert(usage->alloc >= total_alloc);
-    usage->alloc -= total_alloc;
-    dlfree(ptr);
-}
-
 int main(int argc, char **argv)
 {
 #define ExitMessagef(fmt, ...) do { PrintErrorf(fmt, __VA_ARGS__); exit(EXIT_FAILURE); } while(0)
@@ -4095,30 +4070,9 @@ int main(int argc, char **argv)
         if (gdb.spawned_pid)    { EndProcess(gdb.spawned_pid); gdb.spawned_pid = 0; }
 
         pthread_mutex_destroy(&gdb.modify_block);
-
-        //const float MB = (float)(1024 * 1024);
-        //printf("imgui usage: %.2fMB\n", profile.imgui.alloc / MB);
-        //printf("imgui max usage: %.2fMB\n", profile.imgui.max_alloc / MB);
-        //printf("STL usage: %.2fMB\n", profile.stl.alloc / MB);
-        //printf("STL max usage: %.2fMB\n", profile.stl.max_alloc / MB);
-
     };
 
     atexit(Shutdown);
-    ImGui::SetAllocatorFunctions(
-        [](size_t sz, void *user_data)
-        {
-            Profile::MemoryUsage *imgui_usage = (Profile::MemoryUsage *)user_data;
-            return MemoryAllocate(imgui_usage, sz);
-        },
-        [](void *ptr, void *user_data)
-        { 
-            Profile::MemoryUsage *imgui_usage = (Profile::MemoryUsage *)user_data;
-            MemoryFree(imgui_usage, ptr);
-        },
-        &profile.imgui
-    );
-
     {
         // GDB Init
         int rc = 0;

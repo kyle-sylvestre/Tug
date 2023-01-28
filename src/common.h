@@ -48,61 +48,9 @@
 #include <sys/time.h>
 #include <sys/stat.h>
 
-//
-// STL Switcheroo
-//
-
-struct Profile
-{
-    struct MemoryUsage
-    {
-        size_t alloc;       // current allocated: bytes + padding/alignment
-        size_t max_alloc;   // max allocated
-    };
-
-    MemoryUsage imgui;
-    MemoryUsage stl; // string and vector
-};
-extern Profile profile;
-void *MemoryAllocate(Profile::MemoryUsage *usage, size_t bytes);
-void MemoryFree(Profile::MemoryUsage *usage, void *ptr);
-
-template <class T>
-struct DL_Allocator
-{
-    // the ugly stuff
-    typedef T value_type;
-    typedef char char_type;
-
-    DL_Allocator() noexcept {} //default ctor not required by C++ Standard Library
-    template<class U> DL_Allocator(const DL_Allocator<U>&) noexcept {}
-    template<class U> bool operator==(const DL_Allocator<U>&) const noexcept
-    {
-        return true;
-    }
-    template<class U> bool operator!=(const DL_Allocator<U>&) const noexcept
-    {
-        return false;
-    }
-
-    // the good stuff
-    T* allocate(const size_t count)
-    {
-        size_t bytes = count * sizeof(T);
-        //void *result = dlmalloc(bytes);
-        void *result = (T *)MemoryAllocate(&profile.stl, bytes);
-        return (T *)result;
-    }
-    void deallocate(T* const ptr, size_t)
-    {
-        //dlfree(ptr);
-        MemoryFree(&profile.stl, ptr);
-    }
-};
-
 template <typename T>
-using Vector = std::vector<T, DL_Allocator<T>>;
-using String = std::basic_string<char, std::char_traits<char>, DL_Allocator<char>>;
+using Vector = std::vector<T>;
+using String = std::basic_string<char, std::char_traits<char>>;
 
 #define VARGS_CHECK(fmt, ...) (0 && snprintf(NULL, 0, fmt, __VA_ARGS__))
 #define StringPrintf(fmt, ...) _StringPrintf(VARGS_CHECK(fmt, __VA_ARGS__), fmt, __VA_ARGS__)
@@ -421,7 +369,6 @@ struct Program
     String stack_sig;               // string of all function names combined
 };
 
-extern Profile profile;
 extern Program prog;
 extern GDB gdb;
 

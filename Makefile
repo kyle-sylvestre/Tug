@@ -26,7 +26,6 @@ PVS_LOG = $(addprefix $(OBJDIR)/, pvs.log)
 
 SOURCES = ./src/main.cpp\
           ./src/gdb.cpp\
-          ./third-party/dlmalloc.cpp\
           $(IMGUI_DIR)/imgui.cpp\
           $(IMGUI_DIR)/imgui_demo.cpp\
           $(IMGUI_DIR)/imgui_draw.cpp\
