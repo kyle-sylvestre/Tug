@@ -3025,8 +3025,18 @@ const char* ImGui::FindRenderedTextEnd(const char* text, const char* text_end)
     if (!text_end)
         text_end = (const char*)-1;
 
-    while (text_display_end < text_end && *text_display_end != '\0' && (text_display_end[0] != '#' || text_display_end[1] != '#'))
+    // KLS: mark the last "##" as the end instead of the first one encountered
+    const char *last_id = NULL;
+    while (text_display_end < text_end && *text_display_end != '\0')
+    {
+        if (text_display_end[0] == '#' && text_display_end[1] == '#')
+            last_id = text_display_end;
         text_display_end++;
+    }
+
+    if (last_id)
+        text_display_end = last_id;
+
     return text_display_end;
 }
 

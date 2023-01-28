@@ -2299,11 +2299,19 @@ void Draw()
 
                     ImGui::SameLine();
                     int line_written = tsnprintf(tmpbuf, "%-4zu %s", line_idx + 1, line.c_str());
+                    if (line_written >= (int)sizeof(tmpbuf))
+                        line_written = sizeof(tmpbuf) - 1;
+
                     ImVec2 textstart = ImGui::GetCursorPos();
                     textstart.x += ImGui::CalcTextSize(tmpbuf, tmpbuf + line_written - line.size()).x; // skip line number for hover eval
 
                     if (in_active_frame_file && line_idx == prog.frames[prog.frame_idx].line_idx)
                     {
+                        // prevent any "##" text from being hidden
+                        if (line_written < (int)sizeof(tmpbuf))
+                            snprintf(tmpbuf + line_written, 
+                                     sizeof(tmpbuf) - line_written,
+                                     "##%zu", line_idx);
                         ImGui::Selectable(tmpbuf, !prog.running);
                     }
                     else
@@ -2575,7 +2583,9 @@ void Draw()
                     ImGui::SameLine();
                     if (line.addr == frame.addr)
                     {
-                        ImGui::Selectable(line.text.c_str(), true);
+                        // prevent any "##" text from being hidden
+                        tsnprintf(tmpbuf, "%s##%zu", line.text.c_str(), i);
+                        ImGui::Selectable(tmpbuf, true);
                     }
                     else
                     {
