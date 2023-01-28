@@ -15,6 +15,13 @@
 
 #pragma once
 
+#if defined(__CYGWIN__)
+#define _BSD_SOURCE
+#define _DIRENT_HAVE_D_TYPE 1
+#define _XOPEN_SOURCE 600 
+#include <dirent.h>
+#endif
+
 // sepples
 #include <string>
 #include <vector>
@@ -30,7 +37,6 @@
 #include <inttypes.h>
 
 // linoox
-#include <linux/limits.h>
 #include <libgen.h>
 #include <errno.h>
 #include <pthread.h>

@@ -4142,7 +4142,7 @@ int main(int argc, char **argv)
         if (rc < 0) 
             ExitMessagef("pthread_mutex_init: %s\n", strerror(errno));
 
-        gdb.recv_block = sem_open("recv_gdb_block", O_CREAT, S_IRWXU, 0);
+        gdb.recv_block = sem_open("/sem_recv_gdb_block", O_CREAT, S_IRWXU, 0);
         if (gdb.recv_block == NULL) 
             ExitMessagef("sem_open: %s\n", strerror(errno));
 
@@ -4173,18 +4173,25 @@ int main(int argc, char **argv)
                 gdb.filename = tmp;
         }
 
-        struct sigaction act = {};
-        act.sa_handler = [](int)
+        auto sig_handler = [](int)
         { 
             if (gui.window) 
                 glfwSetWindowShouldClose(gui.window, 1); 
         };
-
-        struct sigaction act_abrt = {};
-        act_abrt.sa_handler = [](int)
-        { 
+        auto abort_handler = [](int)
+        {
             Shutdown();
         };
+
+#if defined(__CYGWIN__)
+        signal(SIGINT, sig_handler);
+        signal(SIGTERM, sig_handler);
+        signal(SIGABRT, abort_handler);
+#else
+        struct sigaction act = {};
+        act.sa_handler = sig_handler;
+        struct sigaction act_abrt = {};
+        act_abrt.sa_handler = abort_handler;
 
         if (0 > sigaction(SIGINT, &act, NULL) ||
             0 > sigaction(SIGTERM, &act, NULL) ||
@@ -4192,6 +4199,7 @@ int main(int argc, char **argv)
         {
             ExitMessagef("sigaction %s\n", strerror(errno));
         }
+#endif
     }
 
     // read in the command line args, skip exename argv[0]

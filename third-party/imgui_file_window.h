@@ -31,12 +31,15 @@
 #include <stdio.h>
 #include <string.h>
 
-#if defined(_WIN32)
+#if defined(_WIN32) || defined(__CYGWIN__)
 #include <minwindef.h>      // MAX_PATH
 #else
 #include <limits.h>   // PATH_MAX
-#include <strings.h>        // strcasecmp
 #define MAX_PATH PATH_MAX   // lmao
+#endif
+
+#if !defined(_WIN32)
+#include <strings.h>
 #define stricmp strcasecmp
 #endif
 
@@ -87,7 +90,7 @@ struct FileWindowContext
 inline bool ImGuiFileWindow(FileWindowContext &ctx, ImGuiFileWindowMode mode, 
                             const char *directory = ".", const char *filters = "*");
 
-#if defined(_WIN32)
+#if defined(_WIN32) || defined(__CYGWIN__)
 
 #include <Windows.h>
 

@@ -57,11 +57,10 @@ ifeq ($(UNAME_S), Darwin) #APPLE
 	CXXFLAGS += -I/usr/local/include -I/opt/local/include -I/opt/homebrew/include
 endif
 
-# TODO: mingw doesn't support spawn.h, need replacement for posix_spawnp
-#ifeq ($(OS), Windows_NT)
-#	ECHO_MESSAGE = "MinGW"
-#	LIBS += -lpthread -lglfw3 -lgdi32 -lopengl32 -limm32
-#endif
+ifeq ($(OS), Windows_NT)
+	ECHO_MESSAGE = "MinGW"
+	LIBS += -L. -lglfw3dll -lpthread -lgdi32 -lopengl32 -limm32 -lkernel32
+endif
 
 all: $(EXE)
 	@echo build complete for $(ECHO_MESSAGE)

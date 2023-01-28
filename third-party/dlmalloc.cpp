@@ -523,6 +523,10 @@ MAX_RELEASE_CHECK_RATE   default: 4095 unless not HAVE_MMAP
 /* Configuration */
 #define USE_DL_PREFIX 1
 
+#ifdef __CYGWIN__
+#define _WIN32
+#endif
+
 #ifndef _WIN32 // FAT PENGUIN
 #define HAVE_MREMAP 1
 #endif
