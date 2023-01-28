@@ -183,13 +183,13 @@ bool GDB_StartProcess(String gdb_filename, String gdb_args)
 
         // start the GDB process
         posix_spawn_file_actions_t actions = {};
+        posix_spawn_file_actions_init(&actions);
         posix_spawn_file_actions_adddup2(&actions, gdb.fd_out_read, 0);     // stdin
         posix_spawn_file_actions_adddup2(&actions, gdb.fd_in_write, 1);     // stdout
         posix_spawn_file_actions_adddup2(&actions, gdb.fd_in_write, 2);     // stderr
 
         posix_spawnattr_t attrs = {};
         posix_spawnattr_init(&attrs);
-        posix_spawnattr_setflags(&attrs, POSIX_SPAWN_SETSID);
 
         rc = posix_spawnp((pid_t *) &gdb.spawned_pid, gdb_filename.c_str(),
                           &actions, &attrs, gdb_argv.data(), envptr.data());
