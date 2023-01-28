@@ -4051,6 +4051,7 @@ int main(int argc, char **argv)
         {
             glfwDestroyWindow(gui.window);
             glfwTerminate();
+            gui.window = NULL;
         }
 
         // shutdown GDB
@@ -4069,7 +4070,12 @@ int main(int argc, char **argv)
         if (gdb.fd_out_write)   { close(gdb.fd_out_write); gdb.fd_out_write = 0; }
         if (gdb.spawned_pid)    { EndProcess(gdb.spawned_pid); gdb.spawned_pid = 0; }
 
-        pthread_mutex_destroy(&gdb.modify_block);
+        pthread_mutex_t zmutex = {};
+        if (0 != memcmp(&zmutex, &gdb.modify_block, sizeof(pthread_mutex_t)))
+        {
+            pthread_mutex_destroy(&gdb.modify_block);
+            gdb.modify_block = zmutex;
+        }
     };
 
     atexit(Shutdown);
