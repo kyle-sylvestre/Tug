@@ -3017,43 +3017,46 @@ void Draw()
 
 
         {
-            // @@@ ptty testing 
-            while (true)
+            if (prog.started)
             {
-                pollfd p = {};
-                p.fd = gdb.fd_ptty_master;
-                p.events = POLLIN;
+                // read in inferior stdout
+                while (true)
+                {
+                    pollfd p = {};
+                    p.fd = gdb.fd_ptty_master;
+                    p.events = POLLIN;
 
-                int rc = poll(&p, 1, 0);
-                if (rc < 0)
-                {
-                    PrintErrorf("poll %s\n", strerror(errno));
-                    break;
-                }
-                else if (rc == 0) // timeout
-                {
-                    break;
-                }
-                else if (rc > 0)
-                {
-                    // ensure we got data ready to poll
-                    if ((p.revents & POLLIN) == 0)
-                        break; 
-
-                    char buf[1024];
-                    int bytes_read = read(gdb.fd_ptty_master, buf, sizeof(buf));
-                    if (bytes_read < 0)
+                    int rc = poll(&p, 1, 0);
+                    if (rc < 0)
                     {
-                        PrintErrorf("read %s\n", strerror(errno));
+                        PrintErrorf("poll %s\n", strerror(errno));
                         break;
                     }
-                    else
+                    else if (rc == 0) // timeout
                     {
-                        WriteToConsoleBuffer(buf, bytes_read);
+                        break;
+                    }
+                    else if (rc > 0)
+                    {
+                        // ensure we got data ready to poll
+                        if ((p.revents & POLLIN) == 0)
+                            break; 
+
+                        char buf[1024] = {};
+                        int bytes_read = read(gdb.fd_ptty_master, buf, sizeof(buf));
+                        if (bytes_read < 0)
+                        {
+                            PrintErrorf("read %s\n", strerror(errno));
+                            break;
+                        }
+                        else
+                        {
+                            WriteToConsoleBuffer(buf, bytes_read);
+                        }
                     }
                 }
-            }
 
+            }
 
             // draw the console log
             ImGui::SetCursorPos(logstart);
