@@ -4008,21 +4008,59 @@ int main(int argc, char **argv)
 {
 #define ExitMessagef(fmt, ...) do { PrintErrorf(fmt, __VA_ARGS__); exit(EXIT_FAILURE); } while(0)
 #define ExitMessage(msg) ExitMessagef("%s", msg)
+
+    String ini_data;
+    String ini_filename;
     {
-        // show the tutorial if the tug executable is new enough
-        // and no tug.ini is found in the CWD
+        // show the tutorial if the tug executable is new enough 
+        // and the config file is not found
         time_t sec = time(NULL);
         struct stat st = {};
         char tug_abspath[PATH_MAX] = {};
 
+        // get ini filename
+        const char *home = getenv("HOME");
+        if (home)
+        {
+            // use XDG directory if it exists
+            struct stat xdg_stat = {};
+            String xdg_path = StringPrintf("%s/.config", home);
+            if (0 == stat(xdg_path.c_str(), &xdg_stat) && 
+                S_ISDIR(xdg_stat.st_mode))
+            {
+                xdg_path += "/tug";
+                if (0 == mkdir(xdg_path.c_str(), 0777) || errno == EEXIST)
+                {
+                    ini_filename = xdg_path + "/tug.ini";
+                }
+            }
+            else
+            {
+                ini_filename = StringPrintf("%s/.tug", home);
+            }
+        }
+
         if (0 < readlink("/proc/self/exe", tug_abspath, sizeof(tug_abspath)))
         {
-            if (0 < stat(tug_abspath, &st) &&
+            if (0 == stat(tug_abspath, &st) &&
                 sec >= st.st_mtim.tv_sec &&
                 sec - st.st_mtim.tv_sec <= 2 * 60 &&
-                !DoesFileExist("tug.ini", false))
+                !DoesFileExist(ini_filename.c_str(), false))
             {
                 gui.show_tutorial = true;
+            }
+        }
+
+        // load the tug configuration with imgui data below it
+        if (0 == stat(ini_filename.c_str(), &st) && 
+            S_ISREG(st.st_mode))
+        {
+            FILE *f = fopen(ini_filename.c_str(), "rb");
+            if (f != NULL)
+            {
+                ini_data.resize(st.st_size);
+                fread(&ini_data[0], 1, st.st_size, f);
+                fclose(f); f = NULL;
             }
         }
     }
@@ -4263,60 +4301,35 @@ int main(int argc, char **argv)
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;           // Enable Docking
 
     {
-        // load the tug configuration with imgui data below it
-        String str;
-        bool got_ini = false;
-        FILE *f = fopen("tug.ini", "rb");
-        if (f != NULL)
-        {
-            long filesize = 0;
-            if (0 == fseek(f, 0, SEEK_END) &&
-                0 < (filesize = ftell(f)) &&
-                0 == fseek(f, 0, SEEK_SET))
-            {
-                str.resize((size_t)filesize);
-                if (0 < fread((void*)str.data(), 1, filesize, f))
-                {
-                    got_ini = true;
-                    ImGui::LoadIniSettingsFromMemory(str.data(), str.size());
-                }
-            }
-
-            if (!got_ini)
-                PrintError("reverting to default ini...\n");
-
-            fclose(f); f = NULL;
-        }
-
-        if (!got_ini)
+        if (ini_data.size() == 0)
         {
             // workaround for generating a dockspace through loading an ini file
             // originally used ImGui DockBuilder api to make the docking space but 
             // there was a bug where some nodes would not resize proportionally
             // to the framebuffer
-            str = default_ini;
-            ImGui::LoadIniSettingsFromMemory(str.data(), str.size());
+            ini_data = default_ini;
         }
+        ImGui::LoadIniSettingsFromMemory(ini_data.data(), ini_data.size());
 
         // TODO: fix maximum lazy ini parsing right now
-        size_t end_tug = str.find("; ImGui Begin");
-        if (end_tug < str.size())
-            str = str.substr(0, end_tug);
+        size_t end_tug = ini_data.find("; ImGui Begin");
+        if (end_tug < ini_data.size())
+            ini_data = ini_data.substr(0, end_tug);
 
-        if (str.size() > 0)
+        if (ini_data.size() > 0)
         {
             const auto GetValue = [&](String key, String default_value) -> String
             {
                 String result;
                 key += "=";
-                size_t index = str.find(key);
-                if (index < str.size())
+                size_t index = ini_data.find(key);
+                if (index < ini_data.size())
                 {
                     size_t start_index = index + key.size();
                     size_t end_index = start_index;
-                    while (end_index < str.size())
+                    while (end_index < ini_data.size())
                     {
-                        char c = str[end_index];
+                        char c = ini_data[end_index];
                         if (c == '\n' || c == '\r')
                         {
                             break;
@@ -4327,7 +4340,7 @@ int main(int argc, char **argv)
                         }
                     }
 
-                    result = str.substr(start_index, end_index - start_index);
+                    result = ini_data.substr(start_index, end_index - start_index);
                 }
                 else
                 {
@@ -4479,7 +4492,7 @@ int main(int argc, char **argv)
         glfwSwapBuffers(gui.window);
     }
 
-    FILE *f = fopen("tug.ini", "wt");
+    FILE *f = fopen(ini_filename.c_str(), "wt");
     if (f != NULL)
     {
         // write custom tug ini information
@@ -4504,10 +4517,11 @@ int main(int argc, char **argv)
 
 
         // write the imgui side of the ini file
-        size_t ini_data_size = 0;
-        const char* ini_data = ImGui::SaveIniSettingsToMemory(&ini_data_size);
+        size_t imgui_ini_size = 0;
+        const char* imgui_ini_data = ImGui::SaveIniSettingsToMemory(&imgui_ini_size);
         fprintf(f, "\n; ImGui Begin\n");
-        fwrite(ini_data, sizeof(char), ini_data_size, f);
+        fwrite(imgui_ini_data, sizeof(char), imgui_ini_size, f);
+
         fclose(f); f = NULL;
     }
 
