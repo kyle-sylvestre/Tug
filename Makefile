@@ -4,9 +4,8 @@ IMGUI_DIR = ./third-party/imgui
 OBJDIR =
 
 CXX = g++
-CC = gcc
-CXXFLAGS = -I./third-party -I./src -I./third-party/glfw/include
-CXXFLAGS += -g3 -gdwarf-2 -Wall -Werror=format -Wextra -Werror=shadow -pedantic -pthread
+CXXFLAGS = -I./third-party -I./src
+CXXFLAGS += -g3 -gdwarf-2 -std=c++11 -Wall -Werror=format -Wextra -Werror=shadow -pedantic -pthread
 
 ifeq ($(DEBUG), 1)
     CXXFLAGS += -DDEBUG -O0 
@@ -23,11 +22,11 @@ endif
 
 
 EXE = $(OBJDIR)/tug
+PVS_LOG = $(addprefix $(OBJDIR)/, pvs.log)
 
 SOURCES = ./src/main.cpp\
           ./src/gdb.cpp\
           ./third-party/dlmalloc.cpp\
-		  ./third-party/glfw_jumbo.c\
           $(IMGUI_DIR)/imgui.cpp\
           $(IMGUI_DIR)/imgui_demo.cpp\
           $(IMGUI_DIR)/imgui_draw.cpp\
@@ -46,7 +45,7 @@ UNAME_S = $(shell uname -s)
 
 ifeq ($(UNAME_S), Linux) #LINUX
 	ECHO_MESSAGE = "Linux"
-	LIBS += -lpthread -lGL -lm -ldl	# -lglfw3=static, -lglfw=dynamic
+	LIBS += -lpthread -lGL -lglfw -lm -ldl	# -lglfw3=static, -lglfw=dynamic
 endif
 
 ifeq ($(UNAME_S), Darwin) #APPLE
@@ -71,16 +70,13 @@ $(EXE): $(OBJS)
 	$(CXX) -o $@ $^ $(CXXFLAGS) $(LIBS)
 
 $(OBJDIR)/%.o:./src/%.cpp
-	$(CXX) -std=c++11 $(CXXFLAGS) -c -o $@ $<
-	
-$(OBJDIR)/%.o:./third-party/%.c
-	$(CC) -std=c99 $(CXXFLAGS) -c -o $@ $<
+	$(CXX) $(CXXFLAGS) -c -o $@ $<
 
 $(OBJDIR)/%.o:./third-party/%.cpp
-	$(CXX) -std=c++11 $(CXXFLAGS) -c -o $@ $<
+	$(CXX) $(CXXFLAGS) -c -o $@ $<
 
 $(OBJDIR)/%.o:$(IMGUI_DIR)/%.cpp
-	$(CXX) -std=c++11 $(CXXFLAGS) -c -o $@ $<
+	$(CXX) $(CXXFLAGS) -c -o $@ $<
 	
 $(OBJS): | $(OBJDIR)
 
@@ -88,6 +84,6 @@ $(OBJDIR):
 	mkdir -p $@
 
 clean:
-	rm -f $(EXE) $(OBJS)
+	rm -f $(EXE) $(OBJS) $(PVS_LOG)
 
 

@@ -11,7 +11,17 @@ GDB frontend made with Dear ImGui
 
 # Building the Project
 
-1. Run command "make DEBUG=0 -j", output executable is ./build_release/tug
+1. Install GLFW3, gcc, and gdb </br>
+   **Debian:** sudo apt-get install libglfw3 libglfw3-dev gcc gdb </br>
+   **Arch:** sudo pacman -S glfw gcc gdb </br>
+   **Fedora:** sudo dnf install glfw glfw-devel gcc gdb </br>
+
+3. If unable to find GLFW, compile from git repo </br>
+    https://github.com/glfw/glfw </br>
+    https://www.glfw.org/docs/latest/compile.html </br>
+    **NOTE**: linker flag -lglfw is the shared library, -lglfw3 is the static library </br>
+    
+4. Run command "make DEBUG=0", output in generated build_release directory
 
 # Debugging an Executable
 
@@ -50,5 +60,9 @@ program execution buttons</br>
 # Resources
 GDB Machine Interpreter:</br>
 https://sourceware.org/gdb/download/onlinedocs/gdb/GDB_002fMI.html#GDB_002fMI</br>
+
+GLFW:</br>
+https://www.glfw.org/download.html</br>
+https://www.glfw.org/docs/latest/compile.html</br>
 
 
