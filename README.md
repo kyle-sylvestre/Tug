@@ -12,7 +12,7 @@ GDB frontend made with Dear ImGui
 # Building the Project
 
 1. Install gcc, gdb, and make </br>
-2. For X11 based systems, install X11 development files </br>
+2. For X11 based systems, install additional packages </br>
    **Debian, Ubuntu, Linux Mint:** sudo apt-get install xorg-dev </br>
    **Fedora, RHEL:** sudo dnf install libXcursor-devel libXi-devel libXinerama-devel libXrandr-devel </br>
    **FreeBSD:** pkg install xorgproto </br>
