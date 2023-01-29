@@ -4,15 +4,16 @@ IMGUI_DIR = ./third-party/imgui
 OBJDIR =
 
 CXX = g++
-CXXFLAGS = -I./third-party -I./src
-CXXFLAGS += -g3 -gdwarf-2 -std=c++11 -Wall -Werror=format -Wextra -Werror=shadow -pedantic -pthread
+CXXFLAGS = -I./third-party -I./src -I./third-party/glfw/include
+CXXFLAGS += -std=c++11 -g3 -gdwarf-2 -Wall -Wextra -Werror=format -Werror=shadow -pedantic -pthread
+CXXFLAGS += -Wno-missing-field-initializers
 
 ifeq ($(DEBUG), 1)
     CXXFLAGS += -DDEBUG -O0 
-	OBJDIR = ./build_debug
+	OBJDIR = build_debug
 else
     CXXFLAGS += -DNDEBUG -O3
-	OBJDIR = ./build_release
+	OBJDIR = build_release
 endif
 
 
@@ -21,8 +22,8 @@ ifeq ($(SAN), 1)
 endif
 
 
+GLFW = libglfw3.a
 EXE = $(OBJDIR)/tug
-PVS_LOG = $(addprefix $(OBJDIR)/, pvs.log)
 
 SOURCES = ./src/main.cpp\
           ./src/gdb.cpp\
@@ -41,31 +42,36 @@ UNAME_S = $(shell uname -s)
 ##---------------------------------------------------------------------
 ## BUILD FLAGS PER PLATFORM
 ##---------------------------------------------------------------------
-
-ifeq ($(UNAME_S), Linux) #LINUX
-	ECHO_MESSAGE = "Linux"
-	LIBS += -lpthread -lGL -lglfw -lm -ldl	# -lglfw3=static, -lglfw=dynamic
-endif
+LIBS += -L ./third-party/glfw/$(OBJDIR) -l:$(GLFW) 
 
 ifeq ($(UNAME_S), Darwin) #APPLE
 	ECHO_MESSAGE = "Mac OS X"
 	LIBS += -framework OpenGL -framework Cocoa -framework IOKit -framework CoreVideo
 	LIBS += -L/usr/local/lib -L/opt/local/lib -L/opt/homebrew/lib
-	LIBS += -lpthread -lglfw
+	LIBS += -lpthread
 
 	CXXFLAGS += -I/usr/local/include -I/opt/local/include -I/opt/homebrew/include
+else ifeq ($(OS), Windows_NT)
+	ECHO_MESSAGE = "MinGW"
+	LIBS += -lpthread -lgdi32 -lopengl32 -limm32 -
+else
+	# linux, BSD, etc.
+	ECHO_MESSAGE = $(UNAME_S)
+	LIBS += -lpthread -lm -ldl -lGL -lX11
 endif
 
-ifeq ($(OS), Windows_NT)
-	ECHO_MESSAGE = "MinGW"
-	LIBS += -L. -lglfw3dll -lpthread -lgdi32 -lopengl32 -limm32 -lkernel32
-endif
+
 
 all: $(EXE)
 	@echo build complete for $(ECHO_MESSAGE)
 	
 $(EXE): $(OBJS)
 	$(CXX) -o $@ $^ $(CXXFLAGS) $(LIBS)
+
+$(EXE): | $(GLFW)
+
+$(GLFW):
+	make -C ./third-party/glfw DEBUG=$(DEBUG)
 
 $(OBJDIR)/%.o:./src/%.cpp
 	$(CXX) $(CXXFLAGS) -c -o $@ $<
@@ -82,6 +88,6 @@ $(OBJDIR):
 	mkdir -p $@
 
 clean:
-	rm -f $(EXE) $(OBJS) $(PVS_LOG)
-
+	rm -f $(EXE) $(OBJS)
+	make -C ./third-party/glfw DEBUG=$(DEBUG) clean
 

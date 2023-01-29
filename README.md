@@ -11,17 +11,13 @@ GDB frontend made with Dear ImGui
 
 # Building the Project
 
-1. Install GLFW3, gcc, and gdb </br>
-   **Debian:** sudo apt-get install libglfw3 libglfw3-dev gcc gdb </br>
-   **Arch:** sudo pacman -S glfw gcc gdb </br>
-   **Fedora:** sudo dnf install glfw glfw-devel gcc gdb </br>
+1. Install dependencies </br>
+   **Debian, Ubuntu, Linux Mint:** sudo apt-get install gcc gdb xorg-dev </br>
+   **Fedora, RHEL:** sudo dnf gcc gdb install libXcursor-devel libXi-devel libXinerama-devel libXrandr-devel </br>
+   **FreeBSD:** pkg install gcc gdb xorgproto </br>
+   **MinGW, macOS:** none </br>
 
-3. If unable to find GLFW, compile from git repo </br>
-    https://github.com/glfw/glfw </br>
-    https://www.glfw.org/docs/latest/compile.html </br>
-    **NOTE**: linker flag -lglfw is the shared library, -lglfw3 is the static library </br>
-    
-4. Run command "make DEBUG=0", output in generated build_release directory
+2. Run command "make DEBUG=0", output executable is ./build_release/tug
 
 # Debugging an Executable
 
