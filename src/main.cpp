@@ -31,7 +31,7 @@
 #include "liberation_mono.h"
 
 #include <errnoname.c>
-// get macro name with strerror error description
+// get error macro name and description
 // ex: ENOENT No such file or directory
 const char *GetErrorString(int _errno)
 {
