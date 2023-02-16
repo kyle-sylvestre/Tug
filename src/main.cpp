@@ -30,6 +30,26 @@
 #include <imgui_file_window.h>
 #include "liberation_mono.h"
 
+#include <errnoname.c>
+// get macro name with strerror error description
+// ex: ENOENT No such file or directory
+const char *GetErrorString(int _errno)
+{
+    thread_local char buf[4096] = {};
+    char errname[1024] = {};
+    const char *n = errnoname(_errno); // equivalent to strerrorname_np on newer machines
+    if (n)
+    {
+        tsnprintf(errname, "%s", n);
+    }
+    else
+    {
+        tsnprintf(errname, "ERRNO %d", _errno);
+    }
+    tsnprintf(buf, "%s %s", errname, strerror(_errno));
+    return buf;
+}
+
 // dynamic colors that change upon the brightness of the background
 ImVec4 IM_COL32_WIN_RED;
 
@@ -63,7 +83,7 @@ String _StringPrintf(int /* vargs_check */, const char *fmt, ...)
 
     if (len_minus_nt < 0)
     {
-        PrintErrorf("vsnprintf: %s\n", strerror(errno));
+        PrintErrorf("vsnprintf %s\n", GetErrorString(errno));
         result = "";
     }
     else
@@ -75,7 +95,7 @@ String _StringPrintf(int /* vargs_check */, const char *fmt, ...)
 
         if (copied_minus_nt < 0)
         {
-            PrintErrorf("vsnprintf: %s\n", strerror(errno));
+            PrintErrorf("vsnprintf %s\n", GetErrorString(errno));
             result = "";
         }
         else
@@ -95,8 +115,8 @@ bool InvokeShellCommand(String command, String &output)
     FILE *f = popen(command.c_str(), "r");
     if (f == NULL)
     {
-        PrintErrorf("popen shell command \"%s\": %s\n", 
-                    command.c_str(), strerror(errno));
+        PrintErrorf("popen shell command \"%s\" %s\n", 
+                    command.c_str(), GetErrorString(errno));
     }
     else
     {
@@ -107,7 +127,7 @@ bool InvokeShellCommand(String command, String &output)
         
         if (errno != 0)
         {
-            PrintErrorf("fread %s\n", strerror(errno));
+            PrintErrorf("fread %s\n", GetErrorString(errno));
         }
         else
         {
@@ -127,7 +147,7 @@ bool DoesFileExist(const char *filename, bool print_error_on_missing)
     if (0 > stat(filename, &st))
     {
         if ((errno == ENOENT && print_error_on_missing) || errno != ENOENT)
-            PrintErrorf("stat \"%s\": %s\n", filename, strerror(errno));
+            PrintErrorf("stat \"%s\" %s\n", filename, GetErrorString(errno));
     }
     else
     {
@@ -148,14 +168,14 @@ void EndProcess(pid_t p)
 
     if (0 > kill(p, SIGTERM))
     {
-        PrintErrorf("kill SIGTERM: %s\n", strerror(errno));
+        PrintErrorf("kill SIGTERM %s\n", GetErrorString(errno));
     }
     else
     {
         usleep(1000000 / 10);
         if (0 > kill(p, SIGKILL))
         {
-            PrintErrorf("kill SIGKILL: %s\n", strerror(errno));
+            PrintErrorf("kill SIGKILL %s\n", GetErrorString(errno));
         }
 
         if (DoesProcessExist(p))
@@ -165,7 +185,7 @@ void EndProcess(pid_t p)
             pid_t tmp = waitpid(p, &status, WNOHANG);
             if (tmp < 0)
             {
-                PrintErrorf("waitpid %s\n", strerror(errno));
+                PrintErrorf("waitpid %s\n", GetErrorString(errno));
             }
             else if (tmp == p)
             {
@@ -407,7 +427,7 @@ bool LoadFile(File &file)
         FILE *f = fopen(file.filename.c_str(), "rb");
         if (f == NULL)
         {
-            PrintErrorf("fopen %s\n", strerror(errno));
+            PrintErrorf("fopen %s\n", GetErrorString(errno));
         }
         else
         {
@@ -1249,7 +1269,7 @@ void QueryFrame(bool force_clear_locals)
                     (0 > stat(file.filename.c_str(), &source_st) ||
                      0 > stat(gdb.debug_filename.c_str(), &exe_st)) )
                 {
-                    PrintErrorf("stat %s\n", strerror(errno));
+                    PrintErrorf("stat %s\n", GetErrorString(errno));
                 }
                 else
                 {
@@ -3038,7 +3058,7 @@ void Draw()
                     int rc = poll(&p, 1, 0);
                     if (rc < 0)
                     {
-                        PrintErrorf("poll %s\n", strerror(errno));
+                        PrintErrorf("poll %s\n", GetErrorString(errno));
                         break;
                     }
                     else if (rc == 0) // timeout
@@ -3055,7 +3075,7 @@ void Draw()
                         int bytes_read = read(gdb.fd_ptty_master, buf, sizeof(buf));
                         if (bytes_read < 0)
                         {
-                            PrintErrorf("read %s\n", strerror(errno));
+                            PrintErrorf("read %s\n", GetErrorString(errno));
                             break;
                         }
                         else
@@ -3679,7 +3699,7 @@ void Draw()
                         char *rc = realpath(relpath.c_str(), abspath);
                         if (rc == NULL)
                         {
-                            PrintErrorf("realpath %s\n", strerror(errno));
+                            PrintErrorf("realpath %s\n", GetErrorString(errno));
                         }
                         else
                         {
@@ -3731,7 +3751,7 @@ void Draw()
             dir = opendir(query_dir.c_str());
             if (dir == NULL) 
             {
-                PrintErrorf("opendir on %s: %s\n", query_dir.c_str(), strerror(errno));
+                PrintErrorf("opendir on %s %s\n", query_dir.c_str(), GetErrorString(errno));
             }
             else
             {
@@ -3883,13 +3903,13 @@ bool VerifyFileExecutable(const char *filename)
 
     if (0 != stat(filename, &sb))
     {
-        PrintErrorf("stat filename \"%s\": %s\n", filename, strerror(errno));
+        PrintErrorf("stat filename \"%s\" %s\n", filename, GetErrorString(errno));
     }
     else
     {
         if (!S_ISREG(sb.st_mode) || (sb.st_mode & S_IXUSR) == 0)
         {
-            PrintErrorf("file not executable: %s\n", filename);
+            PrintErrorf("file not executable %s\n", filename);
         }
         else
         {
@@ -3903,7 +3923,7 @@ bool VerifyFileExecutable(const char *filename)
 
 static void glfw_error_callback(int error, const char* description)
 {
-    PrintErrorf("Glfw Error %d: %s\n", error, description);
+    PrintErrorf("Glfw Error %d %s\n", error, description);
 }
 
 void DrawDebugOverlay()
@@ -4096,42 +4116,42 @@ int main(int argc, char **argv)
         int pipes[2] = {};
         rc = pipe(pipes);
         if (rc < 0)
-            ExitMessagef("from gdb pipe: %s\n", strerror(errno));
+            ExitMessagef("from gdb pipe %s\n", GetErrorString(errno));
 
         gdb.fd_in_read = pipes[0];
         gdb.fd_in_write = pipes[1];
 
         rc = pipe(pipes);
         if (rc < 0)
-            ExitMessagef("to gdb pipe: %s\n", strerror(errno));
+            ExitMessagef("to gdb pipe %s\n", GetErrorString(errno));
 
         gdb.fd_out_read = pipes[0];
         gdb.fd_out_write = pipes[1];
 
         rc = pthread_mutex_init(&gdb.modify_block, NULL);
         if (rc < 0) 
-            ExitMessagef("pthread_mutex_init: %s\n", strerror(errno));
+            ExitMessagef("pthread_mutex_init %s\n", GetErrorString(errno));
 
         gdb.recv_block = sem_open("/sem_recv_gdb_block", O_CREAT, S_IRWXU, 0);
         if (gdb.recv_block == NULL) 
-            ExitMessagef("sem_open: %s\n", strerror(errno));
+            ExitMessagef("sem_open %s\n", GetErrorString(errno));
 
         extern void *GDB_ReadInterpreterBlocks(void *);
         rc = pthread_create(&gdb.thread_read_interp, NULL, GDB_ReadInterpreterBlocks, (void*) NULL);
         if (rc < 0) 
-            ExitMessagef("pthread_create: %s\n", strerror(errno));
+            ExitMessagef("pthread_create %s\n", GetErrorString(errno));
 
-        gdb.fd_ptty_master = posix_openpt(O_RDWR | O_NOCTTY);// | O_NONBLOCK);
+        gdb.fd_ptty_master = open("/dev/ptmx", O_RDWR | O_NOCTTY);// | O_NONBLOCK);
         if (gdb.fd_ptty_master < 0)
-            ExitMessagef("posix_openpt: %s\n", strerror(errno));
+            ExitMessagef("posix_openpt %s\n", GetErrorString(errno));
 
         rc = grantpt(gdb.fd_ptty_master);
         if (rc < 0)
-            ExitMessagef("grantpt: %s\n", strerror(errno));
+            ExitMessagef("grantpt %s\n", GetErrorString(errno));
 
         rc = unlockpt(gdb.fd_ptty_master);
         if (rc < 0)
-            ExitMessagef("grantpt: %s\n", strerror(errno));
+            ExitMessagef("grantpt %s\n", GetErrorString(errno));
 
         Printf("pty slave: %s\n", ptsname(gdb.fd_ptty_master));
 
@@ -4167,7 +4187,7 @@ int main(int argc, char **argv)
             0 > sigaction(SIGTERM, &act, NULL) ||
             0 > sigaction(SIGABRT, &act_abrt, NULL))
         {
-            ExitMessagef("sigaction %s\n", strerror(errno));
+            ExitMessagef("sigaction %s\n", GetErrorString(errno));
         }
 #endif
     }

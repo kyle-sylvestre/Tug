@@ -43,7 +43,7 @@ void *GDB_ReadInterpreterBlocks(void *)
                                 ArrayCount(gdb.block_data) - insert_idx);
         if (num_read < 0)
         {
-            fprintf(stderr, "gdb read: %s\n", strerror(errno));
+            fprintf(stderr, "gdb read %s\n", GetErrorString(errno));
             break;
         }
 
@@ -110,7 +110,7 @@ bool GDB_StartProcess(String gdb_filename, String gdb_args)
         if ((NULL == strstr(version.c_str(), "GNU")) || 
             (NULL == strstr(version.c_str(), "gdb")) )
         {
-            PrintErrorf("file not GDB: %s\n", gdb_filename.c_str());
+            PrintErrorf("file not GDB %s\n", gdb_filename.c_str());
             return false;
         }
 
@@ -196,7 +196,7 @@ bool GDB_StartProcess(String gdb_filename, String gdb_args)
         if (rc != 0) 
         {
             errno = rc;
-            PrintErrorf("posix_spawnp: %s\n", strerror(errno));
+            PrintErrorf("posix_spawnp %s\n", GetErrorString(errno));
             return false;
         }
         else
@@ -1018,7 +1018,7 @@ bool GDB_Send(const char *cmd)
         if (written != (ssize_t)cmdsize)
         {
             if (written < 0)
-                PrintErrorf("GDB_Send: %s\n", strerror(errno));
+                PrintErrorf("GDB_Send %s\n", GetErrorString(errno));
             else
                 PrintError("GDB_Send truncate\n");
         }
@@ -1028,7 +1028,7 @@ bool GDB_Send(const char *cmd)
             if (written != 1)
             {
                 if (written < 0)
-                    PrintErrorf("GDB_Send: %s\n", strerror(errno));
+                    PrintErrorf("GDB_Send %s\n", GetErrorString(errno));
                 else
                     PrintError("GDB_Send truncate\n");
             }
@@ -1064,11 +1064,11 @@ static size_t GDB_SendBlockingInternal(const char *cmd, bool remove_after)
                 if (errno == ETIMEDOUT)
                 {
                     // TODO: retry counts
-                    PrintErrorf("Command Timeout: %s\n", cmd);
+                    PrintErrorf("Command Timeout %s\n", cmd);
                 }
                 else
                 {
-                    PrintErrorf("sem_timedwait: %s\n", strerror(errno));
+                    PrintErrorf("sem_timedwait %s\n", GetErrorString(errno));
                 }
 
                 break;

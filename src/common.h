@@ -372,6 +372,7 @@ struct Program
 extern Program prog;
 extern GDB gdb;
 
+const char *GetErrorString(int _errno);
 void WriteToConsoleBuffer(const char *raw, size_t rawsize);
 bool VerifyFileExecutable(const char *filename);
 bool DoesFileExist(const char *filename, bool print_error_on_missing = true);
