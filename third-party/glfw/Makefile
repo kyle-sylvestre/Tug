@@ -35,7 +35,15 @@ ifeq ($(UNAME_S), Darwin) #APPLE
 	ECHO_MESSAGE = "Mac OS X"
 	CFLAGS += -D_GLFW_COCOA
 	CFLAGS += -I/usr/local/include -I/opt/local/include -I/opt/homebrew/include
-	# TODO: SOURCE += lines
+	SOURCES += 	./src/cocoa_time.c\
+				./src/cocoa_init.m\
+				./src/cocoa_joystick.m\
+				./src/cocoa_monitor.m\
+				./src/cocoa_window.m\
+				./src/nsgl_context.m\
+				./src/posix_module.c\
+				./src/posix_thread.c
+				
 else ifeq ($(OS), Windows_NT)
 	ECHO_MESSAGE = "MinGW"
 	CFLAGS += -D_GLFW_WIN32 -D_WIN32 # define _WIN32 for cygwin/msys2/mingw
@@ -71,6 +79,9 @@ $(OUT): $(OBJS)
 	ar rcs $@ $^
 
 $(OBJDIR)/%.o:./src/%.c
+	$(CC) $(CFLAGS) -c -o $@ $<
+	
+$(OBJDIR)/%.o:./src/%.m
 	$(CC) $(CFLAGS) -c -o $@ $<
 	
 $(OBJS): | $(OBJDIR)

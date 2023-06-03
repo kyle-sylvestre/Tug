@@ -22,7 +22,7 @@ ifeq ($(SAN), 1)
 endif
 
 
-GLFW = libglfw3.a
+GLFW = glfw3
 EXE = $(OBJDIR)/tug
 
 SOURCES = ./src/main.cpp\
@@ -42,9 +42,10 @@ UNAME_S = $(shell uname -s)
 ##---------------------------------------------------------------------
 ## BUILD FLAGS PER PLATFORM
 ##---------------------------------------------------------------------
-LIBS += -L ./third-party/glfw/$(OBJDIR) -l:$(GLFW) 
+LIBS += -L ./third-party/glfw/$(OBJDIR) -l $(GLFW)
 
 ifeq ($(UNAME_S), Darwin) #APPLE
+	SOURCES += ./third-party/sem_timedwait.cpp
 	ECHO_MESSAGE = "Mac OS X"
 	LIBS += -framework OpenGL -framework Cocoa -framework IOKit -framework CoreVideo
 	LIBS += -L/usr/local/lib -L/opt/local/lib -L/opt/homebrew/lib
@@ -71,7 +72,7 @@ $(EXE): $(OBJS)
 $(EXE): | $(GLFW)
 
 $(GLFW):
-	make -C ./third-party/glfw DEBUG=$(DEBUG)
+	$(MAKE) -C ./third-party/glfw DEBUG=$(DEBUG)
 
 $(OBJDIR)/%.o:./src/%.cpp
 	$(CXX) $(CXXFLAGS) -c -o $@ $<
@@ -89,5 +90,5 @@ $(OBJDIR):
 
 clean:
 	rm -f $(EXE) $(OBJS)
-	make -C ./third-party/glfw DEBUG=$(DEBUG) clean
+	$(MAKE) -C ./third-party/glfw DEBUG=$(DEBUG) clean
 

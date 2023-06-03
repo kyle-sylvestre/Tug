@@ -15,13 +15,6 @@
 
 #pragma once
 
-#if defined(__CYGWIN__)
-#define _BSD_SOURCE
-#define _DIRENT_HAVE_D_TYPE 1
-#define _XOPEN_SOURCE 600 
-#include <dirent.h>
-#endif
-
 // sepples
 #include <string>
 #include <vector>
@@ -47,6 +40,17 @@
 #include <poll.h>
 #include <sys/time.h>
 #include <sys/stat.h>
+
+#if defined(__APPLE__)
+int sem_timedwait(sem_t *sem, const struct timespec *abs_timeout);
+#endif
+
+#if defined(__CYGWIN__)
+#define _BSD_SOURCE
+#define _DIRENT_HAVE_D_TYPE 1
+#define _XOPEN_SOURCE 600 
+#include <dirent.h>
+#endif
 
 template <typename T>
 using Vector = std::vector<T>;

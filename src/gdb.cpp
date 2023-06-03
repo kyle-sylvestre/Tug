@@ -1054,9 +1054,13 @@ static size_t GDB_SendBlockingInternal(const char *cmd, bool remove_after)
         bool found = false;
         do
         {
-            timespec wait_for;
-            clock_gettime(CLOCK_REALTIME, &wait_for);
-            wait_for.tv_sec += 1;
+            timeval tmp = {};
+            timespec wait_for = {};
+            if (0 == gettimeofday(&tmp, NULL))
+            {
+                wait_for.tv_sec = tmp.tv_sec + 1;
+                wait_for.tv_nsec = tmp.tv_usec * 1000;
+            }
 
             int rc = sem_timedwait(gdb.recv_block, &wait_for);
             if (rc < 0)

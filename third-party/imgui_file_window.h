@@ -185,7 +185,7 @@ inline void OS_PopulateDirEntries(const std::string &dirpath,
     }
 }
 
-#elif defined(__linux__)
+#else
 
 #include <dirent.h>
 #define PATHSEPSTR "/"
