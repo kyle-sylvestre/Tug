@@ -7,6 +7,7 @@ CXX = g++
 CXXFLAGS = -I./third-party -I./src -I./third-party/glfw/include
 CXXFLAGS += -std=c++11 -g3 -gdwarf-2 -Wall -Wextra -Werror=format -Werror=shadow -pedantic -pthread
 CXXFLAGS += -Wno-missing-field-initializers
+CXXFLAGS += -D_GNU_SOURCE -D_BSD_SOURCE -D_POSIX_C_SOURCE=200809L
 
 ifeq ($(DEBUG), 1)
     CXXFLAGS += -DDEBUG -O0 
