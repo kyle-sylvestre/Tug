@@ -7,7 +7,6 @@ CXX = g++
 CXXFLAGS = -I./third-party -I./src -I./third-party/glfw/include
 CXXFLAGS += -std=c++11 -g3 -gdwarf-2 -Wall -Wextra -Werror=format -Werror=shadow -pedantic -pthread
 CXXFLAGS += -Wno-missing-field-initializers
-CXXFLAGS += -D_GNU_SOURCE -D_BSD_SOURCE -D_POSIX_C_SOURCE=200809L
 
 ifeq ($(DEBUG), 1)
     CXXFLAGS += -DDEBUG -O0 
@@ -55,6 +54,7 @@ ifeq ($(UNAME_S), Darwin) #APPLE
 	CXXFLAGS += -I/usr/local/include -I/opt/local/include -I/opt/homebrew/include
 else ifeq ($(OS), Windows_NT)
 	ECHO_MESSAGE = "MinGW"
+	CXXFLAGS += -D_GNU_SOURCE # ptty and dirent visibility
 	LIBS += -lpthread -lgdi32 -lopengl32 -limm32
 else
 	# linux, BSD, etc.
