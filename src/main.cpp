@@ -4167,24 +4167,15 @@ int main(int argc, char **argv)
             if (gui.window) 
                 glfwSetWindowShouldClose(gui.window, 1); 
         };
-        auto abort_handler = [](int)
-        {
-            Shutdown();
-        };
 
 #if defined(__CYGWIN__)
         signal(SIGINT, sig_handler);
         signal(SIGTERM, sig_handler);
-        signal(SIGABRT, abort_handler);
 #else
         struct sigaction act = {};
         act.sa_handler = sig_handler;
-        struct sigaction act_abrt = {};
-        act_abrt.sa_handler = abort_handler;
-
         if (0 > sigaction(SIGINT, &act, NULL) ||
-            0 > sigaction(SIGTERM, &act, NULL) ||
-            0 > sigaction(SIGABRT, &act_abrt, NULL))
+            0 > sigaction(SIGTERM, &act, NULL))
         {
             ExitMessagef("sigaction %s\n", GetErrorString(errno));
         }
