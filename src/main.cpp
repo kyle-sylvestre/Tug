@@ -324,6 +324,7 @@ struct GUI
     bool started_imgui_opengl2;
     bool started_imgui_glfw;
     bool created_imgui_context;
+    bool initialized_glfw;
 };
 
 Program prog;
@@ -4071,17 +4072,14 @@ int main(int argc, char **argv)
 
     static const auto Shutdown = []()
     {
-        // shutdown imgui and glfw
+        // shutdown imgui
         if (gui.started_imgui_opengl2)  { ImGui_ImplOpenGL2_Shutdown(); gui.started_imgui_opengl2 = false; }
         if (gui.started_imgui_glfw)     { ImGui_ImplGlfw_Shutdown(); gui.started_imgui_glfw = false; }
         if (gui.created_imgui_context)  { ImGui::DestroyContext(); gui.created_imgui_context = false; }
 
-        if (gui.window != NULL)
-        {
-            glfwDestroyWindow(gui.window);
-            glfwTerminate();
-            gui.window = NULL;
-        }
+        // shutdown glfw
+        if (gui.window)                 { glfwDestroyWindow(gui.window); gui.window = NULL; }
+        if (gui.initialized_glfw)       { glfwTerminate(); gui.initialized_glfw = false; }
 
         // shutdown GDB
         if (gdb.thread_read_interp)
@@ -4279,7 +4277,8 @@ int main(int argc, char **argv)
     {
         // GLFW init
         glfwSetErrorCallback(glfw_error_callback);
-        if (!glfwInit())
+        gui.initialized_glfw = glfwInit();
+        if (!gui.initialized_glfw)
             ExitMessage("glfwInit\n");
 
         gui.window = glfwCreateWindow(1280, 720, "Tug", NULL, NULL);
