@@ -4158,7 +4158,7 @@ int main(int argc, char **argv)
 
 
         // attempt to open a pseudoterminal for debugged program input/output
-        int ptty_fd = open("/dev/ptmx", O_RDWR | O_NOCTTY);
+        int ptty_fd = posix_openpt(O_RDWR | O_NOCTTY);
         if (ptty_fd != -1)
         {
             if (0 == grantpt(ptty_fd))
