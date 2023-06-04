@@ -120,6 +120,7 @@ bool InvokeShellCommand(String command, String &output)
     }
     else
     {
+        errno = 0;
         char tmp[1024] = {};
         ssize_t bytes_read = 0;
         while (0 < (bytes_read = fread(tmp, 1, sizeof(tmp), f)) )
