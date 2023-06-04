@@ -17,7 +17,7 @@ GDB frontend made with Dear ImGui
    **Fedora, RHEL:** sudo dnf install libXcursor-devel libXi-devel libXinerama-devel libXrandr-devel </br>
    **FreeBSD:** pkg install xorgproto </br>
 
-2. Run command "make DEBUG=0", output executable is ./build_release/tug
+3. Run command "make DEBUG=0", output executable is ./build_release/tug
 
 # Debugging an Executable
 
