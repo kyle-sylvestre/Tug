@@ -4140,19 +4140,38 @@ int main(int argc, char **argv)
         if (rc < 0) 
             ExitMessagef("pthread_create %s\n", GetErrorString(errno));
 
-        gdb.fd_ptty_master = open("/dev/ptmx", O_RDWR | O_NOCTTY);// | O_NONBLOCK);
-        if (gdb.fd_ptty_master < 0)
-            ExitMessagef("posix_openpt %s\n", GetErrorString(errno));
 
-        rc = grantpt(gdb.fd_ptty_master);
-        if (rc < 0)
-            ExitMessagef("grantpt %s\n", GetErrorString(errno));
+        // attempt to open a pseudoterminal for debugged program input/output
+        int ptty_fd = open("/dev/ptmx", O_RDWR | O_NOCTTY);
+        if (ptty_fd != -1)
+        {
+            if (0 == grantpt(ptty_fd))
+            {
+                if (0 == unlockpt(ptty_fd))
+                {
+                    gdb.fd_ptty_master = ptty_fd;
+                    Printf("pty slave: %s\n", ptsname(gdb.fd_ptty_master));
+                }
+                else
+                {
+                    PrintErrorf("unlockpt %s\n", GetErrorString(errno));
+                }
+            }
+            else
+            {
+                PrintErrorf("grantpt %s\n", GetErrorString(errno));
+            }
+        }
+        else
+        {
+            PrintErrorf("posix_openpt %s\n", GetErrorString(errno));
+        }
 
-        rc = unlockpt(gdb.fd_ptty_master);
-        if (rc < 0)
-            ExitMessagef("grantpt %s\n", GetErrorString(errno));
-
-        Printf("pty slave: %s\n", ptsname(gdb.fd_ptty_master));
+        if (gdb.fd_ptty_master == 0)
+        {
+            close(ptty_fd); 
+            ptty_fd = 0;
+        }
 
         String tmp;
         if (InvokeShellCommand("which gdb", tmp))

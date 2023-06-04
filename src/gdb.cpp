@@ -259,14 +259,17 @@ bool GDB_StartProcess(String gdb_filename, String gdb_args)
     //    return false;
     //}
 
-    String set_tty = StringPrintf("-inferior-tty-set %s", ptsname(gdb.fd_ptty_master));
-    if (GDB_SendBlocking(set_tty.c_str()))
+    if (gdb.fd_ptty_master)
     {
-        Printf("set inferior-tty to %s\n", ptsname(gdb.fd_ptty_master));
-    }
-    else
-    {
-        return false;
+        String set_tty = StringPrintf("-inferior-tty-set %s", ptsname(gdb.fd_ptty_master));
+        if (GDB_SendBlocking(set_tty.c_str()))
+        {
+            Printf("set inferior-tty to %s\n", ptsname(gdb.fd_ptty_master));
+        }
+        else
+        {
+            return false;
+        }
     }
 
     gdb.filename = gdb_filename;
