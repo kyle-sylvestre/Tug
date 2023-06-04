@@ -4133,7 +4133,24 @@ int main(int argc, char **argv)
 
         gdb.recv_block = sem_open("/sem_recv_gdb_block", O_CREAT, S_IRWXU, 0);
         if (gdb.recv_block == NULL) 
-            ExitMessagef("sem_open %s\n", GetErrorString(errno));
+        {
+            if (errno == ENOSYS) // function not implemented
+            {
+                static sem_t unnamed_sem;
+                if (0 == sem_init(&unnamed_sem, 0, 0))
+                {
+                    gdb.recv_block = &unnamed_sem;
+                }
+                else
+                {
+                    ExitMessagef("sem_init %s\n", GetErrorString(errno));
+                }
+            }
+            else
+            {
+                ExitMessagef("sem_open %s\n", GetErrorString(errno));
+            }
+        }
 
         extern void *GDB_ReadInterpreterBlocks(void *);
         rc = pthread_create(&gdb.thread_read_interp, NULL, GDB_ReadInterpreterBlocks, (void*) NULL);
