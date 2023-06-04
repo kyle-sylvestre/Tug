@@ -2295,7 +2295,7 @@ void Draw()
                         else
                         {
                             // create breakpoint
-                            tsnprintf(tmpbuf, "-break-insert --source \"%s\" --line %d", 
+                            tsnprintf(tmpbuf, "-break-insert \"%s:%d\"",
                                       file.filename.c_str(), (int)(line_idx + 1));
                             if (GDB_SendBlocking(tmpbuf, rec))
                             {
