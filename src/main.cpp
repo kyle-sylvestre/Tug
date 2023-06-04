@@ -4011,7 +4011,7 @@ void DrawDebugOverlay()
 
 int main(int argc, char **argv)
 {
-#define ExitMessagef(fmt, ...) do { PrintErrorf(fmt, __VA_ARGS__); exit(EXIT_FAILURE); } while(0)
+#define ExitMessagef(fmt, ...) do { PrintErrorf(fmt, ##__VA_ARGS__); return EXIT_FAILURE; } while(0)
 #define ExitMessage(msg) ExitMessagef("%s", msg)
 
     String ini_data;
