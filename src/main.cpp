@@ -4176,16 +4176,18 @@ int main(int argc, char **argv)
             {
                 PrintErrorf("grantpt %s\n", GetErrorString(errno));
             }
+
+
+            // cleanup fd if grantpt/unlockpt failed
+            if (gdb.fd_ptty_master == 0)
+            {
+                close(ptty_fd); 
+                ptty_fd = 0;
+            }
         }
         else
         {
             PrintErrorf("posix_openpt %s\n", GetErrorString(errno));
-        }
-
-        if (gdb.fd_ptty_master == 0)
-        {
-            close(ptty_fd); 
-            ptty_fd = 0;
         }
 
         String tmp;
