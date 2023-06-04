@@ -1273,9 +1273,9 @@ void QueryFrame(bool force_clear_locals)
                 }
                 else
                 {
-                    long src = source_st.st_mtim.tv_sec;
-                    long exe = exe_st.st_mtim.tv_sec;
-                    if (src != 0 && exe != 0 && exe < src)
+                    time_t src = source_st.st_mtime;
+                    time_t exe = exe_st.st_mtime;
+                    if (src != 0 && exe != 0 && difftime(src, exe) > 0)
                     {
                         prog.source_out_of_date = true;
                     }
@@ -4048,8 +4048,7 @@ int main(int argc, char **argv)
         if (0 < readlink("/proc/self/exe", tug_abspath, sizeof(tug_abspath)))
         {
             if (0 == stat(tug_abspath, &st) &&
-                sec >= st.st_mtim.tv_sec &&
-                sec - st.st_mtim.tv_sec <= 2 * 60 &&
+                difftime(sec, st.st_mtime) <= 2 * 60 &&
                 !DoesFileExist(ini_filename.c_str(), false))
             {
                 gui.show_tutorial = true;
