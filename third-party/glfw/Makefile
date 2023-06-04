@@ -4,7 +4,7 @@ OBJDIR =
 CC = gcc
 CFLAGS = -I./include
 CFLAGS += -std=c99 -g3 -gdwarf-2 -Wall -Werror=format -Wextra -pthread
-CFLAGS += -Wno-missing-field-initializers -Wno-unused-parameter -Wno-sign-compare -Wno-cast-function-type]
+CFLAGS += -Wno-missing-field-initializers -Wno-unused-parameter -Wno-sign-compare -Wno-cast-function-type
 
 ifeq ($(DEBUG), 1)
     CFLAGS += -DDEBUG -O0 
