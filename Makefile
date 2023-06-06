@@ -1,19 +1,23 @@
 DEBUG ?= 0
 SAN ?= 0
 IMGUI_DIR = ./third-party/imgui
-OBJDIR =
 
 CXX = g++
-CXXFLAGS = -I./third-party -I./src -I./third-party/glfw/include
+CXXFLAGS += -I./third-party -I./src -I./third-party/glfw/include
 CXXFLAGS += -std=c++11 -g3 -gdwarf-2 -Wall -Wextra -Werror=format -Werror=shadow -pedantic -pthread
 CXXFLAGS += -Wno-missing-field-initializers
 
 ifeq ($(DEBUG), 1)
     CXXFLAGS += -DDEBUG -O0 
-	OBJDIR = build_debug
+	DEFAULT_OBJDIR = build_debug
 else
     CXXFLAGS += -DNDEBUG -O3
-	OBJDIR = build_release
+	DEFAULT_OBJDIR = build_release
+endif
+
+
+ifeq ($(OBJDIR), )
+	OBJDIR = $(DEFAULT_OBJDIR)
 endif
 
 
@@ -68,21 +72,21 @@ all: $(EXE)
 	@echo build complete for $(ECHO_MESSAGE)
 	
 $(EXE): $(OBJS)
-	$(CXX) -o $@ $^ $(CXXFLAGS) $(LIBS)
+	$(CXX) -o $@ $^ $(CXXFLAGS) $(CFLAGS) $(LIBS)
 
 $(EXE): | $(GLFW)
 
 $(GLFW):
-	$(MAKE) -C ./third-party/glfw DEBUG=$(DEBUG)
+	CFLAGS='$(CFLAGS)' OBJDIR='$(OBJDIR)' $(MAKE) -C ./third-party/glfw DEBUG=$(DEBUG)
 
 $(OBJDIR)/%.o:./src/%.cpp
-	$(CXX) $(CXXFLAGS) -c -o $@ $<
+	$(CXX) $(CXXFLAGS) $(CFLAGS) -c -o $@ $<
 
 $(OBJDIR)/%.o:./third-party/%.cpp
-	$(CXX) $(CXXFLAGS) -c -o $@ $<
+	$(CXX) $(CXXFLAGS) $(CFLAGS) -c -o $@ $<
 
 $(OBJDIR)/%.o:$(IMGUI_DIR)/%.cpp
-	$(CXX) $(CXXFLAGS) -c -o $@ $<
+	$(CXX) $(CXXFLAGS) $(CFLAGS) -c -o $@ $<
 	
 $(OBJS): | $(OBJDIR)
 

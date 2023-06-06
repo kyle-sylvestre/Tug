@@ -1,17 +1,20 @@
 DEBUG ?= 0
-OBJDIR =
 
 CC = gcc
-CFLAGS = -I./include
+CFLAGS += -I./include
 CFLAGS += -std=c99 -g3 -gdwarf-2 -Wall -Werror=format -Wextra -pthread
 CFLAGS += -Wno-missing-field-initializers -Wno-unused-parameter -Wno-sign-compare -Wno-cast-function-type
 
 ifeq ($(DEBUG), 1)
     CFLAGS += -DDEBUG -O0 
-	OBJDIR = ./build_debug
+	DEFAULT_OBJDIR = ./build_debug
 else
     CFLAGS += -DNDEBUG -O3
-	OBJDIR = ./build_release
+	DEFAULT_OBJDIR = ./build_release
+endif
+
+ifeq ($(OBJDIR), )
+	OBJDIR = $(DEFAULT_OBJDIR)
 endif
 
 OUT = $(OBJDIR)/libglfw3.a
