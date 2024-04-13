@@ -4025,26 +4025,36 @@ int main(int argc, char **argv)
         struct stat st = {};
         char tug_abspath[PATH_MAX] = {};
 
-        // get ini filename
-        const char *home = getenv("HOME");
-        if (home)
+        // get config directory
+        String xdg_path;
+        const char *xdg_config_env = getenv("XDG_CONFIG_HOME");
+        if (xdg_config_env)
         {
-            // use XDG directory if it exists
-            struct stat xdg_stat = {};
-            String xdg_path = StringPrintf("%s/.config", home);
-            if (0 == stat(xdg_path.c_str(), &xdg_stat) && 
-                S_ISDIR(xdg_stat.st_mode))
+            xdg_path = xdg_config_env;
+        }
+        else
+        {
+            const char *home = getenv("HOME");
+            if (home)
             {
-                xdg_path += "/tug";
-                if (0 == mkdir(xdg_path.c_str(), 0777) || errno == EEXIST)
-                {
-                    ini_filename = xdg_path + "/tug.ini";
-                }
+                xdg_path = StringPrintf("%s/.config", home);
             }
-            else
+        }
+
+        // get ini filename
+        struct stat xdg_stat = {};
+        if (0 == stat(xdg_path.c_str(), &xdg_stat) && 
+            S_ISDIR(xdg_stat.st_mode))
+        {
+            xdg_path += "/tug";
+            if (0 == mkdir(xdg_path.c_str(), 0777) || errno == EEXIST)
             {
-                ini_filename = StringPrintf("%s/.tug", home);
+                ini_filename = xdg_path + "/tug.ini";
             }
+        }
+        else
+        {
+            ini_filename = "tug.ini";
         }
 
         if (0 < readlink("/proc/self/exe", tug_abspath, sizeof(tug_abspath)))
