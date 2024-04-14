@@ -2877,32 +2877,51 @@ void Draw()
                                "Warning: Source file is more recent than executable.");
         }
 
-        #define CMDSIZE sizeof(Program::input_cmd[0])
-        static char input_command[CMDSIZE];
+        static String input_command;
+
+        static const auto GetInputCommand = [&](size_t i) -> String
+        {
+            String result;
+            if (i < prog.input_cmd_offsets.size())
+            {
+                size_t off = prog.input_cmd_offsets[i];
+                if (off < prog.input_cmd_data.size())
+                {
+                    result = prog.input_cmd_data.c_str() + off;
+                }
+            }
+            return result;
+        };
 
         static const auto HistoryCallback = [](ImGuiInputTextCallbackData *data) -> int
         {
-            if (data->EventKey == ImGuiKey_UpArrow &&
-                prog.input_cmd_idx + 1 < prog.num_input_cmds)
+            String new_input_cmd;
+            if (data->EventKey == ImGuiKey_UpArrow)
             {
-                prog.input_cmd_idx++;
-                memcpy(data->Buf, &prog.input_cmd[prog.input_cmd_idx][0], CMDSIZE);
-                data->BufTextLen = strlen(data->Buf);
+                if ((size_t)(prog.input_cmd_idx) + 1 < prog.input_cmd_offsets.size())
+                {
+                    prog.input_cmd_idx += 1;
+                    new_input_cmd = GetInputCommand(prog.input_cmd_idx);
+                }
             }
             else if (data->EventKey == ImGuiKey_DownArrow)
             {
                 if (prog.input_cmd_idx - 1 < 0)
                 {
                     prog.input_cmd_idx = -1;
-                    memset(data->Buf, 0, data->BufTextLen);
-                    data->BufTextLen = 0;
+                    data->DeleteChars(0, data->BufTextLen);
                 }
                 else
                 {
-                    prog.input_cmd_idx--;
-                    memcpy(data->Buf, &prog.input_cmd[prog.input_cmd_idx][0], CMDSIZE);
-                    data->BufTextLen = strlen(data->Buf);
+                    prog.input_cmd_idx -= 1;
+                    new_input_cmd = GetInputCommand(prog.input_cmd_idx);
                 }
+            }
+
+            if (new_input_cmd.size())
+            {
+                data->DeleteChars(0, data->BufTextLen);
+                data->InsertChars(0, new_input_cmd.c_str());
             }
 
             data->BufDirty = true;
@@ -2960,21 +2979,19 @@ void Draw()
             ImGui::End();
         }
         
-        if (ImGui::InputText("##input_command", input_command, 
-                             sizeof(input_command), 
-                             ImGuiInputTextFlags_EnterReturnsTrue | 
-                             ImGuiInputTextFlags_CallbackHistory, 
+        if (ImGui::InputText("##input_command", &input_command, 
+                             ImGuiInputTextFlags_EnterReturnsTrue |  ImGuiInputTextFlags_CallbackHistory, 
                              HistoryCallback, NULL) || is_autocomplete_selected)
         {
             // retain focus on the input line
             ImGui::SetKeyboardFocusHere(-1);
 
             if (is_autocomplete_selected)
-                tsnprintf(input_command, "%s", phrases[phrase_idx].c_str());
+                input_command = phrases[phrase_idx];
             
             // emulate GDB, repeat last executed command upon hitting enter on an empty line
-            bool use_last_command = (input_command[0] == '\0' && prog.num_input_cmds > 0);
-            String send_command = (use_last_command) ? &prog.input_cmd[0][0] : input_command;
+            bool use_last_command = (input_command.size() == 0 && prog.input_cmd_offsets.size() > 0);
+            String send_command = (use_last_command) ? GetInputCommand(0) : input_command;
             TrimWhitespace(send_command);
             String tagged_send_command = StringPrintf("(gdb) %s", send_command.c_str());
             WriteToConsoleBuffer(tagged_send_command.c_str(), 
@@ -2983,7 +3000,7 @@ void Draw()
             query_phrase = "";
             if (phrase_idx < phrases.size())
             {
-                tsnprintf(input_command, "%s", phrases[phrase_idx].c_str());
+                input_command = phrases[phrase_idx];
                 phrase_idx = 0;
                 phrases.clear();
             }
@@ -3073,28 +3090,18 @@ void Draw()
 
             if (!use_last_command)
             {
-                if (prog.num_input_cmds == NUM_USER_CMDS)
-                {
-                    // hit end of list, end command gets popped
-                    prog.num_input_cmds -= 1;
-                } 
-
                 prog.input_cmd_idx = -1;
-
-                // store this command to the input cmd
-                memmove(&prog.input_cmd[1][0],
-                        &prog.input_cmd[0][0],
-                        sizeof(prog.input_cmd) - CMDSIZE);
-
-                memcpy(&prog.input_cmd[0][0], input_command, CMDSIZE); 
-                prog.num_input_cmds++;
-
-                Zeroize(input_command);
+                if (input_command != GetInputCommand(0))
+                {
+                    prog.input_cmd_offsets.insert(prog.input_cmd_offsets.begin(), prog.input_cmd_data.size());
+                    prog.input_cmd_data += input_command;
+                    prog.input_cmd_data += '\0';
+                }
+                input_command = "";
             }
         }
 
-        size_t command_length = strlen(input_command);
-        if (command_length < query_phrase.size())
+        if (input_command.size() < query_phrase.size())
         {
             // went outside of completion scope, clear old data
             phrase_idx = 0;
@@ -3105,7 +3112,7 @@ void Draw()
         for (size_t end = phrases.size(); end > 0; end--)
         {
             size_t i = end - 1;
-            if (NULL == strstr(phrases[i].c_str(), input_command))
+            if (NULL == strstr(phrases[i].c_str(), input_command.c_str()))
             {
                 phrases.erase(phrases.begin() + i,
                               phrases.begin() + i + 1);
@@ -3119,7 +3126,7 @@ void Draw()
         {
             if (phrases.size() == 0)
             {
-                String cmd = StringPrintf("-complete \"%s\"", input_command);
+                String cmd = StringPrintf("-complete \"%s\"", input_command.c_str());
                 if (GDB_SendBlocking(cmd.c_str(), rec))
                 {
                     phrase_idx = 0;
@@ -4690,9 +4697,11 @@ int main(int argc, char **argv)
         // write the imgui side of the ini file
         size_t imgui_ini_size = 0;
         const char* imgui_ini_data = ImGui::SaveIniSettingsToMemory(&imgui_ini_size);
-        fprintf(f, "\n; ImGui Begin\n");
-        fwrite(imgui_ini_data, sizeof(char), imgui_ini_size, f);
-
+        if (imgui_ini_data && imgui_ini_size )
+        {
+            fprintf(f, "\n; ImGui Begin\n");
+            fwrite(imgui_ini_data, sizeof(char), imgui_ini_size, f);
+        }
         fclose(f); f = NULL;
     }
 

@@ -97,8 +97,6 @@ do {\
 } while(0)
 
 #define INVALID_LINE 0
-#define MAX_USER_CMDSIZE 128
-#define NUM_USER_CMDS 80
 #define RECORD_ROOT_IDX 0
 
 // prefix for preventing name clashes
@@ -344,9 +342,9 @@ struct Program
     size_t log_idx;
 
     // GDB console history buffer
-    char input_cmd[NUM_USER_CMDS][MAX_USER_CMDSIZE + 1 /* NT */];
+    String input_cmd_data;
+    Vector<size_t> input_cmd_offsets;
     int input_cmd_idx = -1;
-    int num_input_cmds;
 
     Vector<VarObj> local_vars;      // locals for the current frame
     Vector<VarObj> global_vars;     // watch for entire program, -var-create name @ expr
