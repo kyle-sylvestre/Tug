@@ -273,6 +273,13 @@ enum Jump
 #define DEFAULT_FONT_SIZE 16.0f
 #define MIN_FONT_SIZE 8.0f
 #define MAX_FONT_SIZE 72.0f
+
+struct Session
+{
+    String debug_exe;
+    String debug_args;
+};
+
 struct GUI
 {
     // GLFW data set through custom callbacks
@@ -320,6 +327,7 @@ struct GUI
     bool show_directory_viewer;
     bool show_tutorial;
     WindowTheme window_theme = WindowTheme_DarkBlue;
+    Vector<Session> session_history;
 
     // shutdown variables
     bool started_imgui_opengl2;
@@ -1753,6 +1761,23 @@ void Draw()
                pick_gdb_file = false;
             }
 
+            if (ImGui::BeginCombo("debug history", ""))
+            {
+                for (Session &iter : gui.session_history)
+                {
+                    String str = StringPrintf("%s %s", 
+                                              iter.debug_exe.c_str(),
+                                              iter.debug_args.c_str());
+                    if (ImGui::Selectable(str.c_str()))
+                    {
+                        tsnprintf(debug_filename, "%s", iter.debug_exe.c_str());
+                        tsnprintf(debug_args, "%s", iter.debug_args.c_str());
+                    }
+                }
+
+                ImGui::EndCombo();
+            }
+
             bool started = false;
             ImGuiDisabled(prog.started, started = ImGui::Button("Start##Debug Program Menu"));
             if (started)
@@ -1775,9 +1800,40 @@ void Draw()
                     GDB_SetInferiorExe(debug_filename) &&
                     GDB_SetInferiorArgs(debug_args))
                 {
-                    ImGui::CloseCurrentPopup(); 
                     if (gdb.has_exec_run_start)
                         GDB_SendBlocking("-exec-run --start");
+
+                    char *exe_abspath = realpath(debug_filename, NULL);
+                    if (exe_abspath)
+                    {
+                        Session s = {};
+                        s.debug_exe = exe_abspath;
+                        s.debug_args = debug_args;
+                        free(exe_abspath); exe_abspath = NULL;
+
+                        // add session entry if it's different from newest
+                        bool has_session_changed = false;
+                        if (gui.session_history.size() == 0)
+                        {
+                            has_session_changed = true;
+                        }
+                        else
+                        {
+                            Session &newest = gui.session_history[0];
+                            if (newest.debug_exe != s.debug_exe ||
+                                newest.debug_args != s.debug_args)
+                            {
+                                has_session_changed = true;
+                            }
+                        }
+
+                        if (has_session_changed)
+                        {
+                            gui.session_history.insert(gui.session_history.begin(), s);
+                        }
+                    }
+
+                    ImGui::CloseCurrentPopup(); 
                 }
             }
 
@@ -4422,6 +4478,28 @@ int main(int argc, char **argv)
             String theme = GetValue("WindowTheme", "DarkBlue");
             gui.window_theme = (theme == "Light") ? WindowTheme_Light :
                                (theme == "DarkPurple") ? WindowTheme_DarkPurple : WindowTheme_DarkBlue; 
+
+            // load debug session history
+            int session_idx = 0;
+            for (;;)
+            {
+                String exef = StringPrintf("DebugFilename%d", session_idx);
+                String argf = StringPrintf("DebugArgs%d", session_idx);
+                session_idx += 1;
+
+                Session s = {};
+                s.debug_exe = GetValue(exef, "");
+                s.debug_args = GetValue(argf, "");
+
+                if (s.debug_exe.size())
+                {
+                    gui.session_history.push_back(s);
+                }
+                else
+                {
+                    break;
+                }
+            }
         }
     }
 
@@ -4551,6 +4629,15 @@ int main(int argc, char **argv)
                        (gui.window_theme == WindowTheme_DarkPurple) ? "DarkPurple" : "DarkBlue";
         fprintf(f, "WindowTheme=%s\n", theme.c_str());
 
+        for (size_t i = 0; i < gui.session_history.size(); i++)
+        {
+            Session &iter = gui.session_history[i];
+            fprintf(f, "DebugFilename%zu=%s\n", i, iter.debug_exe.c_str());
+            if (iter.debug_args.size())
+            {
+                fprintf(f, "DebugArgs%zu=%s\n", i, iter.debug_args.c_str());
+            }
+        }
 
         // write the imgui side of the ini file
         size_t imgui_ini_size = 0;
