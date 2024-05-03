@@ -79,7 +79,7 @@ $(EXE): | $(GLFW)
 $(GLFW):
 	CFLAGS='$(CFLAGS)' OBJDIR='$(OBJDIR)' $(MAKE) -C ./third-party/glfw DEBUG=$(DEBUG)
 
-$(OBJDIR)/%.o:./src/%.cpp
+$(OBJDIR)/%.o:./src/%.cpp ./src/gdb.h ./src/common.h
 	$(CXX) $(CXXFLAGS) $(CFLAGS) -c -o $@ $<
 
 $(OBJDIR)/%.o:./third-party/%.cpp
