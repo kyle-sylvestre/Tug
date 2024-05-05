@@ -4398,19 +4398,152 @@ int main(int argc, char **argv)
         }
     }
 
+    // load config
+    int window_width = 0;
+    int window_height = 0;
+    int window_x = 0;
+    int window_y = 0;
+    bool window_maximized = false;
     {
-        // GLFW init
+        if (ini_data.size() == 0)
+        {
+            // workaround for generating a dockspace through loading an ini file
+            // originally used ImGui DockBuilder api to make the docking space but 
+            // there was a bug where some nodes would not resize proportionally
+            // to the framebuffer
+            ini_data = default_ini;
+        }
+
+        size_t ini_data_end_idx = ini_data.find("; ImGui Begin");
+        if (ini_data_end_idx == SIZE_MAX)
+            ini_data_end_idx = ini_data.size();
+
+        const auto LoadString = [&](String key, String default_value) -> String
+        {
+            String result;
+            key += "=";
+            size_t index = ini_data.find(key);
+            if (index < ini_data_end_idx)
+            {
+                size_t start_index = index + key.size();
+                size_t end_index = start_index;
+                while (end_index < ini_data_end_idx)
+                {
+                    char c = ini_data[end_index];
+                    if (c == '\n' || c == '\r')
+                    {
+                        break;
+                    }
+                    else
+                    {
+                        end_index++;
+                    }
+                }
+
+                result = ini_data.substr(start_index, end_index - start_index);
+            }
+            else
+            {
+                result = default_value;
+            }
+
+            return result;
+        };
+
+        const auto LoadFloat = [&](String key, float default_value) -> float
+        {
+            float result = default_value;
+            String str_value = LoadString(key, "");
+            float x = strtof(str_value.c_str(), NULL);
+            if (x != 0.0f || (str_value.size() != 0 && str_value[0] == '0'))
+            {
+                result = x;
+            }
+            return result;
+        };
+
+        const auto LoadBool = [&](String key, bool default_value) -> bool
+        {
+            return ("0" != LoadString(key, default_value ? "1" : "0"));
+        };
+
+        gui.show_callstack  = LoadBool("Callstack", true);
+        gui.show_locals     = LoadBool("Locals", true);
+        gui.show_watch      = LoadBool("Watch", true);
+        gui.show_control    = LoadBool("Control", true);
+        gui.show_breakpoints= LoadBool("Breakpoints", true);
+        gui.show_source     = LoadBool("Source", true);
+        gui.show_registers  = LoadBool("Registers", false);
+        gui.show_threads    = LoadBool("Threads", false);
+        gui.show_directory_viewer = LoadBool("DirectoryViewer", true);
+
+        float font_size = LoadFloat("FontSize", DEFAULT_FONT_SIZE); 
+        if (font_size != 0.0f)
+        {
+            gui.font_size = font_size;
+            gui.source_font_size = font_size;
+        }
+
+        gui.font_filename = LoadString("FontFilename", "");
+        if (gui.font_filename != "")
+        {
+            gui.change_font = true;
+            gui.use_default_font = false;
+        }
+
+        String theme = LoadString("WindowTheme", "DarkBlue");
+        gui.window_theme = (theme == "Light") ? WindowTheme_Light :
+                           (theme == "DarkPurple") ? WindowTheme_DarkPurple : WindowTheme_DarkBlue; 
+
+        window_width = (int)LoadFloat("WindowWidth", 1280);
+        window_height = (int)LoadFloat("WindowHeight", 720);
+        window_x = (int)LoadFloat("WindowX", 0);
+        window_y = (int)LoadFloat("WindowY", 0);
+        window_maximized = LoadBool("WindowMaximized", false);
+
+        // load debug session history
+        int session_idx = 0;
+        for (;;)
+        {
+            String exef = StringPrintf("DebugFilename%d", session_idx);
+            String argf = StringPrintf("DebugArgs%d", session_idx);
+            session_idx += 1;
+
+            Session s = {};
+            s.debug_exe = LoadString(exef, "");
+            s.debug_args = LoadString(argf, "");
+
+            if (s.debug_exe.size())
+            {
+                gui.session_history.push_back(s);
+            }
+            else
+            {
+                break;
+            }
+        }
+    }
+
+    // initialize GLFW
+    {
         glfwSetErrorCallback(glfw_error_callback);
         gui.initialized_glfw = glfwInit();
         if (!gui.initialized_glfw)
             ExitMessage("glfwInit\n");
 
-        gui.window = glfwCreateWindow(1280, 720, "Tug", NULL, NULL);
+        glfwWindowHint(GLFW_MAXIMIZED, window_maximized);
+        gui.window = glfwCreateWindow(window_width, window_height,
+                                      "Tug", NULL, NULL);
         if (gui.window == NULL)
             ExitMessage("glfwCreateWindow\n");
 
         glfwMakeContextCurrent(gui.window);
         glfwSwapInterval(1); // Enable vsync
+
+        if (!window_maximized)
+        {
+            glfwSetWindowPos(gui.window, window_x, window_y);
+        }
 
         const auto OnScroll = [](GLFWwindow *window, double /*xoffset*/, double yoffset)
         {
@@ -4418,12 +4551,10 @@ int main(int argc, char **argv)
                 GLFW_PRESS == glfwGetKey(window, GLFW_KEY_RIGHT_CONTROL))
             {
                 gui.this_frame.vert_scroll_increments = yoffset;
-                printf("vert scroll %f\n", yoffset);
             }
         };
         glfwSetScrollCallback(gui.window, OnScroll);
     }
-
 
     // Startup Dear ImGui
     if (!IMGUI_CHECKVERSION()) 
@@ -4441,122 +4572,16 @@ int main(int argc, char **argv)
     if (!gui.started_imgui_opengl2)
         ExitMessage("ImGui_ImplOpenGL2_Init\n");
 
+    if (ini_data.size() != 0)
+    {
+        ImGui::LoadIniSettingsFromMemory(ini_data.data(), ini_data.size());
+    }
+
     ImGuiIO& io = ImGui::GetIO();
     io.IniFilename = NULL; // manually load/save imgui.ini file
     //io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;     // Enable Keyboard Controls
     //io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;      // Enable Gamepad Controls
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;           // Enable Docking
-
-    {
-        if (ini_data.size() == 0)
-        {
-            // workaround for generating a dockspace through loading an ini file
-            // originally used ImGui DockBuilder api to make the docking space but 
-            // there was a bug where some nodes would not resize proportionally
-            // to the framebuffer
-            ini_data = default_ini;
-        }
-        ImGui::LoadIniSettingsFromMemory(ini_data.data(), ini_data.size());
-
-        // TODO: fix maximum lazy ini parsing right now
-        size_t end_tug = ini_data.find("; ImGui Begin");
-        if (end_tug < ini_data.size())
-            ini_data = ini_data.substr(0, end_tug);
-
-        if (ini_data.size() > 0)
-        {
-            const auto GetValue = [&](String key, String default_value) -> String
-            {
-                String result;
-                key += "=";
-                size_t index = ini_data.find(key);
-                if (index < ini_data.size())
-                {
-                    size_t start_index = index + key.size();
-                    size_t end_index = start_index;
-                    while (end_index < ini_data.size())
-                    {
-                        char c = ini_data[end_index];
-                        if (c == '\n' || c == '\r')
-                        {
-                            break;
-                        }
-                        else
-                        {
-                            end_index++;
-                        }
-                    }
-
-                    result = ini_data.substr(start_index, end_index - start_index);
-                }
-                else
-                {
-                    result = default_value;
-                }
-
-                return result;
-            };
-
-            gui.show_directory_viewer = ("1" == GetValue("DirectoryViewer", "1"));
-            gui.show_callstack  = ("1" == GetValue("Callstack"  , "1"));
-            gui.show_locals     = ("1" == GetValue("Locals"     , "1"));
-            gui.show_watch      = ("1" == GetValue("Watch"      , "1"));
-            gui.show_control    = ("1" == GetValue("Control"    , "1"));
-            gui.show_breakpoints= ("1" == GetValue("Breakpoints", "1"));
-            gui.show_source     = ("1" == GetValue("Source"     , "1"));
-            gui.show_registers  = ("1" == GetValue("Registers"  , "0"));
-            gui.show_threads    = ("1" == GetValue("Threads"    , "0"));
-
-            const auto ToString = [](float value) -> String { return StringPrintf("%f", value); };
-            gui.font_filename   = GetValue("FontFilename", "");
-            String font_size    = GetValue("FontSize", ToString(DEFAULT_FONT_SIZE)); 
-            float ffz = 0.0f;
-            if (font_size != "")
-            {
-                if (0.0f == (ffz = atof(font_size.c_str())))
-                {
-                    PrintErrorf("bad ini Fontsize \"%s\"\n", font_size.c_str());
-                }
-                else
-                {
-                    gui.font_size = ffz;
-                    gui.source_font_size = ffz;
-                }
-            } 
-
-            if (gui.font_filename != "")
-            {
-                gui.change_font = true;
-                gui.use_default_font = false;
-            }
-
-            String theme = GetValue("WindowTheme", "DarkBlue");
-            gui.window_theme = (theme == "Light") ? WindowTheme_Light :
-                               (theme == "DarkPurple") ? WindowTheme_DarkPurple : WindowTheme_DarkBlue; 
-
-            // load debug session history
-            int session_idx = 0;
-            for (;;)
-            {
-                String exef = StringPrintf("DebugFilename%d", session_idx);
-                String argf = StringPrintf("DebugArgs%d", session_idx);
-                session_idx += 1;
-
-                Session s = {};
-                s.debug_exe = GetValue(exef, "");
-                s.debug_args = GetValue(argf, "");
-
-                if (s.debug_exe.size())
-                {
-                    gui.session_history.push_back(s);
-                }
-                else
-                {
-                    break;
-                }
-            }
-        }
-    }
 
     // Setup Dear ImGui style
     SetWindowTheme(gui.window_theme);
@@ -4668,6 +4693,14 @@ int main(int argc, char **argv)
         glfwSwapBuffers(gui.window);
     }
 
+    window_maximized = (0 != glfwGetWindowAttrib(gui.window, GLFW_MAXIMIZED));
+    if (!window_maximized)
+    {
+        glfwGetWindowPos(gui.window, &window_x, &window_y);
+        glfwGetWindowSize(gui.window, &window_width, &window_height);
+    }
+
+    // write config
     FILE *f = fopen(ini_filename.c_str(), "wt");
     if (f != NULL)
     {
@@ -4691,6 +4724,12 @@ int main(int argc, char **argv)
                        (gui.window_theme == WindowTheme_DarkPurple) ? "DarkPurple" : "DarkBlue";
         fprintf(f, "WindowTheme=%s\n", theme.c_str());
 
+        fprintf(f, "WindowWidth=%d\n", window_width);
+        fprintf(f, "WindowHeight=%d\n", window_height);
+        fprintf(f, "WindowX=%d\n", window_x);
+        fprintf(f, "WindowY=%d\n", window_y);
+        fprintf(f, "WindowMaximized=%d\n", window_maximized);
+
         for (size_t i = 0; i < gui.session_history.size(); i++)
         {
             Session &iter = gui.session_history[i];
@@ -4704,10 +4743,10 @@ int main(int argc, char **argv)
         // write the imgui side of the ini file
         size_t imgui_ini_size = 0;
         const char* imgui_ini_data = ImGui::SaveIniSettingsToMemory(&imgui_ini_size);
-        if (imgui_ini_data && imgui_ini_size )
+        if (imgui_ini_data && imgui_ini_size)
         {
             fprintf(f, "\n; ImGui Begin\n");
-            fwrite(imgui_ini_data, sizeof(char), imgui_ini_size, f);
+            fwrite(imgui_ini_data, 1, imgui_ini_size, f);
         }
         fclose(f); f = NULL;
     }
