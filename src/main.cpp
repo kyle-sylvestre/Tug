@@ -2018,9 +2018,9 @@ void Draw()
                 if (DoesFileExist(font_filename))
                 {
                     const char *ext = strrchr(font_filename, '.');
-                    if(ext == NULL || (0 == strcmp(ext, ".otf") && 0 == strcmp(ext, ".ttf")))
+                    if(ext == NULL || !(0 == strcasecmp(ext, ".otf") || 0 == strcasecmp(ext, ".ttf")))
                     {
-                        PrintError("invalid font, choose .otf or .ttf\n");
+                        PrintError("invalid font, choose .otf or .ttf file\n");
                     }
                     else
                     {
