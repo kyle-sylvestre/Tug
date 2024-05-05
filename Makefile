@@ -2,9 +2,26 @@ DEBUG ?= 0
 SAN ?= 0
 IMGUI_DIR = ./third-party/imgui
 
+VER_MAJOR = ${TUG_VER_MAJOR}
+VER_MINOR = ${TUG_VER_MINOR}
+VER_PATCH = ${TUG_VER_PATCH}
+
+ifeq ($(VER_MAJOR),)
+VER_MAJOR = 0
+endif
+
+ifeq ($(VER_MINOR),)
+VER_MINOR = 0
+endif
+
+ifeq ($(VER_PATCH),)
+VER_PATCH = 0
+endif
+
 CXX = g++
 CXXFLAGS += -I./third-party -I./src -I./third-party/glfw/include
 CXXFLAGS += -std=c++11 -g3 -gdwarf-2 -Wall -Wextra -Werror=format -Werror=shadow -pedantic -pthread
+CXXFLAGS += -DTUG_VER_MAJOR=$(VER_MAJOR) -DTUG_VER_MINOR=$(VER_MINOR) -DTUG_VER_PATCH=$(VER_PATCH)
 CXXFLAGS += -Wno-missing-field-initializers
 
 ifeq ($(DEBUG), 1)

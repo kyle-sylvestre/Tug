@@ -374,6 +374,7 @@ struct GUI
     bool show_threads;
     bool show_directory_viewer;
     bool show_tutorial;
+    bool show_about_tug;
     WindowTheme window_theme = WindowTheme_DarkBlue;
     Vector<Session> session_history;
 
@@ -1729,6 +1730,7 @@ void Draw()
     if (last_num_recs == prog.num_recs)
         prog.num_recs = 0;
 
+    bool open_about_tug = false;
     if ( ImGui::BeginMainMenuBar() )
     {
         struct RegisterName
@@ -1910,6 +1912,9 @@ void Draw()
         static bool is_settings_open = false;
         if (ImGui::BeginMenu("Settings"))
         {
+            if (ImGui::Button("About Tug"))
+                open_about_tug = true;
+
             if (ImGui::Button("View Tutorial"))
                 gui.show_tutorial = true;
 
@@ -2094,6 +2099,33 @@ void Draw()
 
 
         ImGui::EndMainMenuBar();
+    }
+
+    if (open_about_tug)
+    {
+        ImGui::OpenPopup("About Tug");
+        gui.show_about_tug = true;
+    }
+
+    if (ImGui::BeginPopupModal("About Tug", &gui.show_about_tug, ImGuiWindowFlags_AlwaysAutoResize))
+    {
+        ImGui::Text("Tug %d.%d.%d", TUG_VER_MAJOR, TUG_VER_MINOR, TUG_VER_PATCH);
+        ImGui::Text("Copyright (C) 2022 Kyle Sylvestre");
+
+        const char *url = "https://github.com/kyle-sylvestre/Tug";
+        ImColor link_color = ImColor(84, 84, 255);
+        ImGui::TextColored(link_color, "%s", url);
+        if (ImGui::IsItemHovered())
+        {
+            ImGui::SetMouseCursor(ImGuiMouseCursor_Hand);
+        }
+        if (ImGui::IsItemClicked())
+        {
+            String output;
+            String cmd = StringPrintf("xdg-open \"%s\"", url);
+            InvokeShellCommand(cmd, output);
+        }
+        ImGui::EndPopup();
     }
 
     if (gui.show_source) 
