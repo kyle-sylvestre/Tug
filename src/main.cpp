@@ -174,9 +174,9 @@ bool InvokeShellCommand(String command, String &output)
         while (0 < (bytes_read = fread(tmp, 1, sizeof(tmp), f)) )
             output.insert(output.size(), tmp, bytes_read);
         
-        if (errno != 0)
+        if (ferror(f))
         {
-            PrintErrorf("fread %s\n", GetErrorString(errno));
+            PrintErrorf("error reading shell command \"%s\"\n", command.c_str());
         }
         else
         {
