@@ -55,7 +55,7 @@ program execution buttons</br>
 
 # Resources
 GDB Machine Interpreter:</br>
-https://sourceware.org/gdb/download/onlinedocs/gdb/GDB_002fMI.html#GDB_002fMI</br>
+https://sourceware.org/gdb/download/onlinedocs/gdb#GDB_002fMI</br>
 
 GLFW:</br>
 https://www.glfw.org/download.html</br>
