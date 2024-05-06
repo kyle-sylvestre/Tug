@@ -377,6 +377,7 @@ struct GUI
     bool show_about_tug;
     WindowTheme window_theme = WindowTheme_DarkBlue;
     Vector<Session> session_history;
+    int hover_delay_ms;
 
     // shutdown variables
     bool started_imgui_opengl2;
@@ -2043,6 +2044,12 @@ void Draw()
             if (ImGui::Combo("Window Theme##Settings", &temp_theme, "Light\0Dark Purple\0Dark Blue\0"))
                 SetWindowTheme((WindowTheme)temp_theme);
 
+            static int temp_hover_delay_ms = gui.hover_delay_ms;
+            if (ImGui::InputInt("Hover Delay", &temp_hover_delay_ms, 1, 1, ImGuiInputTextFlags_EnterReturnsTrue))    
+            {
+                gui.hover_delay_ms = temp_hover_delay_ms;
+            }
+
             ImGui::EndMenu();
         }
         else
@@ -2532,7 +2539,9 @@ void Draw()
                                         static size_t hover_char_idx;
                                         static size_t hover_num_frames;
                                         static size_t hover_frame_idx;
+                                        static double hover_time;
                                         static String hover_value;
+                                        static bool hover_value_evaluated;
 
                                         // check to see if we should add the variable
                                         // to the watch variables
@@ -2555,12 +2564,25 @@ void Draw()
                                             hover_line_idx = line_idx;
                                             hover_num_frames = prog.frames.size();
                                             hover_frame_idx = prog.frame_idx;
-                                            String word(line.data() + word_idx, char_idx - word_idx);
+                                            hover_time = ImGui::GetTime();
+                                            hover_value_evaluated = false;
+                                            hover_value = "";
+                                        }
 
-                                            tsnprintf(tmpbuf, "-data-evaluate-expression --frame %zu --thread %d \"%s\"", 
-                                                      prog.frame_idx, GetActiveThreadID(), word.c_str());
-                                            GDB_SendBlocking(tmpbuf, rec);
-                                            hover_value = GDB_ExtractValue("value", rec);
+
+                                        if (!hover_value_evaluated)
+                                        {
+                                            if (ImGui::GetTime() - hover_time > (gui.hover_delay_ms / 1000.0))
+                                            {
+                                                hover_value_evaluated = true;
+                                                String word(line.data() + word_idx, char_idx - word_idx);
+                                                tsnprintf(tmpbuf, "-data-evaluate-expression --frame %zu --thread %d \"%s\"", 
+                                                          prog.frame_idx, GetActiveThreadID(), word.c_str());
+                                                if (GDB_SendBlocking(tmpbuf, rec))
+                                                {
+                                                    hover_value = GDB_ExtractValue("value", rec);
+                                                }
+                                            }
                                         }
                                         else
                                         {
@@ -4532,6 +4554,7 @@ int main(int argc, char **argv)
         window_x = (int)LoadFloat("WindowX", 0);
         window_y = (int)LoadFloat("WindowY", 0);
         window_maximized = LoadBool("WindowMaximized", false);
+        gui.hover_delay_ms = (int)LoadFloat("HoverDelay", 100);
 
         // load debug session history
         int session_idx = 0;
@@ -4761,6 +4784,7 @@ int main(int argc, char **argv)
         fprintf(f, "WindowX=%d\n", window_x);
         fprintf(f, "WindowY=%d\n", window_y);
         fprintf(f, "WindowMaximized=%d\n", window_maximized);
+        fprintf(f, "HoverDelay=%d\n", gui.hover_delay_ms);
 
         for (size_t i = 0; i < gui.session_history.size(); i++)
         {
