@@ -24,8 +24,6 @@
 //    distribution.
 //
 //========================================================================
-// It is fine to use C99 in this file because it will not be built with VS
-//========================================================================
 
 #include "internal.h"
 
@@ -81,24 +79,25 @@ static GLFWbool waitForX11Event(double* timeout)
 //
 static GLFWbool waitForAnyEvent(double* timeout)
 {
-    nfds_t count = 2;
-    struct pollfd fds[3] =
+    enum { XLIB_FD, PIPE_FD, INOTIFY_FD };
+    struct pollfd fds[] =
     {
-        { ConnectionNumber(_glfw.x11.display), POLLIN },
-        { _glfw.x11.emptyEventPipe[0], POLLIN }
+        [XLIB_FD] = { ConnectionNumber(_glfw.x11.display), POLLIN },
+        [PIPE_FD] = { _glfw.x11.emptyEventPipe[0], POLLIN },
+        [INOTIFY_FD] = { -1, POLLIN }
     };
 
 #if defined(GLFW_BUILD_LINUX_JOYSTICK)
     if (_glfw.joysticksInitialized)
-        fds[count++] = (struct pollfd) { _glfw.linjs.inotify, POLLIN };
+        fds[INOTIFY_FD].fd = _glfw.linjs.inotify;
 #endif
 
     while (!XPending(_glfw.x11.display))
     {
-        if (!_glfwPollPOSIX(fds, count, timeout))
+        if (!_glfwPollPOSIX(fds, sizeof(fds) / sizeof(fds[0]), timeout))
             return GLFW_FALSE;
 
-        for (int i = 1; i < count; i++)
+        for (int i = 1; i < sizeof(fds) / sizeof(fds[0]); i++)
         {
             if (fds[i].revents & POLLIN)
                 return GLFW_TRUE;
@@ -564,7 +563,7 @@ static void inputContextDestroyCallback(XIC ic, XPointer clientData, XPointer ca
 
 // Create the X11 window (and its colormap)
 //
-static GLFWbool x11_createNativeWindow(_GLFWwindow* window,
+static GLFWbool createNativeWindow(_GLFWwindow* window,
                                    const _GLFWwndconfig* wndconfig,
                                    Visual* visual, int depth)
 {
@@ -1082,7 +1081,7 @@ static const char* getSelectionString(Atom selection)
 
 // Make the specified window and its video mode active on its monitor
 //
-static void x11_acquireMonitor(_GLFWwindow* window)
+static void acquireMonitor(_GLFWwindow* window)
 {
     if (_glfw.x11.saver.count == 0)
     {
@@ -1121,7 +1120,7 @@ static void x11_acquireMonitor(_GLFWwindow* window)
 
 // Remove the window and restore the original video mode
 //
-static void x11_releaseMonitor(_GLFWwindow* window)
+static void releaseMonitor(_GLFWwindow* window)
 {
     if (window->monitor->window != window)
         return;
@@ -1489,6 +1488,9 @@ static void processEvent(XEvent *event)
             if (event->xconfigure.width != window->x11.width ||
                 event->xconfigure.height != window->x11.height)
             {
+                window->x11.width = event->xconfigure.width;
+                window->x11.height = event->xconfigure.height;
+
                 _glfwInputFramebufferSize(window,
                                           event->xconfigure.width,
                                           event->xconfigure.height);
@@ -1496,9 +1498,6 @@ static void processEvent(XEvent *event)
                 _glfwInputWindowSize(window,
                                      event->xconfigure.width,
                                      event->xconfigure.height);
-
-                window->x11.width = event->xconfigure.width;
-                window->x11.height = event->xconfigure.height;
             }
 
             int xpos = event->xconfigure.x;
@@ -1526,9 +1525,10 @@ static void processEvent(XEvent *event)
 
             if (xpos != window->x11.xpos || ypos != window->x11.ypos)
             {
-                _glfwInputWindowPos(window, xpos, ypos);
                 window->x11.xpos = xpos;
                 window->x11.ypos = ypos;
+
+                _glfwInputWindowPos(window, xpos, ypos);
             }
 
             return;
@@ -1806,9 +1806,9 @@ static void processEvent(XEvent *event)
                     if (window->monitor)
                     {
                         if (iconified)
-                            x11_releaseMonitor(window);
+                            releaseMonitor(window);
                         else
-                            x11_acquireMonitor(window);
+                            acquireMonitor(window);
                     }
 
                     window->x11.iconified = iconified;
@@ -1993,7 +1993,7 @@ GLFWbool _glfwCreateWindowX11(_GLFWwindow* window,
         depth = DefaultDepth(_glfw.x11.display, _glfw.x11.screen);
     }
 
-    if (!x11_createNativeWindow(window, wndconfig, visual, depth))
+    if (!createNativeWindow(window, wndconfig, visual, depth))
         return GLFW_FALSE;
 
     if (ctxconfig->client != GLFW_NO_API)
@@ -2025,7 +2025,7 @@ GLFWbool _glfwCreateWindowX11(_GLFWwindow* window,
     {
         _glfwShowWindowX11(window);
         updateWindowMode(window);
-        x11_acquireMonitor(window);
+        acquireMonitor(window);
 
         if (wndconfig->centerCursor)
             _glfwCenterCursorInContentArea(window);
@@ -2050,7 +2050,7 @@ void _glfwDestroyWindowX11(_GLFWwindow* window)
         enableCursor(window);
 
     if (window->monitor)
-        x11_releaseMonitor(window);
+        releaseMonitor(window);
 
     if (window->x11.ic)
     {
@@ -2206,7 +2206,7 @@ void _glfwSetWindowSizeX11(_GLFWwindow* window, int width, int height)
     if (window->monitor)
     {
         if (window->monitor->window == window)
-            x11_acquireMonitor(window);
+            acquireMonitor(window);
     }
     else
     {
@@ -2477,7 +2477,7 @@ void _glfwSetWindowMonitorX11(_GLFWwindow* window,
         if (monitor)
         {
             if (monitor->window == window)
-                x11_acquireMonitor(window);
+                acquireMonitor(window);
         }
         else
         {
@@ -2496,7 +2496,7 @@ void _glfwSetWindowMonitorX11(_GLFWwindow* window,
     {
         _glfwSetWindowDecoratedX11(window, window->decorated);
         _glfwSetWindowFloatingX11(window, window->floating);
-        x11_releaseMonitor(window);
+        releaseMonitor(window);
     }
 
     _glfwInputWindowMonitor(window, monitor);
@@ -2511,7 +2511,7 @@ void _glfwSetWindowMonitorX11(_GLFWwindow* window,
         }
 
         updateWindowMode(window);
-        x11_acquireMonitor(window);
+        acquireMonitor(window);
     }
     else
     {
@@ -2903,14 +2903,16 @@ const char* _glfwGetScancodeNameX11(int scancode)
     if (!_glfw.x11.xkb.available)
         return NULL;
 
-    if (scancode < 0 || scancode > 0xff ||
-        _glfw.x11.keycodes[scancode] == GLFW_KEY_UNKNOWN)
+    if (scancode < 0 || scancode > 0xff)
     {
         _glfwInputError(GLFW_INVALID_VALUE, "Invalid scancode %i", scancode);
         return NULL;
     }
 
     const int key = _glfw.x11.keycodes[scancode];
+    if (key == GLFW_KEY_UNKNOWN)
+        return NULL;
+
     const KeySym keysym = XkbKeycodeToKeysym(_glfw.x11.display,
                                              scancode, _glfw.x11.xkb.group, 0);
     if (keysym == NoSymbol)
