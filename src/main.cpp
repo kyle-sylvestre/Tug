@@ -481,8 +481,9 @@ static void SetWindowTheme(WindowTheme theme)
 bool LoadFile(File &file)
 {
     bool result = false;
+    struct stat sb = {};
     if (file.lines.size() == 0 && 
-        0 == access(file.filename.c_str(), F_OK))
+        0 == stat(file.filename.c_str(), &sb))
     {
         FILE *f = fopen(file.filename.c_str(), "rb");
         if (f == NULL)
@@ -491,50 +492,44 @@ bool LoadFile(File &file)
         }
         else
         {
-            long lfilesize = 0;
-            if (0 == fseek(f, 0, SEEK_END) &&
-                0 < (lfilesize = ftell(f)) &&
-                0 == fseek(f, 0, SEEK_SET))
+            size_t filesize = sb.st_size;
+            file.data.resize(filesize);
+            if (0 < fread((void*)file.data.data(), 1, filesize, f))
             {
-                size_t filesize = (size_t)lfilesize;
-                file.data.resize(filesize);
-                if (0 < fread((void*)file.data.data(), 1, filesize, f))
+                // move file up so that the data will be packed
+                // lines will be accessed by offsetting into one big buf
+                char *fd = (char*)file.data.data();
+                size_t i = 0;
+                char *lst = fd;
+                size_t num_trunc = 0;
+
+                while (i < filesize)
                 {
-                    // move file up so that the data will be packed
-                    // lines will be accessed by offsetting into one big buf
-                    char *fd = (char*)file.data.data();
-                    size_t i = 0;
-                    char *lst = fd;
-                    size_t num_trunc = 0;
+                    char c0 = fd[i];
+                    char c1 = (i + 1 < filesize) ? fd[i + 1] : '\0';
+                    size_t end = (c0 == '\n') ? 1 :
+                        (c0 == '\r' && c1 == '\n') ? 2 :
+                        (c0 == '\r') ? 1 : 0;
 
-                    while (i < filesize)
+                    if (end != 0)
                     {
-                        char c0 = fd[i];
-                        char c1 = (i + 1 < filesize) ? fd[i + 1] : '\0';
-                        size_t end = (c0 == '\n') ? 1 :
-                                     (c0 == '\r' && c1 == '\n') ? 2 :
-                                     (c0 == '\r') ? 1 : 0;
+                        char *dest = lst - num_trunc;
+                        memmove(dest, lst, (fd + i) - lst);
 
-                        if (end != 0)
-                        {
-                            char *dest = lst - num_trunc;
-                            memmove(dest, lst, (fd + i) - lst);
+                        file.lines.push_back(dest - fd);
 
-                            file.lines.push_back(dest - fd);
-
-                            num_trunc += end;
-                            i += end;
-                            lst = fd + i;
-                        }
-                        else
-                        {
-                            i++;
-                        }
+                        num_trunc += end;
+                        i += end;
+                        lst = fd + i;
                     }
-
-                    // truncate file to size minus sum of line endings
-                    file.data.resize(file.data.size() - num_trunc);
+                    else
+                    {
+                        i++;
+                    }
                 }
+
+                // truncate file to size minus sum of line endings
+                file.data.resize(file.data.size() - num_trunc);
             }
 
             // TODO: possibly not the longest line when line number is large enough
@@ -555,9 +550,9 @@ bool LoadFile(File &file)
             }
 
             fclose(f); f = NULL;
-        }
 
-        result = true;
+            result = true;
+        }
     }
 
     return result;
