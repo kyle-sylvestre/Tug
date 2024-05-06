@@ -4240,7 +4240,10 @@ int main(int argc, char **argv)
             if (f != NULL)
             {
                 ini_data.resize(st.st_size);
-                fread(&ini_data[0], 1, st.st_size, f);
+                if (fread(&ini_data[0], 1, st.st_size, f))
+                {
+                    // silence unused result warning
+                }
                 fclose(f); f = NULL;
             }
         }
