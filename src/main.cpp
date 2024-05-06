@@ -4458,6 +4458,7 @@ int main(int argc, char **argv)
     int window_x = 0;
     int window_y = 0;
     bool window_maximized = false;
+    bool window_has_x_or_y = false;
     {
         if (ini_data.size() == 0)
         {
@@ -4472,6 +4473,10 @@ int main(int argc, char **argv)
         if (ini_data_end_idx == SIZE_MAX)
             ini_data_end_idx = ini_data.size();
 
+        const auto HasKey = [&](String key) -> bool
+        {
+            return (SIZE_MAX != ini_data.find(key + "="));
+        };
         const auto LoadString = [&](String key, String default_value) -> String
         {
             String result;
@@ -4551,8 +4556,12 @@ int main(int argc, char **argv)
 
         window_width = (int)LoadFloat("WindowWidth", 1280);
         window_height = (int)LoadFloat("WindowHeight", 720);
-        window_x = (int)LoadFloat("WindowX", 0);
-        window_y = (int)LoadFloat("WindowY", 0);
+        if (HasKey("WindowX") || HasKey("WindowY"))
+        {
+            window_has_x_or_y = true;
+            window_x = (int)LoadFloat("WindowX", 0);
+            window_y = (int)LoadFloat("WindowY", 0);
+        }
         window_maximized = LoadBool("WindowMaximized", false);
         gui.hover_delay_ms = (int)LoadFloat("HoverDelay", 100);
 
@@ -4595,7 +4604,7 @@ int main(int argc, char **argv)
         glfwMakeContextCurrent(gui.window);
         glfwSwapInterval(1); // Enable vsync
 
-        if (!window_maximized)
+        if (!window_maximized && window_has_x_or_y)
         {
             glfwSetWindowPos(gui.window, window_x, window_y);
         }
