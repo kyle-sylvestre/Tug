@@ -1949,7 +1949,6 @@ void Draw()
                          reinterpret_cast<int *>(&gui.line_display),
                          "Source\0Disassembly\0Source And Disassembly\0");
 
-
             if (last_line_display == LineDisplay_Source && 
                 gui.line_display != LineDisplay_Source &&
                 prog.frame_idx < prog.frames.size())
@@ -1957,6 +1956,8 @@ void Draw()
                 // query the disassembly for this function
                 GetFunctionDisassembly(prog.frames[ prog.frame_idx ]);
             }
+
+            ImGui::Checkbox("Cursor Blink", &ImGui::GetIO().ConfigInputTextCursorBlink);
 
             static FileWindowContext ctx;
             static char font_filename[PATH_MAX];
@@ -4457,6 +4458,7 @@ int main(int argc, char **argv)
     int window_y = 0;
     bool window_maximized = false;
     bool window_has_x_or_y = false;
+    bool cursor_blink = false;
     {
         if (ini_data.size() == 0)
         {
@@ -4562,6 +4564,7 @@ int main(int argc, char **argv)
         }
         window_maximized = LoadBool("WindowMaximized", false);
         gui.hover_delay_ms = (int)LoadFloat("HoverDelay", 100);
+        cursor_blink = LoadBool("CursorBlink", true);
 
         // load debug session history
         int session_idx = 0;
@@ -4644,6 +4647,7 @@ int main(int argc, char **argv)
     //io.ConfigFlags |= ImGuiConfigFlags_NavEnableKeyboard;     // Enable Keyboard Controls
     //io.ConfigFlags |= ImGuiConfigFlags_NavEnableGamepad;      // Enable Gamepad Controls
     io.ConfigFlags |= ImGuiConfigFlags_DockingEnable;           // Enable Docking
+    io.ConfigInputTextCursorBlink = cursor_blink;
 
     // Setup Dear ImGui style
     SetWindowTheme(gui.window_theme);
@@ -4792,6 +4796,7 @@ int main(int argc, char **argv)
         fprintf(f, "WindowY=%d\n", window_y);
         fprintf(f, "WindowMaximized=%d\n", window_maximized);
         fprintf(f, "HoverDelay=%d\n", gui.hover_delay_ms);
+        fprintf(f, "CursorBlink=%d\n", io.ConfigInputTextCursorBlink);
 
         for (size_t i = 0; i < gui.session_history.size(); i++)
         {
