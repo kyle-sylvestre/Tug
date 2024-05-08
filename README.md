@@ -29,7 +29,7 @@ GDB frontend made with Dear ImGui
 OR 
 
 1. run tug</br>
-2. click "Debug Program" menu button</br>
+2. click "Debug" menu button</br>
 3. fill in gdb filename and debug filename, args are optional</br>
 4. click "Start" button</br>
 

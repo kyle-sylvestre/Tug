@@ -1735,27 +1735,35 @@ void Draw()
             bool registered;
         };
 
-        static bool open_source = false;
-        open_source |= ImGui::MenuItem("Open Source");
-        if (open_source)
+        static bool show_open_file = false;
+        if (ImGui::BeginMenu("File"))
+        {
+            if (ImGui::MenuItem("Open..."))
+            {
+                show_open_file = true;
+            }
+            ImGui::EndMenu();
+        }
+
+        if (show_open_file)
         {
             static FileWindowContext ctx;
             if (ImGuiFileWindow(ctx, ImGuiFileWindowMode_SelectFile))
             {
-               if (ctx.selected)
-               {
-                   // always reload the file on clicking open
-                   size_t idx = FindOrCreateFile(ctx.path.c_str());
-                   prog.files[idx].lines.clear();
-                   if (LoadFile(prog.files[idx]))
-                   {
-                       prog.file_idx = idx;
-                       gui.jump_type = Jump_Goto;
-                       gui.goto_line_idx = 0;
-                   }
-               } 
+                if (ctx.selected)
+                {
+                    // always reload the file on clicking open
+                    size_t idx = FindOrCreateFile(ctx.path.c_str());
+                    prog.files[idx].lines.clear();
+                    if (LoadFile(prog.files[idx]))
+                    {
+                        prog.file_idx = idx;
+                        gui.jump_type = Jump_Goto;
+                        gui.goto_line_idx = 0;
+                    }
+                } 
 
-               open_source = false;
+                show_open_file = false;
             }
         }
 
@@ -1763,7 +1771,7 @@ void Draw()
         static bool show_register_window = false;
         static bool is_debug_program_open = false;
 
-        if (ImGui::BeginMenu("Debug Program"))
+        if (ImGui::BeginMenu("Debug"))
         {
             static FileWindowContext ctx;
             static char gdb_filename[PATH_MAX];
@@ -3998,7 +4006,7 @@ void Draw()
             case 0:
                 gui.show_source = true; 
                 ImGui::Text("View source code file of the program being run");
-                ImGui::Text("Open file by clicking menu button \"Open Source\" or clicking a filename in the \"Directory Viewer\" window");
+                ImGui::Text("Open file by clicking menu button \"File > Open...\" or clicking a filename in the \"Directory Viewer\" window");
                 ImGui::Text("Ctrl-G: Open \"Goto Line\" window:");
                 Tab(1); ImGui::BulletText("Input a line number and press enter to jump to it");
                 ImGui::Text("Ctrl-F: Open \"Find\" search bar:");
