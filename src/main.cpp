@@ -378,6 +378,7 @@ struct GUI
     WindowTheme window_theme = WindowTheme_DarkBlue;
     Vector<Session> session_history;
     int hover_delay_ms;
+    String drag_drop_exe_path;
 
     // shutdown variables
     bool started_imgui_opengl2;
@@ -1771,6 +1772,15 @@ void Draw()
         static bool show_register_window = false;
         static bool is_debug_program_open = false;
 
+        if (gui.drag_drop_exe_path != "")
+        {
+            is_debug_program_open = false; // assign input boxes
+            ImGuiWindow* window = ImGui::GetCurrentWindow();
+            ImGui::OpenPopup(window->GetID("Debug"));
+            ImGui::SetActiveID(window->GetID(""), window);
+            GImGui->ActiveIdMouseButton = ImGuiMouseButton_Left; // avoid hitting assertion
+        }
+
         if (ImGui::BeginMenu("Debug"))
         {
             static FileWindowContext ctx;
@@ -1784,7 +1794,15 @@ void Draw()
             if (!is_debug_program_open)
             {
                 is_debug_program_open = true;
-                tsnprintf(debug_filename, "%s", gdb.debug_filename.c_str());
+                if (gui.drag_drop_exe_path != "")
+                {
+                    tsnprintf(debug_filename, "%s", gui.drag_drop_exe_path.c_str());
+                    gui.drag_drop_exe_path = "";
+                }
+                else
+                {
+                    tsnprintf(debug_filename, "%s", gdb.debug_filename.c_str());
+                }
                 tsnprintf(debug_args, "%s", gdb.debug_args.c_str());
                 tsnprintf(gdb_filename, "%s", gdb.filename.c_str());
                 tsnprintf(gdb_args, "%s", gdb.args.c_str());
@@ -4627,6 +4645,19 @@ int main(int argc, char **argv)
             }
         };
         glfwSetScrollCallback(gui.window, OnScroll);
+
+        const auto OnDragDrop = [](GLFWwindow* /*window*/, int count, const char** paths)
+        {
+            if (count == 1)
+            {
+                const char *file = paths[0];
+                if (VerifyFileExecutable(file))
+                {
+                    gui.drag_drop_exe_path = file;
+                }
+            }
+        };
+        glfwSetDropCallback(gui.window, OnDragDrop);
     }
 
     // Startup Dear ImGui
